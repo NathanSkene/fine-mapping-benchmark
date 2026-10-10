@@ -10,6 +10,7 @@ from scripts.convert_to_gpu import gpu
 from scripts.convert_to_gpu_and_tensor import gpu_t
 from scripts.convert_to_gpu_scalar import gpu_ts
 from scripts.convert_to_cpu import cpu
+from scripts.posterior_memo import MEMO_FORMAT, freeze_memo
 import matplotlib.pyplot as plt
 import pickle
 import torch.nn.functional as F
@@ -88,13 +89,11 @@ def regularize_ld(LD):
     
     
 def reformat_memo(memo, p0):
-    memo[tuple([])] = float(torch.sum(torch.log(1 - p0)).item())
-    m0 = float(np.mean([float(np.asarray(val).squeeze()) for val in memo.values()]))
-    for key in memo:
-        val = float(np.asarray(memo[key]).squeeze())
-        memo[key] = float(min(10**15, np.exp(min(np.log(10**15), val - m0))))
-    return m0
-    return m0
+    """Freeze all likelihoods under one final prior, including the null model."""
+    if hasattr(p0, 'detach'):
+        p0 = p0.detach().cpu().reshape(-1).tolist()
+    return freeze_memo(memo, p0)
+
 
 class network(nn.Module):
     def __init__(self,K,f_dim,n_l,A,x):
@@ -435,10 +434,8 @@ class finemapper():
                 
             sigma2         = torch.matmul(torch.matmul(z.T, sigma_inv),self.S)/2
         
-            prior = 1 - p0
-            prior[ind] = p0[ind]
         
-            res =  -torch.logdet(sigma)/2 + sigma2 + torch.sum(torch.log(prior)) 
+            res = -torch.logdet(sigma)/2 + sigma2
         
         
             memo[ind_m] = float(res.detach().cpu().numpy().squeeze())
@@ -449,6 +446,7 @@ class finemapper():
         
         
     def train(self, z_score, ld, temp, n_samples, sigma_sq, n_sub, p_0, num_iter, memo, epp, K_C, gamma):
+        """Train with an approximate KL restricted to selected top-K indices."""
         self.model.train()  # make training mode explicit
 
         sigma_sq = gpu_ts(sigma_sq)
@@ -470,22 +468,22 @@ class finemapper():
 
             Z = Z.unsqueeze(1)
 
+            if not torch.isfinite(imp).all() or not torch.isfinite(p_0).all():
+                raise FloatingPointError(f"{type(self).__name__}: non-finite posterior or prior probabilities")
+
             valid_samples = 0
             best_u, best_ind = None, None  # for stable KL index choice
 
             for i in range(n_samples):
+                if not torch.isfinite(c[i]).all():
+                    continue
                 # always keep at least one index; remove hard 0.01 gate
                 u, ind = torch.topk(c[i], max(1, K_C))
                 if ind.numel() == 0:
                     continue
 
-                valid_samples += 1
                 K_C_eff = ind.numel()
                 cc = c[i]
-
-                # optional memo usage
-                if epp > 0:
-                    self.abf(Z, ld, memo, n_sub, sigma_sq, cc, p_0, K_C_eff, gamma)
 
                 U = n_sub * torch.diag(sigma_sq * cc)[:, ind]
                 V = LD[ind, :]
@@ -493,7 +491,10 @@ class finemapper():
                 eyeKC = gpu(torch.eye(K_C_eff))
                 eyeM  = gpu(torch.eye(M))
 
-                inv = torch.inverse(eyeKC + torch.mm(V, U))
+                try:
+                    inv = torch.inverse(eyeKC + torch.mm(V, U))
+                except torch.linalg.LinAlgError:
+                    continue
                 sigma_inv = eyeM - torch.mm(torch.mm(U, inv), V)
 
                 sigma = eyeKC + torch.mm(V, U)
@@ -506,24 +507,28 @@ class finemapper():
                 if not torch.isfinite(log_likelihood):
                     continue  # skip this sample if it’s numerically bad
 
+                valid_samples += 1
+                if epp > 0:
+                    self.abf(Z, LD, memo, n_sub, sigma_sq, cc, p_0, K_C_eff, gamma)
                 lik_loss += -log_likelihood.squeeze()
                 loss     += -log_likelihood.squeeze()
 
                 if (best_u is None) or (u.max() > best_u.max()):
                     best_u, best_ind = u, ind
 
-            # if no valid samples, fall back to top-1 from the first sample
             if valid_samples == 0:
-                best_ind = torch.topk(c[0], 1).indices
-                valid_samples = 1  # to avoid div by zero
+                raise FloatingPointError(
+                    f"{type(self).__name__}: no finite likelihood among {n_samples} samples at epoch {epp}")
 
-            # KL on a stable index set
+            # Approximate selected-index KL; not the full Bernoulli KL.
             x2 = imp[best_ind]
             x1 = p_0[best_ind]
             kl_loss = torch.sum(x2 * (torch.log(x2 + eps) - torch.log(x1 + eps))) + \
                   torch.sum((1 - x2) * (torch.log(1 - x2 + eps) - torch.log(1 - x1 + eps)))
 
             loss_f = (loss / valid_samples) + kl_loss
+            if not torch.isfinite(loss_f):
+                raise FloatingPointError(f"{type(self).__name__}: non-finite training objective")
             loss_f.backward()
             self.opt.step()
 
@@ -573,10 +578,8 @@ class finemapper_lassonet():
             sigma = gpu(torch.eye(len(ind))) + torch.mm(V, U)
             sigma2 = torch.matmul(torch.matmul(z.T, sigma_inv), self.S) / 2
 
-            prior = 1 - p0
-            prior[ind] = p0[ind]
 
-            res = -torch.logdet(sigma) / 2 + sigma2 + torch.sum(torch.log(prior))
+            res = -torch.logdet(sigma) / 2 + sigma2
             memo[ind_m] = float(res.detach().cpu().numpy().squeeze())
 
             return res
@@ -584,7 +587,7 @@ class finemapper_lassonet():
             return
 
     def train(self, z_score, ld, v, temp, n_samples, sigma_sq, n_sub, num_iter, memo, epp, K_C, gamma):
-        """Training loop with LassoNet prior (with hierarchy constraint and L1 penalty)."""
+        """LassoNet training with an approximate selected-index KL objective."""
         self.model.train()
         self.prior_network.train()
 
@@ -611,20 +614,21 @@ class finemapper_lassonet():
             lik_loss = gpu_ts(0.0)
             Z = Z.unsqueeze(1)
 
+            if not torch.isfinite(imp).all() or not torch.isfinite(p_0).all():
+                raise FloatingPointError(f"{type(self).__name__}: non-finite posterior or prior probabilities")
+
             valid_samples = 0
             best_u, best_ind = None, None
 
             for i in range(n_samples):
+                if not torch.isfinite(c[i]).all():
+                    continue
                 u, ind = torch.topk(c[i], max(1, K_C))
                 if ind.numel() == 0:
                     continue
 
-                valid_samples += 1
                 K_C_eff = ind.numel()
                 cc = c[i]
-
-                if epp > 0:
-                    self.abf(Z, LD, memo, n_sub, sigma_sq, cc, p_0, K_C_eff, gamma)
 
                 U = n_sub * torch.diag(sigma_sq * cc)[:, ind]
                 V = LD[ind, :]
@@ -632,7 +636,10 @@ class finemapper_lassonet():
                 eyeKC = gpu(torch.eye(K_C_eff))
                 eyeM = gpu(torch.eye(M))
 
-                inv = torch.inverse(eyeKC + torch.mm(V, U))
+                try:
+                    inv = torch.inverse(eyeKC + torch.mm(V, U))
+                except torch.linalg.LinAlgError:
+                    continue
                 sigma_inv = eyeM - torch.mm(torch.mm(U, inv), V)
 
                 sigma = eyeKC + torch.mm(V, U)
@@ -644,6 +651,9 @@ class finemapper_lassonet():
                 if not torch.isfinite(log_likelihood):
                     continue
 
+                valid_samples += 1
+                if epp > 0:
+                    self.abf(Z, LD, memo, n_sub, sigma_sq, cc, p_0, K_C_eff, gamma)
                 lik_loss += -log_likelihood.squeeze()
                 loss += -log_likelihood.squeeze()
 
@@ -651,10 +661,10 @@ class finemapper_lassonet():
                     best_u, best_ind = u, ind
 
             if valid_samples == 0:
-                best_ind = torch.topk(c[0], 1).indices
-                valid_samples = 1
+                raise FloatingPointError(
+                    f"{type(self).__name__}: no finite likelihood among {n_samples} samples at epoch {epp}")
 
-            # KL divergence on stable indices
+            # Approximate selected-index KL; not the full Bernoulli KL.
             x2 = imp[best_ind]
             x1 = p_0[best_ind]
             kl_loss = torch.sum(x2 * (torch.log(x2 + eps) - torch.log(x1 + eps))) + \
@@ -666,6 +676,8 @@ class finemapper_lassonet():
 
             # L1 is NOT in the differentiable loss — applied as proximal step below
             loss_f = (loss / valid_samples) + kl_loss + reg_loss
+            if not torch.isfinite(loss_f):
+                raise FloatingPointError(f"{type(self).__name__}: non-finite training objective")
             loss_f.backward()
             self.opt.step()
 
@@ -723,10 +735,8 @@ class finemapper_annot():
                 
             sigma2         = torch.matmul(torch.matmul(z.T, sigma_inv),self.S)/2
         
-            prior = 1 - p0
-            prior[ind] = p0[ind]
         
-            res =  -torch.logdet(sigma)/2 + sigma2 + torch.sum(torch.log(prior)) 
+            res = -torch.logdet(sigma)/2 + sigma2
         
         
             memo[ind_m] = float(res.detach().cpu().numpy().squeeze())
@@ -736,7 +746,7 @@ class finemapper_annot():
             return
         
     def train(self, z_score, ld, v, temp, n_samples, sigma_sq, n_sub, num_iter, memo, epp, K_C, gamma):
-        """Training loop with annotations (robust: no silent early-returns)."""
+        """Annotation training with an approximate selected-index KL objective."""
         self.model.train()
         self.prior_network.train()
 
@@ -763,20 +773,21 @@ class finemapper_annot():
             lik_loss = gpu_ts(0.0)
             Z = Z.unsqueeze(1)
 
+            if not torch.isfinite(imp).all() or not torch.isfinite(p_0).all():
+                raise FloatingPointError(f"{type(self).__name__}: non-finite posterior or prior probabilities")
+
             valid_samples = 0
             best_u, best_ind = None, None
 
             for i in range(n_samples):
+                if not torch.isfinite(c[i]).all():
+                    continue
                 u, ind = torch.topk(c[i], max(1, K_C))
                 if ind.numel() == 0:
                     continue
 
-                valid_samples += 1
                 K_C_eff = ind.numel()
                 cc = c[i]
-
-                if epp > 0:
-                    self.abf(Z, LD, memo, n_sub, sigma_sq, cc, p_0, K_C_eff, gamma)
 
                 U = n_sub * torch.diag(sigma_sq * cc)[:, ind]
                 V = LD[ind, :]
@@ -784,7 +795,10 @@ class finemapper_annot():
                 eyeKC = gpu(torch.eye(K_C_eff))
                 eyeM  = gpu(torch.eye(M))
 
-                inv = torch.inverse(eyeKC + torch.mm(V, U))
+                try:
+                    inv = torch.inverse(eyeKC + torch.mm(V, U))
+                except torch.linalg.LinAlgError:
+                    continue
                 sigma_inv = eyeM - torch.mm(torch.mm(U, inv), V)
 
                 sigma = eyeKC + torch.mm(V, U)
@@ -796,6 +810,9 @@ class finemapper_annot():
                 if not torch.isfinite(log_likelihood):
                     continue
 
+                valid_samples += 1
+                if epp > 0:
+                    self.abf(Z, LD, memo, n_sub, sigma_sq, cc, p_0, K_C_eff, gamma)
                 lik_loss += -log_likelihood.squeeze()
                 loss     += -log_likelihood.squeeze()
 
@@ -803,10 +820,10 @@ class finemapper_annot():
                     best_u, best_ind = u, ind
 
             if valid_samples == 0:
-                best_ind = torch.topk(c[0], 1).indices
-                valid_samples = 1
+                raise FloatingPointError(
+                    f"{type(self).__name__}: no finite likelihood among {n_samples} samples at epoch {epp}")
 
-            # KL on stable indices
+            # Approximate selected-index KL; not the full Bernoulli KL.
             x2 = imp[best_ind]
             x1 = p_0[best_ind]
             kl_loss = torch.sum(x2 * (torch.log(x2 + eps) - torch.log(x1 + eps))) + \
@@ -817,6 +834,8 @@ class finemapper_annot():
             reg_loss = self.lambda_reg * reg_p0
 
             loss_f = (loss / valid_samples) + kl_loss + reg_loss
+            if not torch.isfinite(loss_f):
+                raise FloatingPointError(f"{type(self).__name__}: non-finite training objective")
             loss_f.backward()
             self.opt.step()
 
@@ -974,6 +993,7 @@ def main(options):
             if options['annot_given']:
                 _, _, _, p_0 = prior_network(v, temp, 1)
             mean_memo = reformat_memo(memo, p_0)
+            pip = calculate_pip(memo, bp)
             if options['annot_given']:
                 # Include feature importance from LassoNet
                 feature_importance = prior_network.feature_importance
@@ -988,11 +1008,12 @@ def main(options):
                     'pip': pip,
                     'memo': memo,
                     'mean_memo': mean_memo,
+                    'memo_format': MEMO_FORMAT,
+                    'posterior_context': mean_memo,
                     'feature_importance': feature_importance
                 }
             else:
-                res_to_save={'loss':Loss,'lik_loss':Loss_lik,'kl_loss':Loss_kl, 'imp':F_map.model.imp,'loc':loc, 'pip':pip,'memo':memo, 'mean_memo':mean_memo}
-            pip = calculate_pip(memo, bp)
+                res_to_save={'loss':Loss,'lik_loss':Loss_lik,'kl_loss':Loss_kl, 'imp':F_map.model.imp,'loc':loc, 'pip':pip,'memo':memo, 'mean_memo':mean_memo, 'memo_format': MEMO_FORMAT, 'posterior_context': mean_memo}
             save_object(res_to_save, os.path.join(options['target'],'res'))
 
 

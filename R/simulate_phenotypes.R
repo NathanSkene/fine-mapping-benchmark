@@ -37,7 +37,8 @@
 #'   variants). Only used when \code{model = "sparse_inf"}. Default: "beatrice".
 #' @param effect_distribution Character. Distribution for causal effect sizes.
 #'   \code{"normal"} draws from N(0, effect_variance).
-#'   \code{"equal"} partitions variance equally among causal variants.
+#'   \code{"equal"} assigns equal effect magnitudes with random signs.
+#'   LD means equal magnitudes do not imply equal variance contributions.
 #'   Default: "normal".
 #' @param effect_variance Numeric. Variance of the normal effect size
 #'   distribution. Only used when \code{effect_distribution = "normal"}.
@@ -95,7 +96,10 @@
 #'       \describe{
 #'         \item{causal_indices}{Integer vector of causal variant indices.}
 #'         \item{causal_effects}{Numeric vector of true effect sizes.}
-#'         \item{beta_true}{Full p-length vector of true effects (0 for non-causal).}
+#'         \item{beta_true}{Legacy p-length sparse-component effect vector.}
+#'         \item{beta_sparse, beta_infinitesimal, beta_total}{Explicit effect decomposition.}
+#'         \item{estimand}{Sparse-component membership, not all nonzero effects.}
+#'         \item{pve_expected, variance_components}{Expected PVE and sample variance ledger.}
 #'         \item{pve}{Realised PVE.}
 #'         \item{S}{Number of causal variants.}
 #'         \item{phi}{Target PVE.}
@@ -154,9 +158,14 @@ simulate_phenotypes <- function(genotypes,
   # --- Input validation -------------------------------------------------------
 
   n_regions <- length(genotypes)
+  if (!is.list(genotypes) || n_regions < 1L) {
+    stop("genotypes must contain at least one region.", call. = FALSE)
+  }
 
   # S: scalar or vector
   S <- validate_per_region_param(S, n_regions, "S", integer_valued = TRUE)
+
+  if (any(S < 1L)) stop("S must be positive; use genome-wide simulation for null regions.", call. = FALSE)
 
   # phi: scalar or vector
   phi <- validate_per_region_param(phi, n_regions, "phi")
@@ -192,7 +201,11 @@ simulate_phenotypes <- function(genotypes,
   # annotations
   user_annotation_matrix <- NULL
   if (is.matrix(annotations)) {
+    if (!is.numeric(annotations) || ncol(annotations) < 1L || any(!is.finite(annotations))) {
+      stop("annotations must be a finite numeric matrix with at least one column.", call. = FALSE)
+    }
     user_annotation_matrix <- annotations
+    n_annotations <- ncol(annotations)
     annotation_type <- "user_supplied"
   } else if (is.character(annotations)) {
     annotation_type <- match.arg(annotations, choices = c("none", "binary", "continuous"))
@@ -250,6 +263,12 @@ simulate_phenotypes <- function(genotypes,
     set.seed(seed)
   }
 
+  # An annotation-to-causal mapping is one scenario-level architecture.
+  # Drawing folds separately in each region confounded pooled-prior methods.
+  if (annotation_type != "none" && is.null(enrichment)) {
+    enrichment <- runif(n_annotations, min = 2, max = 10)
+  }
+
   # --- Simulate each region ---------------------------------------------------
 
   for (i in seq_len(n_regions)) {
@@ -287,6 +306,12 @@ simulate_phenotypes <- function(genotypes,
       props_i <- annot_result$proportions
     }
 
+    if (n_i < 3L || !is.matrix(X_i) || any(dim(X_i) != c(n_i, p_i)) ||
+        any(!is.finite(X_i)) || any(apply(X_i, 2, var) <= 0)) {
+      stop("Each region needs at least three individuals and finite, variable genotype columns.",
+           call. = FALSE)
+    }
+
     # --- Select causal variants -----------------------------------------------
 
     causal_result <- select_causal_variants(
@@ -309,7 +334,7 @@ simulate_phenotypes <- function(genotypes,
       beta_true[causal_indices] <- rnorm(S[i], mean = 0, sd = sqrt(effect_variance))
     } else if (effect_distribution == "equal") {
       # Effect sizes set later during variance calibration
-      beta_true[causal_indices] <- 1  # placeholder, will be rescaled
+      beta_true[causal_indices] <- sample(c(-1, 1), S[i], replace = TRUE)
     }
 
     # --- Generate phenotype ---------------------------------------------------
@@ -347,6 +372,8 @@ simulate_phenotypes <- function(genotypes,
     genotypes[[i]]$z <- sumstats$z
     genotypes[[i]]$beta_hat <- sumstats$beta_hat
     genotypes[[i]]$se <- sumstats$se
+    genotypes[[i]]$statistic_type <- sumstats$statistic_type
+    genotypes[[i]]$degrees_of_freedom <- sumstats$degrees_of_freedom
     # Only compute LD if not already present (e.g. pre-computed by run_simulation)
     if (is.null(genotypes[[i]]$LD)) {
       genotypes[[i]]$LD <- cor(X_i)
@@ -356,8 +383,14 @@ simulate_phenotypes <- function(genotypes,
     genotypes[[i]]$truth <- list(
       causal_indices = causal_indices,
       causal_effects = beta_true[causal_indices],
-      beta_true = beta_true,
+      beta_true = beta_true,  # legacy field: sparse-component effects
+      beta_sparse = beta_true,
+      beta_infinitesimal = pheno_result$beta_infinitesimal,
+      beta_total = beta_true + pheno_result$beta_infinitesimal,
+      estimand = "sparse_component_membership",
       pve = pheno_result$pve_realised,
+      pve_expected = pheno_result$pve_expected,
+      variance_components = pheno_result$variance_components,
       S = S[i],
       phi = phi[i],
       model = model,
@@ -414,8 +447,8 @@ simulate_phenotypes <- function(genotypes,
 # =============================================================================
 
 validate_per_region_param <- function(x, n_regions, name, integer_valued = FALSE) {
-  if (!is.numeric(x)) {
-    stop(sprintf("%s must be numeric.", name), call. = FALSE)
+  if (!is.numeric(x) || length(x) == 0L || any(!is.finite(x))) {
+    stop(sprintf("%s must be nonempty and finite numeric.", name), call. = FALSE)
   }
   if (integer_valued && any(x != floor(x))) {
     stop(sprintf("%s must be integer-valued.", name), call. = FALSE)
@@ -440,8 +473,8 @@ validate_per_region_param <- function(x, n_regions, name, integer_valued = FALSE
 # =============================================================================
 
 validate_annotation_param <- function(x, n_annotations, name) {
-  if (!is.numeric(x)) {
-    stop(sprintf("%s must be numeric.", name), call. = FALSE)
+  if (!is.numeric(x) || length(x) == 0L || any(!is.finite(x))) {
+    stop(sprintf("%s must be nonempty and finite numeric.", name), call. = FALSE)
   }
   if (length(x) == 1) {
     x <- rep(x, n_annotations)
@@ -560,7 +593,7 @@ simulate_annotations_for_region <- function(p,
         eps_k    <- rnorm(p)
         latent_k <- sqrt(rho) * F + sqrt(1 - rho) * eps_k
         # Threshold at qnorm(1 - prop_k) => P(latent > cut) = prop_k
-        A[, k]   <- as.integer(latent_k > qnorm(1 - props[k]))
+        A[, k]   <- as.integer(latent_k > stats::qnorm(1 - props[k]))
       }
     }
   }
@@ -625,9 +658,9 @@ generate_phenotype_sparse <- function(X, beta_true, phi, effect_distribution,
   g_sparse <- as.numeric(X %*% beta_true)
   var_g <- var(g_sparse)
 
-  # Handle "equal" effect distribution: effects are pre-set to 1 (equal
+  # Handle "equal" effect distribution: effects have random signs and unit magnitude
   # magnitudes); the PVE target is achieved by calibrating sigma^2, not by
-  # rescaling effects. Random signs are tried only if Var(Xb) == 0.
+  # rescaling effects. A new sign draw is tried only if Var(Xb) == 0.
   if (effect_distribution == "equal") {
     S <- length(causal_indices)
     # Set effects so that Var(Xb) gives a reasonable signal,
@@ -662,13 +695,15 @@ generate_phenotype_sparse <- function(X, beta_true, phi, effect_distribution,
   e <- rnorm(n, mean = 0, sd = sqrt(sigma2))
   y <- g_sparse + e
 
-  # Compute realised PVE
-  pve_realised <- var_g / (var_g + sigma2)
+  ledger <- phenotype_variance_ledger(g_sparse, rep(0, n), e, sigma2)
 
   list(
     y = y,
     beta_true = beta_true,
-    pve_realised = pve_realised
+    beta_infinitesimal = rep(0, ncol(X)),
+    pve_realised = ledger$pve_realised,
+    pve_expected = ledger$pve_expected,
+    variance_components = ledger$components
   )
 }
 
@@ -708,68 +743,70 @@ generate_phenotype_sparse_inf <- function(X, beta_true, phi, p_causal,
     )
   }
 
-  # --- Infinitesimal component ------------------------------------------------
-
-  if (inf_model == "beatrice") {
-    # BEATRICE: infinitesimal effects from noncausal variants only
-    noncausal_indices <- setdiff(seq_len(p), causal_indices)
-    m_nc <- length(noncausal_indices)
-    X_nc <- X[, noncausal_indices, drop = FALSE]
-
-    # g_NC ~ N(0, (1/(m-d)) * X_NC * X_NC^T)
-    # Equivalent to: alpha_nc ~ N(0, 1/m_nc * I), g_NC = X_NC * alpha_nc
-    alpha_nc <- rnorm(m_nc, mean = 0, sd = 1 / sqrt(m_nc))
-    g_inf <- as.numeric(X_nc %*% alpha_nc)
-
-  } else if (inf_model == "susie_inf") {
-    # SuSiE-inf: infinitesimal effects from all variants
-    # alpha_j ~ N(0, tau^2) for all j
-    # We draw alpha with unit variance, then rescale during normalisation
-    alpha_all <- rnorm(p, mean = 0, sd = 1 / sqrt(p))
-    g_inf <- as.numeric(X %*% alpha_all)
+  # Retain all coefficients so sparse membership and nonzero-effect truth
+  # are distinguishable. No background is required at the p_causal = 1 boundary.
+  alpha <- rep(0, p)
+  if (p_causal < 1) {
+    inf_indices <- if (inf_model == "beatrice") {
+      setdiff(seq_len(p), causal_indices)
+    } else seq_len(p)
+    if (length(inf_indices) == 0L) {
+      stop("No variants are available for the requested infinitesimal component.", call. = FALSE)
+    }
+    alpha[inf_indices] <- rnorm(length(inf_indices), sd = 1 / sqrt(length(inf_indices)))
   }
-
+  g_inf <- as.numeric(X %*% alpha)
   var_g_inf <- var(g_inf)
-
-  if (var_g_inf < .Machine$double.eps) {
-    stop(
-      "Var(g_inf) is effectively zero for the infinitesimal component. ",
-      "This is unexpected with standardised genotypes.",
-      call. = FALSE
-    )
+  if (p_causal < 1 && var_g_inf < .Machine$double.eps) {
+    stop("Var(g_inf) is effectively zero for the infinitesimal component.", call. = FALSE)
   }
 
-  # --- Variance normalisation (BEATRICE equation 21) --------------------------
-  # Total genetic variance = phi (PVE)
-  # Sparse component explains p_causal * phi of total phenotypic variance
-  # Infinitesimal component explains (1 - p_causal) * phi
-  # Residual explains 1 - phi
+  sparse_scale <- sqrt(p_causal * phi / var_g_sparse)
+  inf_scale <- if (p_causal < 1) sqrt((1 - p_causal) * phi / var_g_inf) else 0
+  beta_true <- beta_true * sparse_scale
+  alpha <- alpha * inf_scale
+  g_sparse_scaled <- g_sparse * sparse_scale
+  g_inf_scaled <- g_inf * inf_scale
+  g_total <- g_sparse_scaled + g_inf_scaled
+  var_g_total <- var(g_total)
+  if (var_g_total < .Machine$double.eps) {
+    stop("The sparse and infinitesimal signals cancel to zero variance.", call. = FALSE)
+  }
 
-  # Scale sparse component
-  g_sparse_scaled <- g_sparse * sqrt(p_causal * phi / var_g_sparse)
-
-  # Scale infinitesimal component
-  g_inf_scaled <- g_inf * sqrt((1 - p_causal) * phi / var_g_inf)
-
-  # Residual noise
-  sigma2 <- 1 - phi
-  e <- rnorm(n, mean = 0, sd = sqrt(sigma2))
-
-  # Phenotype
-  y <- g_sparse_scaled + g_inf_scaled + e
-
-  # The true beta_true needs to be rescaled consistently
-  scale_factor <- sqrt(p_causal * phi / var_g_sparse)
-  beta_true <- beta_true * scale_factor
-
-  # Compute realised PVE
-  var_total <- var(y)
-  pve_realised <- (var(g_sparse_scaled) + var(g_inf_scaled)) / var_total
-
+  # LD induces covariance between the two signals. Calibrate using Var(g_total),
+  # preserving this covariance rather than assuming the variances add.
+  sigma2 <- var_g_total * (1 - phi) / phi
+  e <- rnorm(n, sd = sqrt(sigma2))
+  y <- g_total + e
+  ledger <- phenotype_variance_ledger(g_sparse_scaled, g_inf_scaled, e, sigma2)
   list(
     y = y,
     beta_true = beta_true,
-    pve_realised = pve_realised
+    beta_infinitesimal = alpha,
+    pve_realised = ledger$pve_realised,
+    pve_expected = ledger$pve_expected,
+    variance_components = ledger$components
+  )
+}
+
+# Finite-sample signal/noise covariance means Var(g)/Var(y) need not be <= 1.
+# The expected PVE conditions on the drawn genetic signal and uses the noise
+# distribution's variance; neither quantity is the sample R-squared.
+phenotype_variance_ledger <- function(g_sparse, g_infinitesimal, residual,
+                                      residual_variance) {
+  g <- g_sparse + g_infinitesimal
+  vg <- var(g)
+  vy <- var(g + residual)
+  list(
+    pve_expected = if (vg == 0) 0 else vg / (vg + residual_variance),
+    pve_realised = if (vg == 0) 0 else vg / vy,
+    components = list(
+      sparse = var(g_sparse), infinitesimal = var(g_infinitesimal),
+      sparse_infinitesimal_covariance = stats::cov(g_sparse, g_infinitesimal),
+      genetic = vg, residual_expected = residual_variance,
+      residual_realised = var(residual), genetic_residual_covariance = stats::cov(g, residual),
+      phenotype = vy
+    )
   )
 }
 
@@ -779,27 +816,24 @@ generate_phenotype_sparse_inf <- function(X, beta_true, phi, p_causal,
 # =============================================================================
 
 compute_summary_statistics <- function(X, y) {
-
+  if (!is.matrix(X) || !is.numeric(X) || nrow(X) < 3L || ncol(X) < 1L ||
+      length(y) != nrow(X) || any(!is.finite(X)) || any(!is.finite(y))) {
+    stop("Summary statistics require finite X and y with at least three individuals.", call. = FALSE)
+  }
   n <- nrow(X)
-
-  # Marginal OLS of y on each column of X (with implicit intercept). Since X
-  # columns and y are centred the intercept drops out and
-  #   beta_hat_j = (x_j^T y_c) / (x_j^T x_j)
-  #   RSS_j      = ||y_c||^2 - beta_hat_j * (x_j^T y_c)
-  #   se_j       = sqrt(RSS_j / (n - 2) / (x_j^T x_j))
+  # Explicit centering is essential when standardise = FALSE: the model
+  # includes an intercept whether genotypes are dosages or standardised.
+  X_centered <- sweep(X, 2, colMeans(X), "-")
   y_centered <- y - mean(y)
-
-  xty       <- as.numeric(crossprod(X, y_centered))
-  xtx       <- colSums(X * X)
-  beta_hat  <- xty / xtx
-  rss       <- sum(y_centered * y_centered) - beta_hat * xty
-  sigma2    <- rss / (n - 2)
-  se        <- sqrt(sigma2 / xtx)
-  z         <- beta_hat / se
-
-  list(
-    beta_hat = beta_hat,
-    se = se,
-    z = z
-  )
+  xty <- as.numeric(crossprod(X_centered, y_centered))
+  xtx <- colSums(X_centered * X_centered)
+  if (any(xtx <= 0)) stop("Genotype columns must have nonzero variance.", call. = FALSE)
+  beta_hat <- xty / xtx
+  rss <- sum(y_centered * y_centered) - beta_hat * xty
+  # Numerical cancellation near a perfect fit can produce tiny negative RSS.
+  rss <- pmax(rss, 0)
+  se <- sqrt(rss / (n - 2) / xtx)
+  z <- beta_hat / se
+  list(beta_hat = beta_hat, se = se, z = z,
+       statistic_type = "marginal_ols_t", degrees_of_freedom = n - 2L)
 }

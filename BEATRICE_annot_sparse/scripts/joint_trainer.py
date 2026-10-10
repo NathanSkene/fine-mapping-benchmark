@@ -117,9 +117,7 @@ def _abf(S, z, ld, memo, n_sub, sigma_sq, cc, p0, K_C, eps):
         sigma_inv = torch.mm(torch.mm(U, inv), V)
         sigma = gpu(torch.eye(len(ind))) + torch.mm(V, U)
         sigma2 = torch.matmul(torch.matmul(z.T, sigma_inv), S) / 2
-        prior = 1 - p0
-        prior[ind] = p0[ind]
-        res = -torch.logdet(sigma) / 2 + sigma2 + torch.sum(torch.log(prior))
+        res = -torch.logdet(sigma) / 2 + sigma2
         memo[ind_m] = float(res.detach().cpu().numpy().squeeze())
         return res
     return None
@@ -127,7 +125,9 @@ def _abf(S, z, ld, memo, n_sub, sigma_sq, cc, p0, K_C, eps):
 
 def _region_elbo(model, prior_head, S, Z, LD, v, temp, n_samples, sigma_sq,
                  n_sub, K_C, gamma, lambda_reg, memo):
-    """One region's differentiable loss (lik + kl + reg), populating `memo`.
+    """One region's approximate loss (lik + selected-index KL + reg).
+    The selected-index KL is not the full independent-Bernoulli KL, so this
+    stochastic top-K objective is not claimed to be an exact evidence bound.
     Mirrors finemapper_lassonet.train's inner body; NO optimiser step here - the
     joint loop sums these across regions and steps ONCE."""
     eps = gpu_ts(1e-7)
@@ -138,38 +138,45 @@ def _region_elbo(model, prior_head, S, Z, LD, v, temp, n_samples, sigma_sq,
     loss = gpu_ts(0.0)
     lik_loss = gpu_ts(0.0)
     Zc = Z.unsqueeze(1)
+    if not torch.isfinite(imp).all() or not torch.isfinite(p_0).all():
+        raise FloatingPointError("joint region: non-finite posterior or prior probabilities")
     valid_samples = 0
     best_u, best_ind = None, None
 
     for i in range(n_samples):
+        if not torch.isfinite(c[i]).all():
+            continue
         u, ind = torch.topk(c[i], max(1, K_C))
         if ind.numel() == 0:
             continue
-        valid_samples += 1
         K_C_eff = ind.numel()
         cc = c[i]
-        if gamma > 0:
-            _abf(S, Zc, LD, memo, n_sub, sigma_sq, cc, p_0, K_C_eff, gamma)
         U = n_sub * torch.diag(sigma_sq * cc)[:, ind]
         V = LD[ind, :]
         eyeKC = gpu(torch.eye(K_C_eff))
         eyeM = gpu(torch.eye(M))
-        inv = torch.inverse(eyeKC + torch.mm(V, U))
+        try:
+            inv = torch.inverse(eyeKC + torch.mm(V, U))
+        except torch.linalg.LinAlgError:
+            continue
         sigma_inv = eyeM - torch.mm(torch.mm(U, inv), V)
         sigma = eyeKC + torch.mm(V, U) + 1e-6 * eyeKC
         sigma2 = -torch.matmul(torch.matmul(Zc.T, sigma_inv), S) / 2
         log_likelihood = -torch.logdet(sigma) / 2 + sigma2
         if not torch.isfinite(log_likelihood):
             continue
+        valid_samples += 1
+        if gamma > 0:
+            _abf(S, Zc, LD, memo, n_sub, sigma_sq, cc, p_0, K_C_eff, gamma)
         lik_loss += -log_likelihood.squeeze()
         loss += -log_likelihood.squeeze()
         if (best_u is None) or (u.max() > best_u.max()):
             best_u, best_ind = u, ind
 
     if valid_samples == 0:
-        best_ind = torch.topk(c[0], 1).indices
-        valid_samples = 1
+        raise FloatingPointError(f"joint region: no finite likelihood among {n_samples} samples")
 
+    # Approximate selected-index KL; not the full Bernoulli KL.
     x2 = imp[best_ind]
     x1 = p_0[best_ind]
     kl_loss = torch.sum(x2 * (torch.log(x2 + eps) - torch.log(x1 + eps))) + \
@@ -177,6 +184,8 @@ def _region_elbo(model, prior_head, S, Z, LD, v, temp, n_samples, sigma_sq,
     reg_loss = lambda_reg * torch.sum(p_0 ** 2)
 
     region_loss = (loss / valid_samples) + kl_loss + reg_loss
+    if not torch.isfinite(region_loss):
+        raise FloatingPointError("joint region: non-finite training objective")
     return region_loss, p_0
 
 
@@ -196,6 +205,7 @@ def _load_region(z_path, ld_path, annot_path):
 
 
 # small pandas readers kept local to avoid re-importing in hot code
+from scripts.posterior_memo import MEMO_FORMAT
 import pandas as pd
 def pd_read(path):
     return pd.read_table(path, sep=' ', header=None).to_numpy()
@@ -299,6 +309,7 @@ def run_joint(options):
             _, _, _, p_0 = prior_head(r['v'], temp, 1)
         mean_memo = reformat_memo(r['memo'], p_0)
         res = {'memo': r['memo'], 'mean_memo': mean_memo,
+               'memo_format': MEMO_FORMAT, 'posterior_context': mean_memo,
                'names': r['names'], 'pip': calculate_pip(r['memo'], r['bp']),
                'feature_importance': prior_head.feature_importance}
         os.makedirs(r['target'], exist_ok=True)

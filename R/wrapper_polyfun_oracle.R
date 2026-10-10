@@ -1,32 +1,20 @@
 # =============================================================================
 # polyfun_oracle.R
 #
-# Wrapper for PolyFun-oracle: PolyFun-style fine-mapping with **true** per-SNP
-# priors recovered from the simulator. Serves as the methodological upper
-# bound for any annotation-aware method.
+# Annotation-enrichment oracle comparator built on SuSiE-RSS. It reads the
+# simulator's enrichment coefficients. This is an information-advantaged
+# diagnostic comparator, not the upstream PolyFun method or a strict ceiling.
 #
-# Canonical PolyFun (Weissbrod 2020) is a two-stage method: (1) estimate
-# per-SNP heritability h2(j) by stratified LDSC on a pre-computed UKB
-# annotation matrix; (2) feed those priors into SuSiE. Stage 1 depends on
-# real human SNP coordinates, reference LD scores tuned to a specific GWAS
-# population, and a ~25 GB pre-computed annotation file — none of which apply
-# to simulated benchmark data.
+# Weights exp(A %*% log(enrichment)) are sequential weighted-sampling weights
+# for a fixed causal count, not marginal inclusion probabilities. In the
+# genome-wide Bernoulli generator, saturation and global calibration also
+# change the selection probabilities. Passing normalized enrichment weights
+# to SuSiE does not reproduce either full generative prior exactly.
 #
-# polyfun_oracle skips Stage 1 entirely by using the **true** per-SNP causal
-# probability that the simulator used to assign causal variants:
-#
-#   pi_j ∝ exp(A_j' log gamma)
-#
-# where A is the region's annotation matrix and gamma is the enrichment
-# vector. Both are stored by the simulator (truth$enrichment and
-# region_geno$annotations_matrix), so we can reconstruct pi_j exactly.
-# These per-SNP priors are then passed to susieR::susie_rss() via
-# prior_weights.
-#
-# Because the prior is exact, polyfun_oracle defines the ceiling: no
-# annotation-aware method should outperform it on a non-degenerate setting.
-# If one does, either the comparator is cheating or the simulator is leaking
-# information through some other channel.
+# Even a Bayes-optimal posterior for the true generative model minimizes only
+# its corresponding expected Bayes loss. It need not maximize AUPRC in every
+# finite replicate; approximate inference, backbone restrictions and LD
+# mismatch can also make another method outperform this comparator.
 #
 # When no annotations were simulated (annotations = "none"), there is no
 # per-SNP signal to reconstruct. The wrapper falls back to plain SuSiE with
@@ -79,11 +67,10 @@ setup_polyfun_oracle <- function() {
 
 #' Run PolyFun-oracle fine-mapping on a single region
 #'
-#' Reconstructs the true per-SNP causal probability from the supplied
-#' annotation matrix and enrichment vector, then runs
-#' \code{susieR::susie_rss} with those probabilities as
-#' \code{prior_weights}. Defines an upper bound for annotation-aware
-#' fine-mapping on the benchmark.
+#' Constructs normalized annotation-enrichment weights and runs
+#' \code{susieR::susie_rss} with them as \code{prior_weights}. This
+#' information-advantaged diagnostic is not an exact generative posterior
+#' or a strict performance ceiling.
 #'
 #' If \code{annotations} is \code{NULL} or \code{enrichment} is \code{NULL},
 #' the method falls back to a uniform prior — i.e. plain SuSiE-RSS — and
@@ -244,6 +231,9 @@ run_polyfun_oracle <- function(z,
     prior_source    = prior_source,
     prior_weights   = prior_weights,
     enrichment_used = enrichment_used,
+    oracle_access = "simulator_enrichment",
+    strict_performance_ceiling = FALSE,
+    implementation = "annotation_enrichment_oracle_susie",
     alpha           = fit$alpha,
     posterior_mean  = colSums(fit$alpha * fit$mu),
     lbf             = if (!is.null(fit$lbf)) fit$lbf else rep(NA_real_, L),
@@ -330,7 +320,9 @@ run_polyfun_oracle_region <- function(region_geno, region_pheno, ...) {
     max_iter                   = max_iter,
     estimate_residual_variance = estimate_residual_variance,
     estimate_prior_variance    = estimate_prior_variance,
-    prior_source               = prior_source
+    prior_source               = prior_source,
+    oracle_access              = "simulator_enrichment",
+    strict_performance_ceiling  = FALSE
   )
 }
 

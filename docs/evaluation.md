@@ -1,614 +1,296 @@
-# Evaluation Methodology
+# Evaluation methodology
 
-This document describes every step of the evaluation pipeline implemented in
-`R/evaluate.R` and `R/plot_results.R`: how raw method outputs are matched to
-ground truth, how each metric is computed, how standard errors are derived, how
-results are stratified, and what each plot shows.
+`evaluate_methods()` scores the simulation design against method outputs. Version
+2 adds exact ranking metrics, explicit failure denominators, null-locus metrics,
+proper probability scores, validation and duplicate-aware signal recovery. The
+legacy threshold-grid `auprc` remains available for comparison with previous
+runs. Use `ap_macro` with `ap_macro_attempted`, success rate and calibration for
+new locus-ranking comparisons; use pooled threshold counts for decisions made
+at one PIP threshold across loci. These answer different questions.
 
----
+## Inputs and the population being scored
 
-## Contents
+The two required inputs are outputs of `run_simulation()` and `run_methods()`.
+A fit identifies one `scenario_id` and `region_id`. Every scenario × region in
+the supplied simulation is an intended attempt. Missing outputs are synthesized
+as failures; duplicate identities or identities outside the simulation are
+rejected. Evaluate an intentional subset using a correspondingly subsetted,
+consistently indexed simulation, rather than silently dropping its difficult
+fits.
 
-1. [Inputs](#inputs)
-2. [Annotating fits with ground truth](#annotating-fits-with-ground-truth)
-3. [Stratification](#stratification)
-4. [Metric computation](#metric-computation)
-   - [Power / FDR curve](#power--fdr-curve)
-   - [AUPRC](#auprc)
-   - [PIP calibration](#pip-calibration)
-   - [Credible-set metrics](#credible-set-metrics)
-   - [Runtime](#runtime)
-5. [Standard error computation](#standard-error-computation)
-6. [Output structure](#output-structure)
-7. [Saving to disk](#saving-to-disk)
-8. [Plots](#plots)
-   - [Global PR curve](#global-pr-curve)
-   - [Global PIP calibration](#global-pip-calibration)
-   - [Global summary table](#global-summary-table)
-   - [Stratified PR curve grid](#stratified-pr-curve-grid)
-   - [Stratified PIP calibration grid](#stratified-pip-calibration-grid)
-   - [Metrics vs stratification variable](#metrics-vs-stratification-variable)
-9. [Quick reference — field names](#quick-reference--field-names)
+The simulated genotype matrix/LD matrix defines the variant universe. Submitted
+PIP length cannot redefine it. Scenario metadata defines the stratification and
+replicate labels. Each successful output must have finite numeric PIPs in
+`[0,1]`, one per simulated variant, and credible sets must be nonempty vectors
+of in-range integer variant indices. Malformed output becomes a failure, counted
+in `n_invalid` and listed in `validation_errors`. Scores are never rescued by
+clipping probabilities or dropping nonfinite variants. A method's explicit
+error is counted in `n_failed`; missing results also contribute `n_missing`.
 
----
+Truth is the simulation's `truth$causal_indices`. In a sparse-plus-infinitesimal
+architecture these are the designated sparse effects, not every nonzero
+infinitesimal effect. The benchmark therefore evaluates recovery of the sparse
+component. A different scientific target requires different truth labels.
 
-## Inputs
-
-`evaluate_methods()` takes two required arguments:
-
-- **`simulation`** — the list returned by `run_simulation()`. The fields used
-  are `simulation$scenarios` (a list of scenario objects, each containing a
-  `regions` sub-list whose entries carry a `truth` object) and
-  `simulation$params` (stored verbatim in the output for reproducibility).
-
-- **`results`** — the list returned by `run_methods()`. The fields used are
-  `results$methods_run` (the character vector of method names that were run) and
-  `results[[method]]$results` (the flat list of per-fit output objects, one per
-  scenario × region combination).
-
-Optional arguments:
+Optional arguments retain their original defaults:
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `pip_thresholds` | `seq(0, 1, by = 0.005)` | Thresholds at which the power/FDR curve is evaluated (201 points) |
-| `n_pip_cal_bins` | `10` | Number of equal-width bins for PIP calibration |
-| `save` | `FALSE` | Write `evaluation.rds` and `evaluation_summary.csv` to `output_dir` |
-| `output_dir` | `"results"` | Directory for saved outputs |
-| `verbose` | `TRUE` | Print progress messages |
+| `pip_thresholds` | `seq(0, 1, by = 0.005)` | Finite probability thresholds for operating-point curves; does not affect exact AP |
+| `n_pip_cal_bins` | `10L` | Positive integer number of equal-width calibration bins |
+| `save` | `FALSE` | Write the complete RDS and flat global CSV |
+| `output_dir` | `"results"` | Destination when saving |
+| `verbose` | `TRUE` | Progress messages |
 
----
+## Failure denominators and null regions
 
-## Annotating fits with ground truth
+Historical fields `fdr_power_curve`, `cs_power`, `ap`, `ap_macro` and proper
+probability scores condition on valid outputs. That conditioning must be visible
+when comparing methods: a method may preferentially fail on difficult loci.
+Version 2 additionally reports:
 
-Before any metric is computed, every fit object in `results[[method]]$results`
-is augmented with two fields from the simulation ground truth.
+- `success_rate`, `n_fits`, `n_failed`, `n_invalid`, `n_missing`;
+- `fdr_power_curve_attempted`: the same successful predictions, but with every
+  simulated causal in its recall denominator; failures make no calls and leave
+  their causal variants as false negatives;
+- `cs_power_attempted`: every failed locus has an empty collection of sets;
+- `ap_macro_attempted`: failed signal-containing loci contribute zero AP, and
+  all intended signal-containing loci contribute to the denominator.
 
-For each fit `f`:
+A failure has no probability forecast. Consequently it cannot receive an honest
+Brier or logarithmic score without a declared fallback forecasting rule. These
+scores remain conditional and are accompanied by success rate. Treating failure
+as no calls for recovery is a declared operational convention, not a posterior
+probability of zero.
 
-1. The corresponding scenario is looked up: `sc = simulation$scenarios[[f$scenario_id]]`.
-2. The corresponding region truth object is looked up: `truth = sc$regions[[f$region_id]]$truth`.
-3. Two fields are added to `f`:
-   - `f$causal_indices` — integer vector of 1-based variant positions that are
-     truly causal in this scenario × region. Length equals the number of causal
-     variants `S` for this scenario.
-   - `f$n_variants` — integer equal to `length(f$pip)`, i.e. the number of
-     variants in the region.
+For a null locus, every call is false: FP and FDR remain observable, including
+at threshold zero. Recall and AP are undefined when there are no true positives,
+and are reported as `NA`. They are not filled with reassuring zeros. The
+successful-null denominators `n_null_fits`, `null_region_false_call_rate` (at
+the predeclared PIP threshold 0.5) and `null_region_cs_rate` expose methods that
+invent signals. The complete threshold curve allows analysis at other
+predeclared cutoffs. Report failure rate on null loci as well.
 
-This annotation is performed by `.annotate_fits_with_truth()` and is applied
-to every fit before any metric is computed. Fits where `f$error` is non-NULL
-(i.e. the method failed) are still annotated but are excluded from all metric
-computations (see below).
+If every fit fails, the successful-fit curve and calibration table are `NULL`;
+conditional ranking/probability scores are `NA`. Attempted recall and attempted
+CS power are zero if the simulation contains causal variants. No sets were
+reported, so `n_cs_reported = 0`.
 
----
+## Operating points: pooled precision, false discovery proportion and recall
 
-## Stratification
+Within a stratum, successful PIPs and their truth labels are concatenated. At
+threshold `t` every PIP `>= t` is selected:
 
-Metrics are computed four times per method, each over a different subset of fits:
-
-| Stratum | Key in output | Fits included |
-|---|---|---|
-| **Global** | `$global` | All fits across all scenarios and regions |
-| **By S** | `$by_S` | Fits grouped by the number of causal variants (`f$S`). One entry per unique `S` value. |
-| **By phi** | `$by_phi` | Fits grouped by the proportion of variance explained (`f$phi`). One entry per unique `phi` value. |
-| **By p_causal** | `$by_p_causal` | Fits grouped by the sparse-component proportion (`f$p_causal`). One entry per unique `p_causal` value. `NULL` for the `sparse` model. |
-
-For each stratification variable, `.stratify_metrics()` identifies all unique
-non-`NA` values of that variable across the annotated fits, then calls
-`.metrics_with_se()` on the subset of fits matching each value.
-
-When a stratification variable is `NULL` or `NA` on all fits (e.g. `p_causal`
-for a `sparse` model), the stratum is returned as `NULL`.
-
-**What "pooling" means:** within each stratum, all (PIP, is-causal) pairs from
-all fits in that stratum are concatenated into a single vector before metric
-computation. Metrics are therefore computed on this aggregate — they reflect the
-average behaviour across regions and, within a stratification level, across all
-values of the other parameters and all replicates.
-
----
-
-## Metric computation
-
-All metrics are implemented in `.metrics_for_fits()`. Fits where `f$error` is
-non-NULL are counted in `n_failed` but excluded from all computations. If no
-valid (non-failed) fits remain, all metrics are returned as `NA` or `NULL`.
-
-### Power / FDR curve
-
-**What is computed.** For a collection of valid fits, all PIP values and their
-corresponding causal-variant labels are pooled into two vectors:
-
-```
-pip_vals  ← unlist of f$pip for every valid fit f
-is_causal ← logical vector of the same length;
-            is_causal[i] = TRUE if variant i (in the pooled ordering)
-            has its 1-based position in f$causal_indices
+```text
+TP(t) = selected causal variants
+FP(t) = selected noncausal variants
+FN(t) = target causal variants - TP(t)
+precision(t) = TP(t) / (TP(t) + FP(t))
+fdr(t) = FP(t) / (TP(t) + FP(t))
+recall(t) = power(t) = TP(t) / target causal variants
 ```
 
-For a PIP threshold `t`, every variant with `pip >= t` is declared a positive
-call. The four confusion-matrix quantities are:
+The stored `fdr` is the realized pooled false discovery proportion (FDP). Its
+name is retained for compatibility; formal FDR is the expectation of FDP over
+repeated data. Methods are compared on these data at a predeclared threshold,
+not by optimizing the threshold using hidden test truth.
 
-```
-TP(t) = number of called variants that are truly causal
-FP(t) = number of called variants that are not truly causal
-FN(t) = number of truly causal variants not called
-n_sel(t) = TP(t) + FP(t)   (total positives called)
-total_causal = sum(is_causal)
-```
+With no selections, precision is 1 and FDP is 0 by convention; this is
+abstention and must be assessed alongside selection volume and recall. At
+`t=1` variants with PIP exactly 1 are selected. At `t=0` every successful-fit
+variant is selected. Sorting and cumulative counts handle tied scores together;
+thresholds may be unsorted or repeated without changing their corresponding
+operating points.
 
-Derived quantities at each threshold:
+## Exact average precision and legacy AUPRC
 
-```
-FDR(t)       = FP(t) / n_sel(t)      [0 when n_sel(t) = 0]
-Power(t)     = TP(t) / total_causal
-Precision(t) = TP(t) / n_sel(t)      [1 when n_sel(t) = 0]
-Recall(t)    = TP(t) / total_causal  [identical to Power(t)]
-```
+Exact AP groups variants at each distinct observed PIP value. If `P_b` and
+`R_b` are precision and recall after admitting the entire tied block `b`, then
 
-**Algorithm.** Computing this naively at `T` thresholds requires O(N × T) time.
-The implementation uses an O(N log N + T) approach:
-
-1. Sort all variants by decreasing PIP. Let `sorted_pips` be the sorted vector
-   and `cum_tp[k]` be the cumulative number of causal variants in the top-`k`
-   entries (with `cum_tp[0] = 0`).
-2. For each threshold `t`, the number of selected variants is
-   `n_sel(t) = max { k : sorted_pips[k] >= t }`. Because `sorted_pips` is
-   non-increasing, `-sorted_pips` is non-decreasing. `n_sel(t)` is found with
-   `findInterval(-t, -sorted_pips)`, which is an O(log N) binary search.
-3. `TP(t) = cum_tp[n_sel(t)]`, looked up in O(1).
-
-**Output.** A `data.frame` with one row per threshold and columns:
-`threshold`, `tp`, `fp`, `fn`, `fdr`, `power`, `precision`, `recall`.
-
-After SE computation (see below), two additional columns are present:
-`power_se` and `precision_se`.
-
-**Boundary behaviour:**
-- At `t = 0`: all variants are called, so `n_sel = N`, `TP = total_causal`,
-  `FN = 0`, `Power = 1`, `Precision = total_causal / N`.
-- At `t = 1`: only variants with `pip = 1.0` exactly are called. In practice
-  this is usually zero or very few variants.
-- When `n_sel(t) = 0`: `FDR = 0` and `Precision = 1` by convention (no false
-  calls have been made).
-- When `total_causal = 0` (no causal variants in the pooled set): all metrics
-  are set to 0 and `Precision = 1`.
-
----
-
-### AUPRC
-
-The area under the precision-recall curve is computed from the
-`precision` and `recall` columns of the FDR/power curve data frame using
-the **trapezoidal rule**:
-
-```
-AUPRC = sum over adjacent threshold pairs of:
-        Δrecall × (precision_left + precision_right) / 2
+```text
+AP = sum_b (R_b - R_(b-1)) * P_b, with R_0 = 0.
 ```
 
-Before summation, rows are sorted by increasing `recall`. At ties in `recall`,
-the row with higher `precision` is placed first (so that precision is not
-artificially depressed at the same recall level).
+There is no arbitrary PIP grid, interpolation or genomic-position tie break.
+A causal at rank 61 has AP `1/61` in a single-causal locus even if its PIP is
+0.0032. A constant predictor gives AP equal to the causal prevalence; a perfect
+ranking gives 1, including when its causal PIP is exactly 1. This is the
+non-interpolated estimator in the
+[scikit-learn AP documentation](https://scikit-learn.org/1.8/modules/generated/sklearn.metrics.average_precision_score.html).
 
-The result is a single scalar in [0, 1]. A perfect method would achieve
-AUPRC = 1 (all causal variants receive the highest PIPs). A method equivalent
-to a random PIP assignment would achieve AUPRC ≈ total_causal / N (the
-prevalence of causal variants), which is typically very small (< 0.05).
+`ap` is exact **pooled** AP. It evaluates a global ordering across loci and
+therefore depends on between-locus score scales and the variant/causal mixture.
+`ap_macro` is the unweighted mean of exact AP across successful
+signal-containing loci; it asks about a typical locus's local ordering and is
+invariant to strictly monotone score transformations applied separately within
+each locus. `ap_n_fits` gives its non-null successful denominator.
+`ap_macro_attempted` adds failed signal-containing loci with score zero. Null
+loci do not have a ranking-recovery task and are scored separately.
 
-AUPRC is preferred over AUROC for fine-mapping because the class imbalance
-is extreme: in a typical region with 100–500 variants and S = 1–5 causal
-variants, the positive class constitutes < 5% of variants, and AUROC is
-insensitive to performance in this regime.
+Pooled and macro AP can legitimately rank methods differently. Neither is
+universally correct for every intended deployment. Their names state the
+estimand. Large loci and different causal counts also change the task; report
+strata and baseline prevalence rather than treating one global scalar as a
+scientific conclusion.
 
----
+`auprc` continues to use trapezoidal integration of the supplied threshold grid
+for historical compatibility. It can miss observed score transitions and the
+recall-zero endpoint, and its linear interpolation can bias the summary. It is
+not exact AP. Previous numerical claims of a fixed percentage bias or a
+universally downward bias are unsupported and should not be used.
 
-### PIP calibration
+## Probability calibration and proper scores
 
-PIP calibration measures whether a method's PIP values are well-calibrated:
-a variant assigned PIP = 0.8 should be causal in approximately 80% of cases.
+Calibration compares observed causal frequency to predicted probability in
+`n_pip_cal_bins` equal-width bins. The final bin includes PIP 1. Empty bins
+have undefined means. The returned table contains `n`, `n_causal`, `mean_pip`,
+`frac_causal` and `frac_causal_se`, plus `sum_pip`, `sum_pip_sq` and
+`sum_causal_pip` so the raw quadratic score can be reconstructed exactly.
 
-**Binning.** The unit interval [0, 1] is divided into `n_pip_cal_bins`
-equal-width bins using breakpoints `seq(0, 1, length.out = n_pip_cal_bins + 1)`.
-Variants are assigned to bins using `findInterval(..., rightmost.closed = TRUE)`,
-so the final bin includes `pip = 1.0`.
+Three scalar diagnostics are computed directly from the original predictions:
 
-**Per-bin quantities.** For each bin `b` (1-indexed):
-
-```
-n[b]           = number of variants in bin b
-n_causal[b]    = number of causal variants in bin b
-mean_pip[b]    = mean PIP of variants in bin b  (NA if n[b] = 0)
-frac_causal[b] = n_causal[b] / n[b]            (NA if n[b] = 0)
-```
-
-**Calibration interpretation.** A well-calibrated method satisfies
-`mean_pip[b] ≈ frac_causal[b]` for all bins — the expected causal probability
-(mean PIP) equals the observed fraction of causal variants. Perfect calibration
-corresponds to all points lying on the identity line `y = x`.
-
-**Output.** A `data.frame` with one row per bin and columns:
-`bin`, `bin_lower`, `bin_upper`, `bin_mid`, `n`, `n_causal`, `mean_pip`,
-`frac_causal`.
-
-After SE computation, one additional column is present: `frac_causal_se`.
-
----
-
-### Credible-set metrics
-
-Credible-set (CS) metrics are computed by `.cs_metrics()` over the list of
-valid fits. Each fit carries `f$credible_sets` (a list of integer vectors, each
-giving the 1-based variant indices in one CS) and `f$causal_indices` (the true
-causal positions).
-
-**Per-CS quantities.** For each CS `cs` within each fit `f`:
-
-```
-cs_hit[cs]  = any(cs %in% f$causal_indices)   # TRUE if CS contains ≥1 causal
-cs_size[cs] = length(cs)                       # number of variants in CS
+```text
+brier_score = mean((PIP - truth)^2)
+log_loss = -mean(truth*log(PIP) + (1-truth)*log(1-PIP))
+ece = sum_b n_b * abs(mean_PIP_b - causal_fraction_b) / N
 ```
 
-**Per-causal-variant coverage.** For each fit `f`, the set of all variants
-covered by any CS is `all_cs_variants = unique(unlist(f$credible_sets))`. Each
-truly causal variant is recorded as either covered (`f$causal_indices %in%
-all_cs_variants`) or not. Fits with no reported CSs contribute `FALSE` for
-every causal variant.
+The logarithmic implementation avoids `0 * log(0)` and preserves infinite loss
+for certainty assigned to an event contradicted by truth. It does not clip
+probabilities to disguise impossible-event forecasts. Brier and logarithmic
+loss reward accurate probability forecasts; ECE is a bin-dependent descriptive
+calibration diagnostic, not a proper scoring rule. Calibration alone can reward
+an uninformative constant forecast.
 
-**Aggregated CS metrics:**
+`brier_skill_score` compares raw Brier to the empirical constant-prevalence
+reference `prevalence*(1-prevalence)`. It is undefined for an all-null or
+all-causal population. The reference uses test truth as a descriptive baseline,
+not a probability estimate available to the method. Raw Brier remains the
+proper scoring target; skill scores and mixtures across changing prevalences
+need careful interpretation.
 
-| Metric | Formula | Interpretation |
-|---|---|---|
-| `cs_coverage` | `mean(cs_hit)` over all CSs from all fits | Proportion of reported CSs containing ≥1 true causal variant. Should be ≥ the nominal coverage level (e.g. 0.95 for 95% CSs). |
-| `cs_power` | `mean(causal_captured)` over all causal variants from all fits | Proportion of true causal variants captured by at least one CS. |
-| `cs_size_median` | `median(cs_size)` over all CSs | Median number of variants per CS. Smaller is better, provided coverage is maintained. |
-| `cs_size_mean` | `mean(cs_size)` over all CSs | Mean number of variants per CS. |
-| `n_cs_reported` | `length(cs_hit)` | Total number of CSs reported across all fits. |
+The optional `.murphy_decomposition()` helper reports reliability, resolution
+and uncertainty following
+[Murphy's probability-score decomposition](https://journals.ametsoc.org/view/journals/apme/12/4/1520-0450_1973_012_0595_anvpot_2_0_co_2.xml).
+Its historical `bs = rel-res+unc` and `bss` score **bin-mean predictions**.
+They need not equal raw Brier because binning loses within-bin prediction
+variation and association with truth. With squared-PIP and causal-PIP moments,
+`bs_raw` and `bss_raw` recover the original score. Without both moments, raw
+fields are `NA`; no exact raw score is claimed from insufficient counts.
 
-If no CSs are reported across all fits, `cs_coverage`, `cs_power`,
-`cs_size_median`, `cs_size_mean` are `NA` and `n_cs_reported = 0`.
+For example PIPs `(0.1,0.4)` with truth `(1,0)` in one bin give raw Brier
+0.485 but bin-mean Brier 0.3125. The discrepancy is scientific information
+lost by aggregation, not roundoff.
 
-**Note on ABF.** ABF returns exactly one CS per fit under its single-causal
-assumption, so `n_cs_reported = n_valid_fits` always. When S > 1, ABF's CS
-will contain a causal variant (cs_coverage remains high) but will miss the
-remaining causal variants (cs_power is correspondingly lower than for methods
-that support multiple CSs).
+## Native credible sets and signal-recovery diagnostics
 
----
+Native sets are kept in their submitted collection. Distinct variant indices
+within a set define its size. The original summaries are descriptive:
 
-### Runtime
-
-Runtime is measured per fit as `runtime_seconds` (wall-clock time, recorded by
-each method wrapper using `proc.time()`). Aggregate statistics are computed
-over valid (non-failed) fits only:
-
-```
-runtime_mean = mean(runtime_seconds)   over valid fits
-runtime_sd   = sd(runtime_seconds)     over valid fits (NA if n_valid < 2)
-```
-
-After SE computation, `runtime_mean_se` is also present (see below).
-
----
-
-## Standard error computation
-
-All SE fields are computed by `.metrics_with_se()`, which wraps
-`.metrics_for_fits()`. The SE represents variability **across replicates**
-(the `iter` dimension of the simulation design).
-
-**Grouping.** The `iter` field on each fit records which independent replicate
-it belongs to (1 through `n_iter`). Fits are grouped by their `iter` value.
-Within a given stratum (e.g. all fits with `S = 1`), there is one group per
-unique `iter` value found in that stratum.
-
-**Per-replicate metrics.** For each replicate `r`, `.metrics_for_fits()` is
-called on the subset of fits with `iter == r`. This produces one complete set
-of metrics pooled across all regions and parameter values (S, phi, p_causal)
-within that replicate and stratum.
-
-**SE formula.** Let `x_1, ..., x_K` be the per-replicate values of a scalar
-metric (some may be `NA`). Let `K*` = number of non-NA values. Then:
-
-```
-SE = sd(x_1, ..., x_K, na.rm = TRUE) / sqrt(K*)
-```
-
-If `K* < 2`, the SE is `NA` (cannot estimate from fewer than two replicates).
-
-**Which fields have SE.** The following scalar metrics have a paired `_se` field:
-
-| Metric field | SE field |
+| Field | Definition |
 |---|---|
-| `auprc` | `auprc_se` |
-| `cs_coverage` | `cs_coverage_se` |
-| `cs_power` | `cs_power_se` |
-| `cs_size_median` | `cs_size_median_se` |
-| `cs_size_mean` | `cs_size_mean_se` |
-| `runtime_mean` | `runtime_mean_se` |
+| `cs_coverage` | Fraction of reported sets containing at least one true causal |
+| `cs_power` | Fraction of successful-fit causals appearing in any reported set |
+| `cs_power_attempted` | The same recovery over every intended causal |
+| `cs_size_median`, `cs_size_mean` | Number of distinct variants in each reported set |
+| `n_cs_reported` | Number of reported sets, including repeated reports |
+| `cs_duplicate_sets` | Number of exact repeated set memberships within loci |
 
-In addition, two data frames carry per-row SE fields:
+A method reporting two copies of `{causal_1}` has hit fraction 1 but has not
+recovered two distinct signals. `cs_matched_precision` and `cs_matched_power`
+use **maximum bipartite matching** between reported sets and causal variants:
+each set can receive one causal match and each causal can be credited once.
+Their numerators are the number of matches and denominators are reported sets
+and successful-fit causals, respectively. Overlapping sets require an
+augmenting-path algorithm; greedily claiming the first causal can undercount
+recovery. Repeated sets remain in the denominator and cannot earn additional
+credit for the same causal.
 
-- **`fdr_power_curve`** gains `power_se` and `precision_se`: the SE of power
-  (recall) and precision at each threshold across replicates. These are computed
-  by running `.metrics_for_fits()` per replicate and collecting the
-  `power`/`precision` vectors into a matrix (rows = thresholds,
-  columns = replicates), then applying the SE formula row-wise.
+The matching convention is useful for methods claiming one set per signal.
+It is not a valid penalty for a method claiming one *global* set for all
+signals. Similarly the native hit fraction is not automatically nominal
+95% coverage: a SuSiE signal-specific set, a posterior model/configuration set,
+a global set and a greedy prefix of marginal PIPs represent different events.
+Compare nominal coverage only after establishing that the methods claim the
+same event and conditioning regime. Repeated sets, selection of reportable
+signals and uncertain signal count must also be accounted for. Native
+coverage/power fields alone cannot establish calibrated signal inference.
 
-- **`pip_calibration`** gains `frac_causal_se`: the SE of `frac_causal` in
-  each bin across replicates. Computed similarly as a matrix of per-replicate
-  `frac_causal` vectors.
+The analysis helper `.rank_set_metrics()` retains historical `set_*` names
+for compatibility. Its prefixes reach an absolute **sum of marginal PIPs**,
+which is expected causal count, not the probability of recovering a causal
+signal. These are diagnostic candidate lists, not credible sets with nominal
+coverage. All members of a boundary tie are included. Fixed-budget
+`prec_at_1`, `prec_at_S` and `prec_at_2S` instead report expected precision under
+a uniform tie break at that budget. An unreachable mass target is reported
+with `set_reached_* = FALSE` and whole-locus size.
 
-**Interpretation.** Because grouping is by `iter` within the stratum, the SE
-reflects variability due to both random noise in the phenotype simulation and
-stochastic variation in the fine-mapping algorithm (where applicable). It does
-**not** reflect uncertainty from the choice of S or phi (those are design
-parameters, not sources of noise). For the global stratum, per-replicate
-pooling spans all S and phi values, so the global SE also captures
-cross-parameter variability — it is larger than the within-parameter SE.
+When no sets are reported, hit fraction and set sizes are undefined; causal
+recovery is zero if causal variants exist. Runtime summaries use nonnegative,
+finite `runtime_seconds` from valid fits, and omit missing timing values.
 
----
+## Stratification and aggregation
 
-## Output structure
+Output includes `global`, `by_S`, `by_phi`, `by_p_causal`, `by_region_size`,
+`by_causal_maf` and `by_true_annotation_type` when those variables exist. MAF
+bins use minimum causal MAF: rare `<=0.01`, low `<=0.05`, common `>0.05`.
+Null loci have no causal MAF and are excluded from that stratification.
 
-`evaluate_methods()` returns a named list with one element per evaluated method
-plus three top-level metadata fields:
+Nominal region length is a design axis; realized post-filter length still
+defines each fit's actual variant universe. A global summary pools design
+cells and is a descriptive mixture. It is not a replacement for difficulty
+strata or a predeclared challenge weighting scheme. One-variable strata also
+mix the other variables; use a complete scenario-cell analysis to investigate
+interactions or fairness across region sizes.
 
+## Uncertainty targets the reported aggregate
+
+Every scalar `_se` field and the pointwise curve/calibration SEs use a
+delete-one-`iter` **cluster jackknife**. Each deletion recomputes the actual
+pooled or macro statistic on all remaining replicate clusters:
+
+```text
+SE = sqrt((K-1)/K * sum_r (theta_(-r) - mean(theta_(-r)))^2).
 ```
-eval_out
-├── methods_evaluated       character vector of method names
-├── simulation_params       copy of simulation$params
-├── pip_thresholds_used     the pip_thresholds vector used
-└── <method>                one entry per method (e.g. "susie", "abf")
-    ├── global              metrics pooled over all scenarios × regions
-    ├── by_S                named list; one entry per unique S value
-    │   ├── "1"             metrics for fits with S = 1
-    │   ├── "2"             metrics for fits with S = 2
-    │   └── ...
-    ├── by_phi              named list; one entry per unique phi value
-    │   ├── "0.1"
-    │   └── ...
-    └── by_p_causal         named list (sparse_inf model only); NULL otherwise
-        ├── "0.2"
-        └── ...
-```
 
-Each stratum object (global, or an entry in by_S / by_phi / by_p_causal)
-contains:
+This replaces `sd(per_replicate_metric)/sqrt(K)`, which generally estimates
+uncertainty of a mean of replicate statistics rather than of a pooled nonlinear
+ratio, AP or median. Variants in LD and multiple fits inside the same replicate
+are not treated as independent observations. `n_replicate_clusters`,
+`se_method` and `se_conditioning` declare the uncertainty unit.
 
-| Field | Type | Description |
-|---|---|---|
-| `fdr_power_curve` | data.frame or NULL | 201 rows (one per threshold). Columns: `threshold`, `tp`, `fp`, `fn`, `fdr`, `power`, `precision`, `recall`, `power_se`, `precision_se`. NULL when no valid fits exist. |
-| `auprc` | numeric | Area under precision-recall curve. NA when no valid fits. |
-| `auprc_se` | numeric | SE of AUPRC across replicates. NA when n_iter < 2. |
-| `pip_calibration` | data.frame or NULL | `n_pip_cal_bins` rows. Columns: `bin`, `bin_lower`, `bin_upper`, `bin_mid`, `n`, `n_causal`, `mean_pip`, `frac_causal`, `frac_causal_se`. NULL when no valid fits. |
-| `cs_coverage` | numeric | Proportion of CSs containing ≥1 causal variant. NA if no CSs reported. |
-| `cs_coverage_se` | numeric | SE of cs_coverage across replicates. |
-| `cs_power` | numeric | Proportion of causal variants captured by any CS. |
-| `cs_power_se` | numeric | SE of cs_power across replicates. |
-| `cs_size_median` | numeric | Median variants per CS. NA if no CSs reported. |
-| `cs_size_median_se` | numeric | SE of cs_size_median across replicates. |
-| `cs_size_mean` | numeric | Mean variants per CS. NA if no CSs reported. |
-| `cs_size_mean_se` | numeric | SE of cs_size_mean across replicates. |
-| `n_cs_reported` | integer | Total CSs reported across all fits in stratum. |
-| `runtime_mean` | numeric | Mean runtime in seconds over valid fits. |
-| `runtime_mean_se` | numeric | SE of runtime_mean across replicates. |
-| `runtime_sd` | numeric | SD of runtime over valid fits. NA if n_valid < 2. |
-| `n_fits` | integer | Total fits attempted (including failed). |
-| `n_failed` | integer | Fits where `f$error` is non-NULL. |
+If fewer than two clusters exist, a cluster label is missing, or a required
+leave-one-out statistic is undefined, its SE is `NA`. Undefined deletions are
+not removed to manufacture a smaller denominator. With very few clusters,
+non-smooth rankings/medians or sparse calibration bins, jackknife SEs can be
+unstable; they are descriptive uncertainty estimates, not automatic confidence
+intervals or evidence of a winner.
 
----
+Replicates share the simulated loci and genotype/LD backgrounds in the original
+simulation design. These SEs are conditional on those backgrounds and the fixed
+scenario grid. They do not quantify generalization to new genomic loci,
+ancestries or study designs. An independent locus holdout with paired
+locus-level resampling is needed for that claim. Global pooling of fixed S/phi
+values does not by itself introduce random parameter uncertainty or guarantee
+that the global SE exceeds every stratified SE.
 
-## Saving to disk
+## Saving and existing plots
 
-When `save = TRUE`, two files are written to `output_dir`:
-
-### `evaluation.rds`
-
-The complete `eval_out` list as described above, serialised with `saveRDS()`.
-Load with:
+`save=TRUE` writes `evaluation.rds` with all fields and
+`evaluation_summary.csv` with core global scores, failures, proper scores,
+matching and null metrics. Metadata includes `evaluation_version = "2.0"`,
+`simulation_params` and `pip_thresholds_used`. Historical columns remain.
 
 ```r
-ev <- readRDS("results/my_run/evaluation.rds")
-ev$susie$global$auprc
-ev$susie$by_S[["1"]]$fdr_power_curve
+ev <- evaluate_methods(simulation, results, save = TRUE,
+                       output_dir = "results/my_run")
+ev$susie$global[c("ap_macro", "ap_macro_attempted", "success_rate")]
+ev$susie$by_region_size[["500"]]$pip_calibration
 ```
 
-### `evaluation_summary.csv`
-
-A flat CSV with one row per method and the following columns. All `_se` columns
-are NA when `n_iter < 2`.
-
-| Column | Description |
-|---|---|
-| `method` | Method name |
-| `auprc` | Global AUPRC |
-| `auprc_se` | SE of AUPRC |
-| `cs_coverage` | Global CS coverage |
-| `cs_coverage_se` | SE of CS coverage |
-| `cs_power` | Global CS power |
-| `cs_power_se` | SE of CS power |
-| `cs_size_median` | Global median CS size |
-| `cs_size_median_se` | SE of median CS size |
-| `cs_size_mean` | Global mean CS size |
-| `cs_size_mean_se` | SE of mean CS size |
-| `n_cs_reported` | Total CSs reported globally |
-| `runtime_mean` | Mean runtime (s) |
-| `runtime_mean_se` | SE of mean runtime |
-| `runtime_sd` | SD of runtime |
-| `n_fits` | Total fits attempted |
-| `n_failed` | Fits that errored |
-
----
-
-## Plots
-
-`plot_results()` writes a multi-page PDF. The number of pages depends on the
-number of methods with successful fits and the number of unique parameter values.
-For the `sparse` model with M successful methods, K_S unique S values, and
-K_phi unique phi values, the PDF has 3 + 3×K_S + 3×K_phi pages. For
-`sparse_inf` with K_pc unique p_causal values, 3 additional pages are added.
-
-Call:
-
-```r
-source("R/plot_results.R")
-plot_results(eval_out, output_file = "results/my_run/results.pdf")
-```
-
-Arguments:
-
-| Argument | Default | Meaning |
-|---|---|---|
-| `eval_out` | — | Output of `evaluate_methods()` |
-| `output_file` | `"results/evaluation.pdf"` | Path of PDF to write |
-| `methods` | `NULL` (all) | Character vector to restrict which methods are plotted |
-| `verbose` | `TRUE` | Print progress messages |
-
-Methods where all fits failed (i.e. `fdr_power_curve` is NULL) are excluded
-from PR curve and calibration plots but are included in the summary table and
-in the metrics line plots (where they appear as NA points).
-
----
-
-### Global PR curve
-
-**Page 1.** One panel. x-axis: recall (= power), y-axis: precision (= 1 − FDR).
-Each method is a separate coloured line. The curve is derived from the global
-`fdr_power_curve` data frame: each threshold gives one (recall, precision) point.
-
-The curve starts at (recall=1, precision=total_causal/N) at threshold=0 (all
-variants called) and moves towards (recall=0, precision=1) at threshold=1 (no
-variants called). A method with strong discriminative power has a curve that
-stays close to the top-right corner of the plot.
-
-No error bands are shown on this plot. SE on precision and power is available
-in the evaluation object (`precision_se`, `power_se` columns) but is omitted
-from this figure for clarity.
-
----
-
-### Global PIP calibration
-
-**Page 2.** Faceted by method (up to 3 columns). x-axis: `mean_pip` (expected
-causal probability), y-axis: `frac_causal` (observed fraction of causal
-variants). Each point is one of the `n_pip_cal_bins` (default 10) PIP bins.
-Error bars show ±1 SE (`frac_causal_se`) on the y-axis. The dashed diagonal
-line is the identity `y = x`; a perfectly calibrated method has all points on
-this line.
-
-Bins with no variants (`n = 0`) are omitted (they carry `NA` for `mean_pip`
-and `frac_causal`).
-
----
-
-### Global summary table
-
-**Page 3.** A formatted table with one row per method (including failed methods).
-Columns: Method, AUPRC, CS Coverage, CS Power, Median CS Size, Runtime (s),
-n_fits, n_failed. Where n_iter ≥ 2, values are formatted as `mean ± SE`.
-Where n_iter < 2 or the method failed entirely, values are shown as `NA`.
-
----
-
-### Stratified PR curve grid
-
-**Pages 4, 7, (10).** One page per stratification variable (by S, by phi, by
-p_causal). A `facet_grid(method ~ stratum_value)` layout: rows are methods
-(only those with at least one successful fit), columns are the unique values of
-the stratification variable.
-
-Each panel shows the PR curve for that (method, parameter-value) combination,
-pooled across all other parameters and all replicates. The curve is computed
-from the corresponding stratum's `fdr_power_curve` object.
-
-The layout for by_S with 4 methods and 3 S values produces a 4×3 grid of PR
-curves (12 panels). Methods with no successful fits in a given stratum show an
-empty panel.
-
----
-
-### Stratified PIP calibration grid
-
-**Pages 5, 8, (11).** Same `facet_grid(method ~ stratum_value)` layout as the
-PR curve grids, but showing calibration plots. Each panel: x = `mean_pip`,
-y = `frac_causal` with ±1 SE error bars, dashed identity line.
-
----
-
-### Metrics vs stratification variable
-
-**Pages 6, 9, (12).** One page per stratification variable. A `facet_wrap` of
-5 panels (one per metric: AUPRC, CS Coverage, CS Power, Median CS Size,
-Runtime). In each panel:
-
-- x-axis: the stratification variable value (e.g. S = 1, 2, 3)
-- y-axis: the metric value (scale is free across panels)
-- one coloured line + points per method
-- error bars: ±1 SE across replicates
-
-All methods (including those that failed entirely) are included, but methods
-with all-NA values produce invisible lines. The y-axis scale is free across
-panels (each metric uses its own range).
-
-This plot is the primary tool for assessing how each method's performance
-changes as the simulation difficulty changes (more causal variants, lower PVE,
-or smaller sparse proportion).
-
----
-
-## Quick reference — field names
-
-### Within a stratum object
-
-```
-$fdr_power_curve         data.frame(threshold, tp, fp, fn, fdr, power,
-                                    precision, recall, power_se, precision_se)
-$auprc                   numeric scalar
-$auprc_se                numeric scalar (NA if n_iter < 2)
-$pip_calibration         data.frame(bin, bin_lower, bin_upper, bin_mid,
-                                    n, n_causal, mean_pip, frac_causal,
-                                    frac_causal_se)
-$cs_coverage             numeric scalar
-$cs_coverage_se          numeric scalar
-$cs_power                numeric scalar
-$cs_power_se             numeric scalar
-$cs_size_median          numeric scalar
-$cs_size_median_se       numeric scalar
-$cs_size_mean            numeric scalar
-$cs_size_mean_se         numeric scalar
-$n_cs_reported           integer scalar
-$runtime_mean            numeric scalar
-$runtime_mean_se         numeric scalar
-$runtime_sd              numeric scalar
-$n_fits                  integer scalar
-$n_failed                integer scalar
-```
-
-### Accessing stratified results
-
-```r
-ev <- readRDS("results/my_run/evaluation.rds")
-
-# Global metrics for SuSiE
-ev$susie$global$auprc
-ev$susie$global$auprc_se
-
-# By S
-ev$susie$by_S[["1"]]$auprc          # AUPRC at S = 1
-ev$susie$by_S[["2"]]$cs_coverage    # CS coverage at S = 2
-
-# By phi
-ev$abf$by_phi[["0.2"]]$cs_power
-
-# By p_causal (sparse_inf model only)
-ev$susie_inf$by_p_causal[["0.4"]]$auprc
-
-# PR curve at S = 1
-df <- ev$susie$by_S[["1"]]$fdr_power_curve
-plot(df$recall, df$precision, type = "l")
-
-# Calibration globally
-cal <- ev$abf$global$pip_calibration
-plot(cal$mean_pip, cal$frac_causal)
-abline(0, 1, lty = 2)
-```
+`plot_results()` retains the historical PR/calibration and AUPRC summary plots.
+These legacy plots do not automatically display all version-2 validity metrics.
+For new comparisons, inspect exact AP, intended-attempt recovery, failures,
+null-region calls and probability scores together. Selecting nothing is not
+proof of useful error control, and calibrated constant probabilities are not
+proof of useful fine-mapping.

@@ -615,10 +615,16 @@ test_that("[H] PR curve has consistent shape and edge-case totals", {
   expect_equal(nrow(row_t0), 1L)
   expect_equal(row_t0$tp + row_t0$fn, total_causal)
 
-  # At threshold = 1 no variant has pip > 1, so fp = 0.
+  # The inclusive threshold selects PIP exactly 1; false certainty is possible.
   row_t1 <- df[df$threshold == 1, ]
   expect_equal(nrow(row_t1), 1L)
-  expect_equal(row_t1$fp, 0L)
+  expected_fp_t1 <- sum(vapply(
+    Filter(function(f) is.null(f$error), res_A$susie$results),
+    function(f) {
+      ci <- sim_A$scenarios[[f$scenario_id]]$regions[[f$region_id]]$truth$causal_indices
+      sum(f$pip == 1 & !seq_along(f$pip) %in% ci)
+    }, integer(1)))
+  expect_equal(row_t1$fp, expected_fp_t1)
 })
 
 

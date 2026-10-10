@@ -1,7 +1,7 @@
 Package: fmbenchmark
 Type: Package
 Title: Benchmarking Framework for Statistical Fine-Mapping Methods
-Version: 0.1.0
+Version: 0.2.0
 Authors@R:
     person(given = "Lucas",
            family = "Siu",
@@ -14,11 +14,15 @@ Description: A framework for benchmarking statistical fine-mapping methods
     annotations, applies a catalogue of fine-mapping methods (SuSiE,
     SuSiE-inf, FINEMAP, ABF, CARMA, PAINTOR, Funmap, BEATRICE, Functional
     BEATRICE, SparsePro, marginal-z baseline, and PolyFun-style oracle and
-    estimated-prior variants), and evaluates them via AUPRC, credible-set
-    coverage / power / size, PIP calibration, and runtime — stratified by
+    estimated-prior variants), and evaluates them via exact average precision,
+    proper probability scores, credible-set recovery, availability, and runtime,
+    stratified by
     causal-variant count, heritability, p_causal, causal-variant MAF, and
     annotation regime. Supports both per-locus and genome-wide simulation
-    and an LD-mismatch experiment via an independent reference panel.
+    and an LD-mismatch experiment via an independent reference panel. A separate
+    conditional Gaussian challenge tests explicit genetic and input perturbations
+    with separated prediction and assessment, a small-model probabilistic
+    reference, paired locus-level uncertainty, and frozen release manifests.
 License: MIT + file LICENSE
 URL: https://github.com/lucassiu14/fine-mapping-benchmark
 BugReports: https://github.com/lucassiu14/fine-mapping-benchmark/issues
@@ -32,9 +36,12 @@ Imports:
     sim1000G,
     stats,
     susieR,
+    tools,
     utils
 Suggests:
     CARMA,
+    data.table,
+    finimom,
     knitr,
     nnet,
     remotes,
@@ -47,4 +54,4 @@ SystemRequirements: htslib (>= 1.0) for tabix and bgzip; required by the
 Roxygen: list(markdown = TRUE)
 Config/testthat/edition: 3
 VignetteBuilder: knitr
-Config/roxygen2/version: 8.0.0
+Config/roxygen2/version: 8.1.1

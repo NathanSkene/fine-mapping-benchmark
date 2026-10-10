@@ -3,31 +3,18 @@
 #
 # Wrapper for PolyFun-style fine-mapping with **estimated** per-SNP priors.
 #
-# Provides a fair, "no-cheating" annotation-aware comparator to Funmap,
-# PAINTOR, Functional BEATRICE, etc. The methodology is:
+# Experimental annotation-regression comparator. It regresses each variant's
+# chi-squared statistic on its own annotation, clamps OLS coefficients, and
+# passes normalized fitted weights to SuSiE. This is not stratified LDSC or
+# the upstream PolyFun workflow: under LD, tagging inflates other variants'
+# chi-squared values, and a null/confounding intercept is not heritability.
+# Keep this comparator to quantify the consequences of a simplified prior
+# estimator, alongside the LD-aware polyfun_ldsc surrogate.
 #
-#   1. Estimate per-annotation contributions tau_k by regressing the
-#      observed chi-squared statistics on the annotation matrix:
-#
-#          chi2_j = tau_0 + sum_k tau_k * A_{j,k} + noise
-#
-#      Non-negative coefficients are kept (negative heritability
-#      contributions are not physical). This is "LDSC-lite" — much
-#      simpler than canonical stratified LDSC, which would also account
-#      for LD scores and reference-panel calibration. Those steps are
-#      unnecessary on simulated benchmark data and would tie us to
-#      pretrained UKB infrastructure that does not apply here.
-#
-#   2. Convert estimated coefficients into per-SNP prior variances:
-#
-#          sigma2(j) = max(tau_0 + sum_k tau_k * A_{j,k}, floor)
-#
-#      Normalised so the resulting vector sums to 1, then passed to
-#      susieR::susie_rss(..., prior_weights = ...).
-#
-# Compared to polyfun_oracle (which uses the simulator's true per-SNP
-# causal probabilities), polyfun_est pays the realistic "cost of
-# estimation". The gap between the two is informative.
+# Its scenario pooling uses the same regions subsequently fine-mapped. This
+# is transductive empirical-prior estimation, not a held-out learned predictor.
+# A gap to the enrichment oracle mixes prior and inference effects and is not
+# an isolated estimate of the cost of prior learning.
 #
 # Pooling across regions
 # ----------------------
@@ -252,6 +239,9 @@ run_polyfun_est <- function(z,
     prior_source   = prior_source,
     prior_weights  = prior_weights,
     tau_hat        = tau_hat,
+    tau            = tau_hat,  # compatibility alias
+    implementation = "annotation_regression_susie_surrogate",
+    prior_training_scope = if (prior_source == "estimated_pooled") "same_scenario" else "same_region",
     alpha          = fit$alpha,
     posterior_mean = colSums(fit$alpha * fit$mu),
     lbf            = if (!is.null(fit$lbf)) fit$lbf else rep(NA_real_, L),

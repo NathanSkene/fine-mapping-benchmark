@@ -66,3 +66,9 @@
 ^.+\.tar\.gz$
 ^\.Rcheck$
 ^.+\.Rcheck$
+
+# Machine-local compiled dependencies and Python environment
+^\.local-lib$
+^\.python-env$
+^tests/python$
+^tests/testthat/test-tuning-contract\.R$

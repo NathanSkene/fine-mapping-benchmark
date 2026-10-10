@@ -1908,17 +1908,19 @@ test_that("[12] marginal_z: default coverage = 0.95", {
   expect_equal(fit$params$coverage, 0.95)
 })
 
-test_that("[12] marginal_z: lower coverage produces smaller-or-equal CS", {
+test_that("[12] marginal_z: lower coverage produces smaller-or-equal score-mass set", {
   fit95 <- run_marginal_z_region(.rg, .rp, coverage = 0.95)
   fit50 <- run_marginal_z_region(.rg, .rp, coverage = 0.50)
-  expect_lte(length(fit50$credible_sets[[1]]),
-             length(fit95$credible_sets[[1]]))
+  expect_lte(length(fit50$additional$pip_mass_set),
+             length(fit95$additional$pip_mass_set))
 })
 
-test_that("[12] marginal_z: returns exactly one credible set", {
+test_that("[12] marginal_z: rank scores do not claim posterior credible sets", {
   fit <- run_marginal_z_region(.rg, .rp)
   expect_true(is.list(fit$credible_sets))
-  expect_length(fit$credible_sets, 1L)
+  expect_length(fit$credible_sets, 0L)
+  expect_false(fit$additional$is_posterior_probability)
+  expect_true(length(fit$additional$pip_mass_set) > 0L)
 })
 
 

@@ -49,7 +49,8 @@ variants). Only used when \code{model = "sparse_inf"}. Default: "beatrice".}
 
 \item{effect_distribution}{Character. Distribution for causal effect sizes.
 \code{"normal"} draws from N(0, effect_variance).
-\code{"equal"} partitions variance equally among causal variants.
+\code{"equal"} assigns equal effect magnitudes with random signs.
+LD means equal magnitudes do not imply equal variance contributions.
 Default: "normal".}
 
 \item{effect_variance}{Numeric. Variance of the normal effect size
@@ -118,7 +119,10 @@ to each region:
 \describe{
 \item{causal_indices}{Integer vector of causal variant indices.}
 \item{causal_effects}{Numeric vector of true effect sizes.}
-\item{beta_true}{Full p-length vector of true effects (0 for non-causal).}
+\item{beta_true}{Legacy p-length sparse-component effect vector.}
+\item{beta_sparse, beta_infinitesimal, beta_total}{Explicit effect decomposition.}
+\item{estimand}{Sparse-component membership, not all nonzero effects.}
+\item{pve_expected, variance_components}{Expected PVE and sample variance ledger.}
 \item{pve}{Realised PVE.}
 \item{S}{Number of causal variants.}
 \item{phi}{Target PVE.}

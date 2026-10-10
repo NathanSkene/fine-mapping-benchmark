@@ -72,11 +72,10 @@ correlation per credible set.}
 }
 }
 \description{
-Reconstructs the true per-SNP causal probability from the supplied
-annotation matrix and enrichment vector, then runs
-\code{susieR::susie_rss} with those probabilities as
-\code{prior_weights}. Defines an upper bound for annotation-aware
-fine-mapping on the benchmark.
+Constructs normalized annotation-enrichment weights and runs
+\code{susieR::susie_rss} with them as \code{prior_weights}. This
+information-advantaged diagnostic is not an exact generative posterior
+or a strict performance ceiling.
 }
 \details{
 If \code{annotations} is \code{NULL} or \code{enrichment} is \code{NULL},

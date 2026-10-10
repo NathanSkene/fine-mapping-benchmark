@@ -1,0 +1,29 @@
+name: Scientific-invariants
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  invariants:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RENV_CONFIG_AUTOLOADER_ENABLED: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+      - name: Install evaluator test dependency
+        run: Rscript --vanilla -e 'install.packages("testthat", repos="https://cloud.r-project.org")'
+      - name: Test scoring, generative invariants and blinded-input contracts
+        run: Rscript --vanilla scripts/challenge/test_core.R
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test final-prior posterior mathematics
+        run: python -m unittest discover -s tests/python -v

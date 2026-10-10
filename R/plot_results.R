@@ -35,7 +35,7 @@
   # polyfun_* methods get a related-but-distinct hue family to signal
   # they're an annotation-aware family.
   marginal_z            = "#7F7F7F",   # mid grey — baseline / floor
-  polyfun_oracle        = "#1A535C",   # deep teal — the ceiling
+  polyfun_oracle        = "#1A535C",   # deep teal — enrichment-informed diagnostic
   polyfun_est           = "#4ECDC4",   # lighter teal — the (naive) realistic version
   polyfun_ldsc          = "#2E86AB",   # deep blue — the LD-score-corrected version
   sbayesrc              = "#8B5A2B",   # bronze — mixture-of-normals Bayesian
@@ -67,9 +67,11 @@
 }
 
 .METRIC_LABELS <- c(
-  auprc          = "AUPRC",
-  cs_coverage    = "CS Coverage",
-  cs_power       = "CS Power",
+  ap             = "Exact pooled AP (successful)",
+  success_rate   = "Fit availability",
+  brier_score    = "Raw Brier (successful)",
+  cs_coverage    = "Native CS hit rate (successful)",
+  cs_power_attempted = "CS recovery (all attempts)",
   cs_size_median = "Median CS Size",
   runtime_mean   = "Runtime (s)"
 )
@@ -356,9 +358,11 @@
     g <- eval_out[[m]]$global
     data.frame(
       Method          = m,
-      AUPRC           = fmt(g$auprc,          g$auprc_se),
+      `Exact AP`      = fmt(g$ap,             g$ap_se),
+      Availability    = fmt(g$success_rate,   NULL),
+      Brier           = fmt(g$brier_score,    g$brier_score_se),
       `CS Coverage`   = fmt(g$cs_coverage,    g$cs_coverage_se),
-      `CS Power`      = fmt(g$cs_power,       g$cs_power_se),
+      `CS Recovery`   = fmt(g$cs_power_attempted, g$cs_power_attempted_se),
       `Med CS Size`   = fmt(g$cs_size_median, g$cs_size_median_se, digits = 1L),
       `Runtime (s)`   = fmt(g$runtime_mean,   g$runtime_mean_se,   digits = 2L),
       `n_fits`        = as.character(g$n_fits),
@@ -381,7 +385,7 @@
   )
 
   title_g <- grid::textGrob(
-    "Global Evaluation Summary (mean \u00b1 SE across replicates)",
+    "Evaluation Summary (conditional scores and all-attempt recovery; cluster jackknife SE)",
     gp = grid::gpar(fontsize = 13, fontface = "bold")
   )
 

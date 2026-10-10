@@ -335,7 +335,7 @@ run_paintor <- function(z,
   if (is.na(n_in_cs)) n_in_cs <- p    # safety: include all if PIPs don't sum to 1
   cs_indices <- sort(ord_pip[seq_len(n_in_cs)])
 
-  credible_sets <- list(cs_indices)
+  credible_sets <- list()
 
   # --- Return -----------------------------------------------------------------
 
@@ -347,6 +347,8 @@ run_paintor <- function(z,
     params          = params,
     runtime_seconds = elapsed,
     additional      = list(
+      pip_mass_set = as.integer(cs_indices),
+      credible_set_semantics = "not_provided",
       annotations_used  = n_annots,
       log_bayes_factor  = log_bayes_factor
     )
@@ -375,6 +377,7 @@ run_paintor <- function(z,
 #'   containing \code{z} and optionally \code{annotations_matrix}.
 #' @param ... Additional arguments passed to \code{\link{run_paintor}}
 #'   (e.g. \code{max_causal}, \code{mcmc}, \code{paintor_path}).
+#' @param .paintor_cache Internal shared scenario cache supplied by the dispatcher.
 #'
 #' @return The output of \code{\link{run_paintor}}.
 #' @export
@@ -506,12 +509,14 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
     n_cs <- which(cumsum(pip[op]) >= coverage)[1L]
     if (is.na(n_cs)) n_cs <- s$p
     cache[[keys[i]]] <- list(
-      pip = pip, credible_sets = list(sort(op[seq_len(n_cs)])),
+      pip = pip, credible_sets = list(),
       method = "paintor", input_type = "summary",
       params = list(max_causal = max_causal, mcmc = mcmc, coverage = coverage,
                     paintor_path = paintor_path, n_annotations = n_ann),
       runtime_seconds = NA_real_,
       additional = list(annotations_used = n_ann,
+                        pip_mass_set = as.integer(sort(op[seq_len(n_cs)])),
+                        credible_set_semantics = "not_provided",
                         log_bayes_factor = if ("log_BF" %in% names(df))
                           as.numeric(df$log_BF[ord]) else NULL,
                         pooled_across_loci = TRUE,

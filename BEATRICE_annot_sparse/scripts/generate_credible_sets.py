@@ -1,4 +1,5 @@
 import torch
+from scripts.posterior_memo import add_configuration, load_context, posterior_weights
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
@@ -184,12 +185,12 @@ def abf( z, ld, memo, mean_memo, n_sub, sigma_sq, p0, ind, S):
     z : z scores.
     ld : LD Matrix.
     memo : Dynamic programming dict.
-    mean_memo : log(exp(constant))
+    mean_memo : Versioned pure-likelihood cache and frozen final prior.
     n_sub : Number of subjects
     sigma_sq : Variance
     p0 : Prior
     ind : indices of causal configurations
-    S : \Sigma^{-1}z
+    S : Inverse LD multiplied by z.
 
     '''
     z = z.unsqueeze(1)
@@ -210,18 +211,14 @@ def abf( z, ld, memo, mean_memo, n_sub, sigma_sq, p0, ind, S):
             
         sigma2         = torch.matmul(torch.matmul(z.T, sigma_inv),S)/2
         
-        prior = 1 - p0
-        prior[ind] = p0[ind]
-        ex = -torch.logdet(sigma)/2 + sigma2 + torch.sum(torch.log(prior)) - mean_memo
-        res =  min(torch.tensor(10**15),torch.exp(min(torch.log(torch.tensor(10**15)),ex)))
-    
-    
-        memo[ind_m] = float(res.detach().cpu().numpy().squeeze())
-    
-        return res
+        # Cache a pure likelihood and reweight the complete search space under
+        # the persisted final annotation prior; no uniform-prior fallback.
+        log_bf = -torch.logdet(sigma)/2 + sigma2
+        return add_configuration(memo, mean_memo, ind_m,
+                                 float(log_bf.detach().cpu().numpy().squeeze()))
     else:
-        return 
-        
+        return memo[()]
+
 def delete(memo, mean_memo, z, ld, n_sub, sigma_sq, p0, S, st_Set, search_Set):
     
         abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, st_Set, S)
@@ -323,18 +320,14 @@ def main(options):
     LD = regularize_ld(LD)
     
     S = torch.matmul(torch.inverse(LD),Z.unsqueeze(1))
-    try:
-        prior_loc = options['prior_location']
-        p0 = gpu_t(pd.read_table(prior_loc,  sep=' ', header=None).to_numpy()[:,1].astype(float))
-        
-    except:    
-        p0 = gpu_t(np.array([1/len(Z)]*len(Z)))
-        
-    sigma_sq =  gpu_ts(options['sigma_sq'])
+    result = load_object(os.path.join(options['target'], 'res'))
+    mean_memo = load_context(result)
+    p0 = gpu_t(np.asarray(mean_memo['final_prior'], dtype=float))
+    sigma_sq = gpu_ts(options['sigma_sq'])
     bp = len(Z)
-    m  = load_object(os.path.join(options['target'],'res'))['memo']
-    mean_memo = load_object(os.path.join(options['target'],'res'))['mean_memo']
-    
+    if len(mean_memo['final_prior']) != bp:
+        raise ValueError("Final prior does not match the current variant universe")
+    m = posterior_weights(mean_memo)
 
     ###############################################################################################################################################
     pip = calculate_pip(m, bp)
@@ -357,11 +350,19 @@ def main(options):
     cred_set, cred_prob = find_credible_set(LD, m, start_set, bp, ths, prob_ths, allow_dup, options)
     
     pip = calculate_pip(m, bp)
+    # Expansion changes the explored posterior support. Persist exactly the
+    # posterior used by the exported PIPs, under the same frozen learned prior.
+    result['memo'] = m
+    result['posterior_context'] = mean_memo
+    result['mean_memo'] = mean_memo
+    result['pip'] = pip
+    save_object(result, os.path.join(options['target'], 'res'))
     
     df = {'variant_index':list(range(bp)),'pip':pip, 'variant_names':options['names']}
     df = pd.DataFrame(df)
     df.to_csv(os.path.join(options['target'],'pip.csv'), index=False)
     
+    cred_set, cred_prob = unique_sets(cred_set, cred_prob)
     cred_str = []
     for item in cred_set:
         s = ''
@@ -377,7 +378,6 @@ def main(options):
         cred_p.append(s)
     
     
-    cred_set, cred_prob = unique_sets(cred_set, cred_prob)
     f = open(os.path.join(options['target'],'credible_set.txt'),'w')
     f.write('\n'.join(cred_str))
     f.close()

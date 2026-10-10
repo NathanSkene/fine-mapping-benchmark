@@ -1,7 +1,8 @@
 # Fine-Mapping Methods
 
-This document covers the five fine-mapping methods currently implemented in
-this benchmark, how to run them, and the arguments available for each.
+This document describes the registered fine-mapping wrappers, their scientific
+interpretation, and the arguments available for each. Registration is not evidence
+that an upstream dependency was installed or its complete workflow validated.
 
 ---
 
@@ -18,11 +19,78 @@ this benchmark, how to run them, and the arguments available for each.
 | BEATRICE | `"beatrice"` | Python + PyTorch (GitHub) | No | Variational Bayes with neural network PIP inference |
 | CARMA | `"carma"` | `CARMA` R package (GitHub) | No | Spike-slab EM with LD-discrepancy outlier detection |
 | marginal_z | `"marginal_z"` | Nothing | No | Model-free baseline (pip = \|z\| / sum\|z\|) |
-| polyfun_oracle | `"polyfun_oracle"` | `susieR` (CRAN) | **Reads truth** | PolyFun-style with true per-SNP priors (upper bound) |
-| polyfun_est | `"polyfun_est"` | `susieR` (CRAN) | **Required** | PolyFun-style with priors estimated via LDSC-lite |
+| Enrichment oracle | `"polyfun_oracle"` | `susieR` (CRAN) | **Reads truth** | SuSiE with simulator enrichment weights; diagnostic comparator |
+| Annotation regression surrogate | `"polyfun_est"` | `susieR` (CRAN) | Optional | SuSiE with empirical chi-squared/annotation regression priors |
 | SparsePro | `"sparsepro"` | Python + cloned SparsePro repo | No (not used here) | Variational fine-mapping with a sparse-projection prior on effect groups |
+| Functional BEATRICE | `"functional_beatrice"` | Python + PyTorch + source checkout | Required | BEATRICE with learned annotation priors |
+| LD-score prior surrogate | `"polyfun_ldsc"` | `susieR` | Optional | NNLS LD-score prior with chromosome/region holdout |
+| SBayesRC-style surrogate | `"sbayesrc"` | `nnet` | Optional | Experimental spike/slab Gibbs and empirical annotation refits |
+| CAVIAR | `"caviar"` | External C++ binary | No | Configuration enumeration under an MVN summary likelihood |
+| FiniMOM | `"finimom"` | `finimom` R package | No | Nonlocal effect prior and model-size prior |
+| FINEMAP-inf | `"finemap_inf"` | Python + fine-mapping-inf checkout | No | FINEMAP sparse and infinitesimal extension |
+| Pooled FB experiment | `"fb_pooled"` | Python + joint trainer | Required | Scenario-wide learned logistic annotation head |
+| Cross-region FB experiment | `"fb_xregion"` | Python + joint trainer | Required | Scenario-wide learned LassoNet annotation head |
+
 
 ---
+
+
+## Interpretation and comparison rules
+
+`polyfun_oracle`, `polyfun_est`, `polyfun_ldsc`, and `sbayesrc` are local
+comparators, not validated reproductions of upstream PolyFun or SBayesRC.
+The legacy `sbayesrc` key is retained for compatibility; outputs explicitly
+record `implementation = "sbayesrc_style_surrogate"` and
+`upstream_equivalent = FALSE`. Running it across many regions does not make
+it the official genome-wide SBayesRC analysis. It uses a fixed slab grid,
+short single-chain Gibbs runs, regularized empirical annotation regression,
+and a pilot/final-fit pipeline. No convergence or effective-sample-size
+claim follows from the default 300 iterations.
+
+The SBayesRC surrogate now uses actual sampled mixture assignments in its
+pilot rather than assigning slab classes by ranks of posterior mean effects.
+Pilots hold a sparse annotation-neutral prior fixed, and fit the shared
+annotation mapping once after pooling draws. Repeated local annotation refits
+in the pilots created a feedback loop that inflated inclusion at small loci.
+For the simulator's OLS t statistics it uses
+`beta_hat = t / sqrt(n - 2 + t^2)` on a standardized phenotype and
+likelihood precision `(n - 1) / residual_variance`; `statistic_type =
+"normal_score"` selects the approximate Gaussian score transform instead.
+The default residual variance of 1 is still an approximation. Without
+annotations the mixture weights remain at their fixed initialization; with
+annotations, empirical refits are not full posterior sampling of the prior.
+Its pooled fit learns from the scenario being analyzed and is a transductive
+experiment, not an independently trained annotation predictor.
+
+`polyfun_ldsc` regresses `(chi_squared - 1) / N` on the all-SNP LD score
+plus annotation LD scores. The all-SNP genetic baseline is distinct from
+the fixed null intercept of 1. It does not put the chi-squared regression
+intercept into a genetic prior. NNLS fits must satisfy a projected-gradient
+convergence check. This remains a restricted comparator: coefficients are
+nonnegative, LD-score weights are simplified, the confounding intercept is
+fixed, and it cannot represent arbitrary annotation depletion. Redundant
+annotations can make coefficients nonidentifiable even when fitted values
+are stable. When chromosome metadata exist, prior training excludes all
+regions on the target chromosome; otherwise it excludes the target region.
+`additional$prior_training_unit` records that distinction. A single training
+group has no holdout and falls back to local estimation.
+
+`run_methods()` removes phenotype truth before observed-data adapters and
+scenario setup hooks; the explicitly labeled enrichment oracle receives it.
+This is a guard against accidental use of labels, not a secure execution
+sandbox. Region wrappers still receive individual genotypes and observed
+phenotypes; a prospective challenge must separately enforce its declared
+input track. `L`/maximum-causal settings should be prespecified or tuned on
+training data, rather than set from a held-out region's true causal count.
+Scenario setup errors now fail the affected fits instead of silently changing
+an estimator, and malformed PIPs/credible-set indices are recorded as failures.
+
+Normalized absolute-z scores support ranking comparisons, not PIP calibration.
+PAINTOR and the SBayesRC surrogate do not return native posterior credible
+sets through these wrappers. Their descriptive PIP/score mass selections live
+in `additional$pip_mass_set`, with `credible_sets = list()` and
+`credible_set_semantics = "not_provided"`. Exclude unsupported credible-set
+metrics rather than treating their absence as failed statistical coverage.
 
 ## Workflow: from simulation to results
 
@@ -116,7 +184,7 @@ Every method returns the same top-level fields:
 
 | Field | Type | Description |
 |---|---|---|
-| `pip` | numeric vector (length p) | Posterior inclusion probabilities |
+| `pip` | numeric vector (length p) | Posterior inclusion probabilities for probabilistic methods; legacy ranking-score field for `marginal_z` |
 | `credible_sets` | list of integer vectors | Credible sets as variant indices. Empty list if none reported. |
 | `method` | character | Method name |
 | `input_type` | character | `"summary"` or `"individual"` |
@@ -271,50 +339,34 @@ No setup or installation needed.
 
 ### marginal_z
 
-Model-free baseline. Computes PIPs by normalising the absolute marginal
-z-scores: `pip_j = |z_j| / sum_k |z_k|`. A single credible set is derived
-greedily by sorting variants in descending PIP order and accumulating until
-the cumulative PIP reaches `coverage` — the same CS construction used by
-ABF and PAINTOR.
+Model-free ranking baseline. The legacy `pip` field contains normalized
+absolute marginal z scores, `|z_j| / sum(|z|)`, with a uniform fallback when
+all scores are zero. These are not posterior inclusion probabilities.
+`credible_sets` is empty; a descriptive score-mass selection using `coverage`
+is returned in `additional$pip_mass_set`. `additional$is_posterior_probability`
+is `FALSE`. The ranking is a useful comparator, but no method has a universal
+finite-sample obligation to beat it under every architecture.
 
-No setup, installation, or external dependencies. Runs in microseconds.
-
-> **Purpose:** the "are you better than the raw z-scores?" floor for any
-> real fine-mapping method. No method should be appreciably worse than
-> marginal_z on any setting; if it is, the method is mis-tuned or
-> actively harmful. The gap between marginal_z and ABF measures what
-> single-causal shrinkage adds.
-
-**Arguments:**
-
-| Argument | Default | Description |
-|---|---|---|
-| `coverage` | `0.95` | Credible set coverage |
-
-**Additional outputs (`$additional`):** none (pure baseline; no learned state
-to inspect).
+No installation or external dependencies are required. `coverage` defaults
+to 0.95 and controls only the descriptive mass selection.
 
 ### polyfun_oracle
 
-PolyFun-style fine-mapping with the **true** per-SNP causal probabilities
-recovered from the simulator. Reconstructs
-`pi_j ∝ exp(A_j' log gamma)` from `region_geno$annotations_matrix` and
-`region_pheno$truth$enrichment`, then feeds those probabilities to
-`susieR::susie_rss(prior_weights = pi_vec, ...)`.
+Information-advantaged SuSiE comparator using the simulator's annotation
+enrichment coefficients. It forms normalized `exp(A %*% log(enrichment))`
+weights and passes them to `susie_rss(prior_weights = ...)`. It reports
+`oracle_access = "simulator_enrichment"` and
+`strict_performance_ceiling = FALSE`.
 
-Requires `susieR` (already installed via renv). Reads ground truth from
-the simulation object — this is **not a fair comparator**, it is the
-methodological ceiling.
-
-> **Purpose:** upper bound for any annotation-aware method. If a
-> realistic annotation-aware method (Funmap, PAINTOR, polyfun_est,
-> Functional BEATRICE) approaches polyfun_oracle on a given setting,
-> there is little room left for improvement. The gap between them is
-> the cost of estimating the prior rather than knowing it.
->
-> **Limitation:** because it reads truth, polyfun_oracle cannot be run
-> on real data. It exists only as a benchmark ceiling. Excluded from
-> any "fair comparison" plot.
+These weights are not exact marginal inclusion probabilities under weighted
+sampling without replacement. They also omit the genome-wide generator's
+probability saturation and global calibration. Consequently this is an
+annotation-enrichment oracle, not an exact posterior under the full simulator.
+Approximate inference, model mismatch, LD mismatch, and the choice of loss
+or metric can let another method outperform it. Bayes optimality for an
+expected loss does not establish a pointwise ceiling on observed AUPRC.
+Separate it from observed-data leaderboards; gaps mix prior information and
+inference effects and do not by themselves measure room for improvement.
 
 **Arguments:** all standard `susie_rss` arguments are forwarded — see
 SuSiE section above. The wrapper itself takes no extra parameters.
@@ -323,36 +375,25 @@ SuSiE section above. The wrapper itself takes no extra parameters.
 
 | Field | Description |
 |---|---|
-| `prior_weights` | The per-SNP prior probabilities reconstructed from truth |
+| `prior_weights` | Normalized simulator enrichment weights, not exact marginal inclusion probabilities |
 | `alpha`, `posterior_mean`, `lbf`, `converged`, `elbo`, `n_iter_run` | Forwarded from the underlying SuSiE fit (same as `susie`) |
 
 ### polyfun_est
 
-PolyFun-style fine-mapping with **estimated** per-SNP priors. The fair,
-"no-cheating" annotation-aware comparator.
+Experimental annotation-regression comparator. It fits OLS of observed
+chi-squared statistics on each variant's own annotations, clamps negative
+coefficients, and converts fitted values to normalized SuSiE prior weights.
+The scenario hook pools the same regions that are then analyzed; standalone
+calls fit on the target region. The output identifies this as an
+`annotation_regression_susie_surrogate` and records its training scope.
 
-Estimates per-annotation contributions `tau_k` by non-negative regression
-of the observed chi-squared statistics on the annotation matrix
-("LDSC-lite"). The regression is fit **once per scenario, pooled across
-all regions** via the scenario-setup hook — per-region estimation would be
-data-starved at typical region sizes (p ≈ 200–800). Once `tau` is
-estimated, per-SNP prior weights are computed as
-`w_j ∝ max(sum_k tau_k * A_{j,k}, eps)`, normalised, and fed to
-`susie_rss(prior_weights = w, ...)`.
-
-Requires `susieR` (already installed via renv). Uses the same annotation
-matrix that the simulator generated — apples-to-apples with Funmap,
-PAINTOR, and Functional BEATRICE.
-
-> **Purpose:** the head-to-head benchmark for any annotation-aware
-> method. Should beat plain SuSiE when annotations are informative and
-> roughly match plain SuSiE when annotations are null.
->
-> **Limitation:** "LDSC-lite" is much simpler than canonical stratified
-> LDSC. Canonical PolyFun cannot be used on simulated data because its
-> reference LD scores and pretrained annotation priors are calibrated
-> on UK Biobank — they assume real human SNP coordinates and large-scale
-> S-LDSC infrastructure that does not apply to per-region simulation.
+This is not S-LDSC: tagging effects are omitted, a null/confounding intercept
+enters the weights, and clipping OLS coefficients does not solve constrained
+least squares. It remains as a simplified comparator whose shortcomings can
+be tested against `polyfun_ldsc`. Informative annotations alone do not
+guarantee improved ranking or calibration after this empirical fit.
+The upstream PolyFun pipeline requires its actual inputs and workflow; those
+requirements do not make LD correction unnecessary on simulated data.
 
 **Arguments:** all standard `susie_rss` arguments are forwarded — see
 SuSiE section above. The wrapper itself takes no extra parameters.
@@ -500,12 +541,12 @@ run_methods(sim, methods = "paintor",
 | `paintor_path` | `"PAINTOR"` | Path to binary, or name if on PATH |
 | `max_causal` | `2` | Maximum number of causal variants (enumeration mode) |
 | `mcmc` | `FALSE` | Use MCMC search instead of exact enumeration. Recommended for large regions (p > 500) or `max_causal > 3` |
-| `coverage` | `0.95` | Credible set coverage (applied to PIP-greedy construction) |
+| `coverage` | `0.95` | Descriptive PIP-mass selection threshold; does not establish credible-set coverage |
 
-**Note on credible sets:** PAINTOR does not natively report credible sets.
-This wrapper constructs one credible set per region by sorting variants by
-descending PIP and accumulating until the cumulative sum reaches `coverage`,
-matching the ABF convention.
+**Credible-set interpretation:** PAINTOR does not report native credible sets
+through this adapter. `credible_sets` is empty. The previous greedy selection
+is retained only as `additional$pip_mass_set`; a sum of marginal PIPs in a
+multiple-causal model is not a posterior probability for a causal event.
 
 **Additional outputs (`$additional`):**
 
@@ -742,3 +783,16 @@ list(
   additional      = list(<method-specific outputs>)
 )
 ```
+
+
+## Simulation architecture changes
+
+When annotation `enrichment` is omitted, the local simulator now samples one
+fold vector per `run_simulation()` call and holds it fixed across regions
+and scenario replicates. `params$enrichment_actual` records the sampled folds.
+A direct `simulate_phenotypes()` call similarly shares one sampled vector
+across its regions. Previously every region in every replicate silently
+redrew its mapping, confounding shared-prior experiments with unlabelled
+heterogeneity. This is an intentional change to the random sequence and
+architecture; old seeds do not reproduce the old annotated scenarios.
+The genome-wide generator already shared the mapping within a scenario.

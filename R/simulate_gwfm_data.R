@@ -200,7 +200,8 @@ simulate_gwfm_data <- function(n,
   }
 
   stopifnot(
-    "n must be a positive integer"     = is.numeric(n) && length(n) == 1 && n >= 1,
+    "n must be an integer >= 3" = is.numeric(n) && length(n) == 1 &&
+      is.finite(n) && n >= 3 && n == floor(n),
     "n_iter must be a positive integer" = is.numeric(n_iter) && length(n_iter) == 1 &&
       n_iter >= 1 && n_iter == floor(n_iter)
   )
@@ -212,18 +213,18 @@ simulate_gwfm_data <- function(n,
   # region for LD-mismatch experiments.
   if (!is.null(n_ref)) {
     stopifnot(
-      "n_ref must be a positive integer when not NULL" =
+      "n_ref must be an integer >= 2 when not NULL" =
         is.numeric(n_ref) && length(n_ref) == 1 &&
-        n_ref == floor(n_ref) && n_ref >= 1
+        is.finite(n_ref) && n_ref == floor(n_ref) && n_ref >= 2
     )
     n_ref <- as.integer(n_ref)
   }
 
   stopifnot(
-    "pi must be a numeric vector with values in (0, 1)" =
-      is.numeric(pi) && all(pi > 0) && all(pi < 1),
-    "h2 must be a numeric vector with values in (0, 1)" =
-      is.numeric(h2) && all(h2 > 0) && all(h2 < 1)
+    "pi must be a finite nonempty vector with values in (0, 1)" =
+      is.numeric(pi) && length(pi) >= 1L && all(is.finite(pi)) && all(pi > 0 & pi < 1),
+    "h2 must be a finite nonempty vector with values in (0, 1)" =
+      is.numeric(h2) && length(h2) >= 1L && all(is.finite(h2)) && all(h2 > 0 & h2 < 1)
   )
 
   model               <- match.arg(model, choices = c("sparse", "sparse_inf"))
@@ -232,9 +233,9 @@ simulate_gwfm_data <- function(n,
 
   if (model == "sparse_inf") {
     stopifnot(
-      "p_causal must be a single number in (0, 1]" =
-        is.numeric(p_causal) && length(p_causal) == 1 &&
-        p_causal > 0 && p_causal <= 1
+      "p_causal must be a finite vector with values in (0, 1]" =
+        is.numeric(p_causal) && length(p_causal) >= 1L && all(is.finite(p_causal)) &&
+        all(p_causal > 0 & p_causal <= 1)
     )
   }
 
@@ -250,6 +251,10 @@ simulate_gwfm_data <- function(n,
   # Annotation type
   user_annotation_matrix <- NULL
   if (is.matrix(annotations)) {
+    if (!is.numeric(annotations) || ncol(annotations) < 1L || any(!is.finite(annotations))) {
+      stop("annotations must be a finite numeric matrix with at least one column.", call. = FALSE)
+    }
+    n_annotations <- ncol(annotations)
     user_annotation_matrix <- annotations
     annotation_type <- "user_supplied"
   } else if (is.character(annotations)) {
@@ -571,11 +576,18 @@ simulate_gwfm_data <- function(n,
         z        = sumstats_i$z,
         beta_hat = sumstats_i$beta_hat,
         se       = sumstats_i$se,
+        statistic_type = sumstats_i$statistic_type,
+        degrees_of_freedom = sumstats_i$degrees_of_freedom,
         y        = y_shared,   # same y for all regions within a scenario
         truth = list(
           causal_indices = causal_idx_i,
           causal_effects = beta_i[causal_idx_i],
-          beta_true      = beta_i,
+          beta_true      = beta_i,  # legacy sparse-component effects
+          beta_sparse    = beta_i,
+          beta_infinitesimal = pheno_result$beta_infinitesimal[[i]],
+          beta_total     = beta_i + pheno_result$beta_infinitesimal[[i]],
+          estimand       = "sparse_component_membership",
+          causal_probabilities = causal_assignment[[i]]$causal_probabilities,
           pve_region     = pve_region,
           S_realized     = length(causal_idx_i),
           pi             = pi_sc,
@@ -597,6 +609,8 @@ simulate_gwfm_data <- function(n,
       model       = model,
       S_total     = S_total,
       h2_realised = pheno_result$h2_realised,
+      h2_expected = pheno_result$h2_expected,
+      variance_components = pheno_result$variance_components,
       regions     = region_results
     )
   }
@@ -875,37 +889,41 @@ gwfm_assign_causal_variants <- function(genotypes,
     }
   }
 
-  # Per-region causal assignment
-  causal_assignment <- vector("list", n_regions)
-
-  for (i in seq_len(n_regions)) {
-    p_i <- genotypes[[i]]$p
-    A_i <- genotypes[[i]]$annotations_matrix
-
-    if (!is.null(A_i) && !is.null(enrichment_used)) {
-      # Compute per-variant weights
-      log_enrich  <- log(enrichment_used)
-      log_weights <- as.numeric(A_i %*% log_enrich)
-      weights     <- exp(log_weights - max(log_weights))
-      # Rescale so mean(pi_j) = pi. Clamping below breaks this guarantee when
-      # weights are very skewed (high enrichment * sparse annotation), so the
-      # realised expected number of causals can fall below pi * p_total.
-      pi_vec <- pi * weights / mean(weights)
-      pi_vec <- pmin(pmax(pi_vec, 1e-10), 1 - 1e-10)
-    } else {
-      pi_vec <- rep(pi, p_i)
-    }
-
-    is_causal       <- as.logical(rbinom(p_i, size = 1, prob = pi_vec))
-    causal_indices  <- which(is_causal)
-
-    causal_assignment[[i]] <- list(
-      causal_indices  = causal_indices,
-      enrichment_used = enrichment_used
+  # Normalize across the selected genome, so annotation burden can change
+  # local polygenicity. Solve the cap rather than clipping after normalization.
+  log_weights <- lapply(genotypes, function(g) {
+    A <- g$annotations_matrix
+    if (is.null(A) || is.null(enrichment_used)) rep(0, g$p)
+    else as.numeric(A %*% log(enrichment_used))
+  })
+  probabilities <- gwfm_calibrate_causal_probabilities(unlist(log_weights), pi)
+  boundaries <- cumsum(c(0L, vapply(genotypes, function(g) g$p, integer(1))))
+  lapply(seq_len(n_regions), function(i) {
+    pi_vec <- probabilities[seq.int(boundaries[i] + 1L, boundaries[i + 1L])]
+    list(
+      causal_indices = which(as.logical(rbinom(length(pi_vec), 1, pi_vec))),
+      enrichment_used = enrichment_used,
+      causal_probabilities = pi_vec
     )
-  }
+  })
+}
 
-  causal_assignment
+# Multiplicative probability weights with saturation: pi_j = min(1, lambda w_j).
+# Calibrating lambda in log space preserves mean(pi_j) = pi even when enrichment
+# makes the naive normalized probabilities exceed 1. Fold-enrichment is a ratio
+# of selection probabilities only for unsaturated variants.
+gwfm_calibrate_causal_probabilities <- function(log_weights, pi) {
+  if (!is.numeric(log_weights) || length(log_weights) == 0L ||
+      any(!is.finite(log_weights)) || length(pi) != 1L || !is.finite(pi) ||
+      pi < 0 || pi > 1) {
+    stop("Causal probability calibration needs finite log weights and pi in [0, 1].", call. = FALSE)
+  }
+  if (pi == 0 || pi == 1) return(rep(pi, length(log_weights)))
+  log_weights <- log_weights - max(log_weights)
+  equation <- function(log_lambda) mean(exp(pmin(0, log_lambda + log_weights))) - pi
+  log_lambda <- stats::uniroot(equation, c(log(pi) - 2, -min(log_weights) + 2),
+                         tol = 1e-12)$root
+  exp(pmin(0, log_lambda + log_weights))
 }
 
 
@@ -957,121 +975,60 @@ gwfm_simulate_joint_phenotype <- function(genotypes,
   g_sparse_total <- Reduce("+", g_sparse_list)
   var_g_sparse   <- var(g_sparse_total)
 
-  # --- Handle degenerate case (no causal variants drawn) ----------------------
-
+  sparse_target_h2 <- if (model == "sparse") h2 else p_causal * h2
+  inf_target_h2 <- if (model == "sparse") 0 else (1 - p_causal) * h2
   if (var_g_sparse < .Machine$double.eps) {
-    warning(
-      "No causal variants were drawn (or all effects are zero). ",
-      "The phenotype will be pure noise. Try increasing pi or effect_variance.",
-      call. = FALSE
-    )
-    beta_scaled  <- lapply(seq_len(n_regions), function(i) rep(0.0, genotypes[[i]]$p))
-    y            <- rnorm(n)
-    h2_realised  <- 0.0
-
-    return(list(
-      y           = y,
-      beta_scaled = beta_scaled,
-      h2_realised = h2_realised
-    ))
-  }
-
-  # --- Scale sparse component to explain its target fraction of h2 ------------
-
-  if (model == "sparse") {
-    sparse_target_h2 <- h2
-    inf_target_h2    <- 0.0
-  } else {
-    sparse_target_h2 <- p_causal * h2
-    inf_target_h2    <- (1 - p_causal) * h2
-  }
-
-  sparse_scale  <- sqrt(sparse_target_h2 / var_g_sparse)
-  g_sparse_sc   <- g_sparse_total * sparse_scale
-
-  # Rescale beta accordingly
+    warning("No nonzero sparse genetic signal was drawn; sparse effects remain zero.", call. = FALSE)
+    sparse_scale <- 0
+  } else sparse_scale <- sqrt(sparse_target_h2 / var_g_sparse)
+  g_sparse_sc <- g_sparse_total * sparse_scale
   beta_scaled <- lapply(beta_raw, function(b) b * sparse_scale)
 
-  # --- Infinitesimal component (sparse_inf only) ------------------------------
-
-  g_inf_sc <- rep(0.0, n)
-
-  if (model == "sparse_inf") {
-    g_inf_total <- gwfm_infinitesimal_component(
-      genotypes      = genotypes,
-      causal_assignment = causal_assignment,
-      inf_model      = inf_model,
-      p_total        = p_total
-    )
-    var_g_inf <- var(g_inf_total)
-
-    if (var_g_inf < .Machine$double.eps) {
-      warning("Infinitesimal component has zero variance. Skipping inf component.", call. = FALSE)
-    } else {
-      inf_scale <- sqrt(inf_target_h2 / var_g_inf)
-      g_inf_sc  <- g_inf_total * inf_scale
+  inf <- list(g = rep(0, n), beta = lapply(genotypes, function(g) rep(0, g$p)))
+  if (inf_target_h2 > 0) {
+    inf <- gwfm_infinitesimal_component(genotypes, causal_assignment, inf_model,
+                                        p_total, return_coefficients = TRUE)
+    vg_inf <- var(inf$g)
+    if (vg_inf < .Machine$double.eps) {
+      stop("No nonzero infinitesimal signal is available for the requested model.", call. = FALSE)
     }
+    inf_scale <- sqrt(inf_target_h2 / vg_inf)
+    inf$g <- inf$g * inf_scale
+    inf$beta <- lapply(inf$beta, function(b) b * inf_scale)
   }
 
-  # --- Total genetic signal and residual noise --------------------------------
-
-  g_total <- g_sparse_sc + g_inf_sc
-
-  # Residual noise to achieve target h2 in expectation
-  # Var(y) ≈ Var(g_total) + sigma2 = h2 + (1-h2) = 1 (for standardised y)
-  sigma2 <- 1 - h2
-  eps    <- rnorm(n, mean = 0, sd = sqrt(sigma2))
-  y      <- g_total + eps
-
-  # Realised h2
-  h2_realised <- var(g_total) / var(y)
-
+  g_total <- g_sparse_sc + inf$g
+  # Include finite-sample cross-region and sparse/background covariance.
+  # A zero-signal sparse draw is a valid null replicate with expected h2 = 0.
+  sigma2 <- if (var(g_total) > 0) var(g_total) * (1 - h2) / h2 else 1
+  eps <- rnorm(n, sd = sqrt(sigma2))
+  ledger <- phenotype_variance_ledger(g_sparse_sc, inf$g, eps, sigma2)
   list(
-    y           = y,
-    beta_scaled = beta_scaled,
-    h2_realised = h2_realised
+    y = g_total + eps, beta_scaled = beta_scaled, beta_infinitesimal = inf$beta,
+    h2_realised = ledger$pve_realised, h2_expected = ledger$pve_expected,
+    variance_components = ledger$components
   )
 }
 
-
-# =============================================================================
-# Internal: infinitesimal genetic component for sparse_inf model
-# =============================================================================
-
-gwfm_infinitesimal_component <- function(genotypes,
-                                          causal_assignment,
-                                          inf_model,
-                                          p_total) {
-
-  n_regions <- length(genotypes)
-  n         <- genotypes[[1]]$n
-  g_inf     <- rep(0.0, n)
-
-  if (inf_model == "beatrice") {
-    # Infinitesimal effects from NON-causal variants only, across all regions
-    for (i in seq_len(n_regions)) {
-      p_i           <- genotypes[[i]]$p
-      causal_idx_i  <- causal_assignment[[i]]$causal_indices
-      noncausal_idx <- setdiff(seq_len(p_i), causal_idx_i)
-      m_nc          <- length(noncausal_idx)
-
-      if (m_nc == 0) next
-
-      X_nc   <- genotypes[[i]]$X[, noncausal_idx, drop = FALSE]
-      alpha  <- rnorm(m_nc, mean = 0, sd = 1 / sqrt(p_total))
-      g_inf  <- g_inf + as.numeric(X_nc %*% alpha)
-    }
-
-  } else if (inf_model == "susie_inf") {
-    # Infinitesimal effects from ALL variants, across all regions
-    for (i in seq_len(n_regions)) {
-      p_i   <- genotypes[[i]]$p
-      alpha <- rnorm(p_i, mean = 0, sd = 1 / sqrt(p_total))
-      g_inf <- g_inf + as.numeric(genotypes[[i]]$X %*% alpha)
-    }
-  }
-
-  g_inf
+# Return the coefficients as well as the signal when requested. The legacy
+# vector return is preserved for external callers of this internal helper.
+gwfm_infinitesimal_component <- function(genotypes, causal_assignment,
+                                          inf_model, p_total,
+                                          return_coefficients = FALSE) {
+  n <- genotypes[[1]]$n
+  beta <- lapply(seq_along(genotypes), function(i) {
+    p_i <- genotypes[[i]]$p
+    idx <- if (inf_model == "beatrice") {
+      setdiff(seq_len(p_i), causal_assignment[[i]]$causal_indices)
+    } else seq_len(p_i)
+    b <- rep(0, p_i)
+    if (length(idx)) b[idx] <- rnorm(length(idx), sd = 1 / sqrt(p_total))
+    b
+  })
+  g <- Reduce("+", lapply(seq_along(genotypes), function(i) {
+    as.numeric(genotypes[[i]]$X %*% beta[[i]])
+  }), init = rep(0, n))
+  if (return_coefficients) list(g = g, beta = beta) else g
 }
 
 

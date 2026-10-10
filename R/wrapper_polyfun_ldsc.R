@@ -30,14 +30,12 @@
 # (using annotation membership, not LD scores, at the prior-conversion
 # step - matching canonical PolyFun).
 #
-# LOCO (leave-one-region-out)
+# Held-out chromosome or region prior training
 # ---------------------------
-# When called from run_methods() with multiple regions, the scenario_setup
-# hook fits tau ONCE per held-out region: region i's prior uses tau_{-i}
-# fitted on the pooled (chi^2, l) rows from all regions except i. This
-# stops each region influencing its own prior, mirroring the
-# leave-one-chromosome-out convention of genome-wide S-LDSC (each region
-# is treated as an independent "chromosome" for LOCO purposes).
+# With complete chromosome metadata, the scenario hook excludes every region
+# on the target chromosome. Otherwise it excludes the target region only.
+# The output records which grouping was possible; regions are not silently
+# called chromosomes. A single available group cannot provide a held-out fit.
 #
 # When run standalone or on a single-region input, tau is fitted from
 # that region's data alone (no LOCO possible) and a warning is recorded
@@ -152,7 +150,8 @@ run_polyfun_ldsc <- function(z, LD, n,
     }
     if (is.null(tau)) {
       ldsc_mat <- .ldscore_matrix(annotations, LD)
-      tau      <- .fit_ldsc_stratified(z^2, ldsc_mat)
+      tau      <- .fit_ldsc_stratified(z^2, ldsc_mat,
+                                       baseline_ldscore = rowSums(LD * LD), n = n)
       if (is.list(pooled_tau)) prior_source <- "loco_lookup_missed"
     }
   }
@@ -192,6 +191,7 @@ run_polyfun_ldsc <- function(z, LD, n,
       tau           = tau,
       prior_weights = prior_weights,
       prior_source  = prior_source,
+      prior_training_unit = attr(pooled_tau, "held_out_unit") %||% "not_cross_fitted",
       variant_ids   = variant_ids
     )
   )
@@ -249,12 +249,15 @@ run_polyfun_ldsc_region <- function(region_geno, region_pheno,
 #'   per-region tau vectors, or an empty list to signal "not applicable".
 #' @export
 run_polyfun_ldsc_scenario_setup <- function(genotypes, regions, user_args) {
+  if (!is.null(user_args$pooled_tau)) return(list(pooled_tau = user_args$pooled_tau))
   n_regions <- length(regions)
   if (n_regions < 2L) return(list())
 
   chi2_list <- vector("list", n_regions)
   ell_list  <- vector("list", n_regions)
   ncols     <- integer(n_regions)
+  baseline_list <- vector("list", n_regions)
+  sample_sizes <- vector("list", n_regions)
 
   for (i in seq_len(n_regions)) {
     A_i <- genotypes[[i]]$annotations_matrix
@@ -269,26 +272,36 @@ run_polyfun_ldsc_scenario_setup <- function(genotypes, regions, user_args) {
 
     chi2_list[[i]] <- z_i^2
     ell_list[[i]]  <- .ldscore_matrix(A_i, LD_i)
+    baseline_list[[i]] <- rowSums(LD_i * LD_i)
+    sample_sizes[[i]] <- rep(genotypes[[i]]$n, length(z_i))
     ncols[i]       <- ncol(A_i)
   }
 
   if (length(unique(ncols)) != 1L) return(list())
 
-  # LOCO: for each held-out region, fit on the concatenation of the others.
+  chromosomes <- vapply(genotypes, function(g) as.character(g$chrom %||% NA_character_), character(1))
+  have_chromosomes <- all(!is.na(chromosomes) & nzchar(chromosomes))
+  groups <- if (have_chromosomes) sub("^chr", "", tolower(chromosomes)) else as.character(seq_len(n_regions))
+  if (length(unique(groups)) < 2L) return(list())
+
+  # Hold out the entire chromosome when metadata exists; otherwise a region.
   # Key the result by region_id so the region wrapper can look up its own tau
   # (run_methods()'s scenario_setup merge is scenario-wide, not per-region).
   per_region_tau <- list()
   for (i in seq_len(n_regions)) {
-    idx <- setdiff(seq_len(n_regions), i)
+    idx <- which(groups != groups[i])
     chi2_pooled <- unlist(chi2_list[idx], use.names = FALSE)
     ell_pooled  <- do.call(rbind, ell_list[idx])
-    tau_i <- tryCatch(.fit_ldsc_stratified(chi2_pooled, ell_pooled),
+    tau_i <- tryCatch(.fit_ldsc_stratified(chi2_pooled, ell_pooled,
+                         baseline_ldscore = unlist(baseline_list[idx], use.names = FALSE),
+                         n = unlist(sample_sizes[idx], use.names = FALSE)),
                       error = function(e) NULL)
-    if (is.null(tau_i)) return(list())
+    if (is.null(tau_i)) stop("Held-out LD-score prior estimation failed.", call. = FALSE)
     key_i <- as.character(genotypes[[i]]$region_id %||% i)
     per_region_tau[[key_i]] <- tau_i
   }
 
+  attr(per_region_tau, "held_out_unit") <- if (have_chromosomes) "chromosome" else "region"
   list(pooled_tau = per_region_tau)
 }
 
@@ -304,72 +317,56 @@ run_polyfun_ldsc_scenario_setup <- function(genotypes, regions, user_args) {
   as.matrix((LD * LD) %*% A)
 }
 
-# Weighted non-negative least squares regression of chi^2 on LD scores.
-#
-# Model: chi^2_j = tau_0 + sum_c tau_c * l_{j,c} + noise,
-#        tau_c >= 0 for all c (including intercept as h^2-baseline).
-#
-# Weights follow the S-LDSC heuristic w_j = 1 / (sum_c l_{j,c}) (bounded
-# below by a small floor so the max weight stays finite). This
-# down-weights high-LD variants that would otherwise dominate.
-#
-# Returns a length-(m + 1) vector: c(tau_0, tau_1, ..., tau_m).
-.fit_ldsc_stratified <- function(chi2, ldscore_matrix) {
-  y <- as.numeric(chi2)
+# Restricted S-LDSC-style fit with a fixed null/confounding intercept of 1.
+# The first genetic coefficient multiplies the ALL-SNP LD score. It must not
+# be the regression intercept: the latter includes null sampling variation and
+# population confounding and has no per-variant genetic interpretation.
+# This small-sample NNLS comparator is not the upstream PolyFun implementation.
+.fit_ldsc_stratified <- function(chi2, ldscore_matrix, baseline_ldscore = NULL, n = 1) {
   ell <- as.matrix(ldscore_matrix)
   m <- ncol(ell)
-  # Design matrix: intercept plus each annotation's LD score
-  X <- cbind(1, ell)
-
-  total_ldsc <- rowSums(ell)
-  w_floor <- 0.01 * max(total_ldsc, na.rm = TRUE)
-  w <- 1 / pmax(total_ldsc, w_floor)
-  # Guard against numerical anomalies
+  if (is.null(baseline_ldscore)) baseline_ldscore <- rep(1, nrow(ell))
+  if (length(n) == 1L) n <- rep(n, nrow(ell))
+  if (length(chi2) != nrow(ell) || length(baseline_ldscore) != nrow(ell) ||
+      length(n) != nrow(ell) || any(!is.finite(n)) || any(n <= 0)) {
+    stop("LD-score fit inputs have inconsistent lengths or invalid sample sizes.", call. = FALSE)
+  }
+  y <- (as.numeric(chi2) - 1) / n
+  X <- cbind(baseline_ldscore, ell)
+  total_ldsc <- as.numeric(baseline_ldscore)
+  w <- 1 / pmax(total_ldsc, 1e-8)
   bad <- !is.finite(y) | !is.finite(w) | apply(!is.finite(X), 1, any)
   if (any(bad)) { y <- y[!bad]; X <- X[!bad, , drop = FALSE]; w <- w[!bad] }
-  if (length(y) < ncol(X) + 1L) return(rep(0, m + 1L))
-
+  if (!length(y)) return(rep(0, m + 1L))
   .nnls_active_set(X, y, w)
 }
 
-# Simple active-set NNLS via repeated OLS with sign-fixing. Adequate for
-# the LDSC scale here (m annotations up to ~20, n rows up to ~20 * p).
-# Not adding an external NNLS dependency for this.
-.nnls_active_set <- function(X, y, w, max_iter = 200L) {
-  p <- ncol(X)
-  W <- sqrt(w)
-  Xw <- X * W; yw <- y * W
-  active <- seq_len(p)   # indices allowed to be positive
-  beta   <- rep(0, p)
-
+# Convex NNLS by coordinate minimization. Unlike irreversible sign-dropping,
+# coordinates may re-enter after another coefficient changes. Validate the
+# projected gradient (the KKT conditions) before calling a fit converged.
+.nnls_active_set <- function(X, y, w, max_iter = 10000L, tolerance = 1e-10) {
+  Xw <- X * sqrt(w)
+  yw <- y * sqrt(w)
+  q <- ncol(Xw)
+  beta <- rep(0, q)
+  residual <- yw
+  norms <- colSums(Xw * Xw)
+  scale <- max(.Machine$double.eps, max(abs(as.numeric(crossprod(Xw, yw)))))
   for (iter in seq_len(max_iter)) {
-    if (length(active) == 0L) break
-    Xa <- Xw[, active, drop = FALSE]
-    fit <- tryCatch(
-      solve(crossprod(Xa), crossprod(Xa, yw)),
-      error = function(e) NULL
-    )
-    if (is.null(fit)) {
-      # Numerical failure - fall back to zeros
-      return(rep(0, p))
+    for (j in which(norms > 0)) {
+      old <- beta[j]
+      beta[j] <- max(0, old + sum(Xw[, j] * residual) / norms[j])
+      residual <- residual - Xw[, j] * (beta[j] - old)
     }
-    beta_active <- as.numeric(fit)
-    neg <- active[beta_active < 0]
-    if (length(neg) == 0L) {
-      beta[] <- 0
-      beta[active] <- beta_active
-      return(beta)
-    }
-    # Drop the most negative and refit
-    worst <- active[which.min(beta_active)]
-    active <- setdiff(active, worst)
+    gradient <- as.numeric(crossprod(Xw, residual))
+    violation <- ifelse(beta > 0, abs(gradient), pmax(gradient, 0))
+    if (max(violation) <= tolerance * scale) return(beta)
   }
-  # Fallback: whatever we had
-  beta
+  stop("LD-score NNLS did not satisfy its KKT convergence criterion.", call. = FALSE)
 }
 
 # Turn tau into per-SNP prior weights via sigma^2_j = sum_c tau_c * A_{j,c}
-# (with tau_0 as an intercept baseline). Floored to keep priors strictly
+# (with tau_0 as the all-variant genetic baseline). Floored to keep priors strictly
 # positive and normalised to sum to 1 so susieR treats it as a probability
 # distribution over variants.
 .tau_annot_to_prior_weights <- function(A, tau) {

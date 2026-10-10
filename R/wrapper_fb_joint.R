@@ -205,10 +205,19 @@
 
 
 # --- public scenario-setup hooks (looked up by name in run_methods) ----------
+#' Prepare a jointly learned Functional BEATRICE annotation prior
+#' @param genotypes List of per-region LD, variant and annotation inputs.
+#' @param regions List of corresponding summary-statistic inputs; ordinary runs omit truth.
+#' @param user_args Prespecified arguments for the Functional BEATRICE Python runner.
+#' @return Shared fit cache and declared annotation-prior head for region dispatch.
+#' @details The pooled variant uses a shared linear head; xregion uses a shared
+#'   LassoNet head. Annotation learning on supplied loci is transductive and
+#'   must be declared when comparing methods. See the scientific contract.
 #' @export
 run_fb_pooled_scenario_setup <- function(genotypes, regions, user_args) {
   .fb_joint_scenario_setup(genotypes, regions, user_args, prior_head = "linear")
 }
+#' @rdname run_fb_pooled_scenario_setup
 #' @export
 run_fb_xregion_scenario_setup <- function(genotypes, regions, user_args) {
   .fb_joint_scenario_setup(genotypes, regions, user_args, prior_head = "lassonet")
@@ -251,10 +260,17 @@ run_fb_xregion_scenario_setup <- function(genotypes, regions, user_args) {
   fb
 }
 
+#' Return a region prediction from a joint Functional BEATRICE fit
+#' @param region_geno Region LD, variant and annotation inputs.
+#' @param region_pheno Region summary statistics.
+#' @param ... Shared scenario cache or arguments for the per-region fallback
+#'   when annotations are absent.
+#' @return Standard method prediction with PIPs, native sets and fit metadata.
 #' @export
 run_fb_pooled_region <- function(region_geno, region_pheno, ...) {
   .fb_joint_region(region_geno, region_pheno, method_name = "fb_pooled", ...)
 }
+#' @rdname run_fb_pooled_region
 #' @export
 run_fb_xregion_region <- function(region_geno, region_pheno, ...) {
   .fb_joint_region(region_geno, region_pheno, method_name = "fb_xregion", ...)

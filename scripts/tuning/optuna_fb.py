@@ -6,8 +6,8 @@ Optuna hyperparameter search for Functional BEATRICE, designed for a PBS cluster
 
   RESUMABLE   The study lives in an on-disk Optuna storage. Every worker opens it
               with load_if_exists=True, so re-submitting the job simply continues
-              the SAME study - completed trials are remembered, the sampler keeps
-              its history, nothing is recomputed. Killed-mid-trial jobs leave a
+              the SAME compatible study - completed trials are remembered.
+              Random-state/scheduling replay is not guaranteed. Killed-mid-trial jobs leave a
               stale RUNNING trial, which TPE ignores (only COMPLETE trials inform
               the sampler), so no cleanup is required.
 
@@ -38,12 +38,126 @@ Example (one worker, 8h budget):
       --storage tuning/fb_binary_ref500.journal --timeout 28000
 """
 import argparse
+import hashlib
+import json
+import math
 import os
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 
-import optuna
+try:
+    import optuna
+except ImportError:  # Dependency-free contract tests can import this module.
+    optuna = None
+
+
+CONTRACT_VERSION = "attempted-locus-macro-ap-v2"
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def make_contract(args):
+    """Bind a study to its dataset, scored implementation and search design."""
+    objective = Path(args.objective_script).resolve()
+    repo = objective.parents[2]
+    sources = [objective, objective.with_name("tuning_contract.R"), Path(__file__).resolve()]
+    sources += sorted((repo / "R").glob("*.R"))
+    sources += sorted(Path(args.beatrice_dir).resolve().rglob("*.py"))
+    sources = sorted(set(sources))
+    if not sources or any(not source.is_file() for source in sources):
+        raise ValueError("Scored source files are missing; cannot fingerprint this study")
+    settings = {name: getattr(args, name) for name in (
+        "objective", "multi_second", "penalty", "mass_penalty", "scenarios",
+        "regions", "max_iter", "tune_gamma_coverage", "fix", "abort_quantile",
+        "abort_after", "abort_min_trials", "startup_trials", "seed")}
+    def label(path):
+        if path.is_relative_to(repo):
+            return str(path.relative_to(repo))
+        if path == Path(__file__).resolve():
+            return "driver/optuna_fb.py"
+        return "external-beatrice/" + str(path.relative_to(Path(args.beatrice_dir).resolve()))
+    return {
+        "version": CONTRACT_VERSION,
+        "simulation_sha256": sha256_file(args.sim),
+        # Relative labels make an identical checkout portable across hosts.
+        "source_sha256": {label(p): sha256_file(p) for p in sources},
+        "settings": settings,
+        "sampler_version": getattr(optuna, "__version__", "unavailable"),
+    }
+
+
+def contract_digest(contract):
+    return hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":"),
+                                     allow_nan=False).encode()).hexdigest()
+
+
+def bind_study_contract(study, contract, storage_path):
+    """Reject mixed-study reuse, including historical unfingerprinted trials.
+
+    A complete sidecar is linked atomically before setting Optuna user attrs.
+    This also prevents two differently configured first workers from racing to
+    initialise the same empty journal study. The sidecar belongs with the journal.
+    """
+    digest = contract_digest(contract)
+    existing = study.user_attrs.get("benchmark_contract_sha256")
+    if existing is None and study.get_trials(deepcopy=False):
+        raise ValueError("Existing study has trials without a benchmark fingerprint; "
+                         "create a new study name/storage for the revised objective")
+    if existing is not None and existing != digest:
+        raise ValueError("Study dataset, objective, implementation or seed changed; "
+                         "create a new study instead of mixing trial populations")
+    identity = hashlib.sha256(study.study_name.encode()).hexdigest()[:16]
+    sidecar = Path(str(storage_path) + "." + identity + ".contract.json")
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=sidecar.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        json.dump({"sha256": digest, "contract": contract}, handle, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        try:
+            os.link(temporary, sidecar)
+        except FileExistsError:
+            recorded = json.loads(sidecar.read_text())
+            if recorded.get("sha256") != digest:
+                raise ValueError("Study contract sidecar differs; refusing incompatible worker")
+    finally:
+        temporary.unlink()
+    if existing is None:
+        study.set_user_attr("benchmark_contract", contract)
+        study.set_user_attr("benchmark_contract_sha256", digest)
+    return digest
+
+
+def preflight(args):
+    """Require the whole cached scenario lattice and a common locus subset."""
+    if args.rotate_regions:
+        raise ValueError("--rotate-regions aliases architecture with locus size; "
+                         "use the same --regions subset in every scenario")
+    if args.scenarios < 1 or args.regions < 0:
+        raise ValueError("scenarios must be positive and regions nonnegative")
+    if args.abort_quantile:
+        raise ValueError("AP-only --abort-quantile can discard calibration tradeoffs; "
+                         "leave it zero (scalar mode has an objective-consistent pruner)")
+    cmd = [args.rscript, args.objective_script, "--sim", args.sim,
+           "--describe", "TRUE", "--regions", str(args.regions)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    metadata = parse_kv(proc.stdout)
+    if proc.returncode != 0 or metadata.get("status") != "ok":
+        raise ValueError("Tuning preflight failed: " + proc.stderr.strip()[-500:])
+    if int(metadata["n_scenarios"]) != args.scenarios:
+        raise ValueError(f"--scenarios={args.scenarios} does not cover the complete "
+                         f"cached grid ({metadata['n_scenarios']} scenarios)")
+    return metadata
 
 
 # --------------------------------------------------------------------------
@@ -99,7 +213,7 @@ def run_one_scenario(args, params, scenario):
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           timeout=args.trial_timeout or None)
     kv = parse_kv(proc.stdout)
-    if kv.get("status") != "ok":
+    if proc.returncode != 0 or kv.get("status") != "ok":
         msg = kv.get("message", (proc.stderr or "").strip()[-400:])
         raise RuntimeError(f"objective failed (scenario {scenario}): {msg}")
 
@@ -110,9 +224,18 @@ def run_one_scenario(args, params, scenario):
         except ValueError:
             return float("nan")
 
-    return {k: num(k) for k in
+    metrics = {k: num(k) for k in
             ("ap", "max_fdr_violation_n20", "fdr_at_90", "fdr_at_95",
-             "total_mass_ratio", "hi_pip_reliab", "ece_hi", "seconds")}
+             "total_mass_ratio", "hi_pip_reliab", "ece_hi", "seconds", "n_failed")}
+    failures = metrics["n_failed"]
+    if not math.isfinite(failures) or failures < 0 or failures != int(failures):
+        raise RuntimeError(f"objective omitted a valid failure count (scenario {scenario})")
+    if failures:
+        raise RuntimeError(f"objective had {int(failures)} failed method fit(s) "
+                           f"in scenario {scenario}; partial-success trials cannot compete")
+    if math.isfinite(metrics["ap"]) and not 0 <= metrics["ap"] <= 1:
+        raise RuntimeError("objective returned invalid average precision")
+    return metrics
 
 
 def suggest_params(trial, args):
@@ -156,48 +279,20 @@ def suggest_params(trial, args):
 
 
 
-def _abort_thresholds(study, n_scen, args):
-    """Per-stage AP cut-offs, from trials that have already completed.
-
-    Optuna supports pruners only for single-objective studies, and Trial.report()
-    raises for multi-objective ones - but with a 20-cell grid a trial is 60
-    BEATRICE fits, so running every hopeless configuration to completion is the
-    dominant cost. We keep our own per-stage record (ap_after_<k> user attrs) and
-    abort a trial whose running AP is below the `--abort-quantile` of what
-    completed trials had at the SAME stage.
-
-    Deliberately conservative: no aborting until `--abort-min-trials` trials have
-    finished, and never before `--abort-after` scenarios, so a configuration that
-    starts slow on the easy cells still gets a hearing.
-    """
-    if args.abort_quantile <= 0:
-        return {}
-    done = [t for t in study.get_trials(deepcopy=False)
-            if t.state == optuna.trial.TrialState.COMPLETE]
-    if len(done) < args.abort_min_trials:
-        return {}
-    cuts = {}
-    for k in range(args.abort_after, n_scen):
-        vals = sorted(v for v in (t.user_attrs.get(f"ap_after_{k}") for t in done)
-                      if isinstance(v, float) and v == v)
-        if len(vals) >= args.abort_min_trials:
-            idx = int(args.abort_quantile * (len(vals) - 1))
-            cuts[k] = vals[idx]
-    return cuts
-
-
 def build_objective(args):
     n_scen = args.scenarios
 
     def objective(trial):
         params = suggest_params(trial, args)
-        cuts = _abort_thresholds(trial.study, n_scen, args)
         t_trial = time.time()
         aps, viols, masses, reliabs, eces, fdr95s = [], [], [], [], [], []
 
         for s in range(1, n_scen + 1):
             m = run_one_scenario(args, params, s)
-            aps.append(m["ap"])
+            # AP is undefined on a null scenario; retain its calibration metrics
+            # while excluding it from the explicitly non-null ranking estimand.
+            if math.isfinite(m["ap"]):
+                aps.append(m["ap"])
             if m["max_fdr_violation_n20"] == m["max_fdr_violation_n20"]:   # not NaN
                 viols.append(m["max_fdr_violation_n20"])
             if m["total_mass_ratio"] == m["total_mass_ratio"]:
@@ -209,8 +304,7 @@ def build_objective(args):
             if m["fdr_at_95"] == m["fdr_at_95"]:
                 fdr95s.append(m["fdr_at_95"])
 
-            # Record the running AP so later trials can be compared against this
-            # one at the same stage, then abort if we are already clearly behind.
+            # Preserve stage diagnostics; no AP-only pruning of Pareto candidates.
             # Emit timing to OUR stdout (the PBS log). fb_objective.R's own
             # `seconds=` goes to a captured pipe, so without this line a trial
             # killed at walltime leaves no timing evidence whatsoever - which is
@@ -219,14 +313,12 @@ def build_objective(args):
                   f"seconds={m['seconds']:.1f} ap={m['ap']:.4f} "
                   f"cum_min={(time.time() - t_trial) / 60:.1f}", flush=True)
 
-            running_ap = sum(aps) / len(aps)
+            running_ap = sum(aps) / len(aps) if aps else float("nan")
             trial.set_user_attr(f"ap_after_{s}", running_ap)
-            if s in cuts and running_ap < cuts[s]:
-                raise optuna.TrialPruned()
 
             # Pruning only applies to single-objective studies; Optuna does not
             # support pruners for multi-objective optimisation.
-            if args.objective == "scalar":
+            if args.objective == "scalar" and aps:
                 # Must use the SAME formula as the final score below, or the
                 # pruner ranks trials on a different quantity than the one the
                 # study is optimising.
@@ -234,7 +326,7 @@ def build_objective(args):
                 if viols:
                     running -= args.penalty * (sum(viols) / len(viols))
                 if args.mass_penalty and masses:
-                    running -= args.mass_penalty * abs(sum(masses) / len(masses) - 1.0)
+                    running -= args.mass_penalty * sum(abs(v - 1.0) for v in masses) / len(masses)
                 trial.report(running, s)
                 if trial.should_prune():
                     raise optuna.TrialPruned()
@@ -242,15 +334,19 @@ def build_objective(args):
         mean_ap    = sum(aps) / len(aps) if aps else float("nan")
         mean_viol  = sum(viols) / len(viols) if viols else 1.0
         mean_mass  = sum(masses) / len(masses) if masses else float("nan")
+        mean_mass_error = sum(abs(v - 1.0) for v in masses) / len(masses) if masses else float("nan")
         mean_relb  = sum(reliabs) / len(reliabs) if reliabs else float("nan")
         mean_ece   = sum(eces) / len(eces) if eces else float("nan")
         mean_fdr95 = sum(fdr95s) / len(fdr95s) if fdr95s else float("nan")
+        if not math.isfinite(mean_ap):
+            raise RuntimeError("No non-null AP estimand in this tuning panel")
 
         # Record everything, so any objective can be re-derived from the study
         # later without re-running trials.
         trial.set_user_attr("mean_ap", mean_ap)
         trial.set_user_attr("mean_fdr_violation_n20", mean_viol)
         trial.set_user_attr("mean_total_mass_ratio", mean_mass)
+        trial.set_user_attr("mean_absolute_mass_ratio_error", mean_mass_error)
         trial.set_user_attr("mean_hi_pip_reliab", mean_relb)
         trial.set_user_attr("mean_ece_hi", mean_ece)
         trial.set_user_attr("mean_fdr_at_95", mean_fdr95)
@@ -278,7 +374,7 @@ def build_objective(args):
             # mass ratio that could not be computed scores as clearly bad
             # rather than poisoning the study.
             if args.multi_second == "mass":
-                second = abs(mean_mass - 1.0) if mean_mass == mean_mass else 10.0
+                second = mean_mass_error if math.isfinite(mean_mass_error) else 10.0
             elif args.multi_second == "reliab":
                 second = (1.0 - mean_relb) if mean_relb == mean_relb else 1.0
             else:
@@ -293,7 +389,7 @@ def build_objective(args):
         # failure mode), <1 leaves detectable mass on the table.
         score = mean_ap - args.penalty * mean_viol
         if args.mass_penalty and mean_mass == mean_mass:
-            score -= args.mass_penalty * abs(mean_mass - 1.0)
+            score -= args.mass_penalty * mean_mass_error
         return score
 
     return objective
@@ -309,16 +405,9 @@ def main():
                          "weighting but no pruning. scalar: AP - penalty*violation, "
                          "enables pruning. Default: multi.")
     ap.add_argument("--rotate-regions", action="store_true",
-                    help="score each scenario on ONE region, rotating which region "
-                         "(and so which region size) across scenarios. Cost is "
-                         "quadratic in p, so this is what makes a grid spanning "
-                         "p=2000 affordable.")
+                    help="deprecated and rejected: aliases architecture with locus size")
     ap.add_argument("--abort-quantile", type=float, default=0.0,
-                    help="abort a trial whose running AP falls below this quantile "
-                         "of completed trials at the same scenario index. 0 (default) "
-                         "disables. 0.25 aborts the worst quarter. Works in every "
-                         "objective mode, including multi-objective, where Optuna "
-                         "has no pruner of its own.")
+                    help="deprecated: must be zero; AP-only pruning discards tradeoffs")
     ap.add_argument("--abort-after", type=int, default=3,
                     help="never abort before this many scenarios have been scored.")
     ap.add_argument("--abort-min-trials", type=int, default=30,
@@ -327,13 +416,13 @@ def main():
                     default="violation",
                     help="multi mode only: the second (minimised) objective. "
                          "'violation' = max_fdr_violation_n20 (the original); "
-                         "'mass' = |total_mass_ratio - 1|; "
+                         "'mass' = mean |scenario total_mass_ratio - 1|; "
                          "'reliab' = 1 - hi_pip_reliab, i.e. the error rate among "
                          "PIP>=0.9 calls. 'reliab' is the one that matches the "
                          "measured Iteration 003 failure - but only if the tuning "
                          "sim spans phi=0.4, where that failure lives.")
     ap.add_argument("--mass-penalty", type=float, default=0.0,
-                    help="scalar mode only: subtract this x |total_mass_ratio - 1| "
+                    help="scalar mode only: subtract this x mean |scenario mass ratio - 1| "
                          "from the score. 0 (default) reproduces the old objective. "
                          "Use when AP has saturated and calibration is the "
                          "remaining headroom.")
@@ -360,9 +449,15 @@ def main():
     ap.add_argument("--python", default=os.path.expanduser("~/tools/py-venv-runner.sh"))
     ap.add_argument("--startup-trials", type=int, default=20,
                     help="random trials before TPE starts modelling")
+    ap.add_argument("--seed", type=int, default=20261010,
+                    help="recorded sampler base seed (does not make async scheduling deterministic)")
+    ap.add_argument("--worker-id", type=int, default=int(os.getenv("PBS_ARRAY_INDEX", "0")),
+                    help="worker stream ID; PBS array index by default")
     ap.add_argument("--report", action="store_true",
                     help="print the study's best trials and exit (no optimisation)")
     args = ap.parse_args()
+    if optuna is None:
+        ap.error("Install optuna to run or report a tuning study")
 
     # --fix NAME=VALUE ... -> {name: value}. n_caus and sparse_concrete are
     # integer flags in beatrice_annot.py, so they must not be coerced to float.
@@ -374,6 +469,9 @@ def main():
                 ap.error(f"--fix expects NAME=VALUE, got '{item}'")
             k, _, v = item.partition("=")
             k = k.strip()
+            if k not in {"lambda_l1", "prior_regularisation", "sigma_sq", "hierarchy_M",
+                         "n_caus", "sparse_concrete", "gamma_coverage"}:
+                ap.error(f"Unknown fixed hyperparameter: {k}")
             try:
                 fixed[k] = int(v) if k in int_params else float(v)
             except ValueError:
@@ -381,10 +479,20 @@ def main():
         args.fix = fixed
         print(f"[fix] held out of the search: {fixed}")
 
+    if args.seed < 0 or args.worker_id < 0:
+        ap.error("seed and worker-id must be nonnegative")
+    if not args.report:
+        try:
+            preflight(args)
+        except ValueError as error:
+            ap.error(str(error))
+
     storage = make_storage(args.storage)
     multi_obj = args.objective in ("multi", "triple")
-    sampler = (optuna.samplers.NSGAIISampler(seed=None) if multi_obj
-               else optuna.samplers.TPESampler(n_startup_trials=args.startup_trials))
+    worker_seed = (args.seed + 1000003 * args.worker_id) % (2 ** 32)
+    sampler = (optuna.samplers.NSGAIISampler(seed=worker_seed) if multi_obj
+               else optuna.samplers.TPESampler(n_startup_trials=args.startup_trials,
+                                               seed=worker_seed))
     pruner = (optuna.pruners.MedianPruner(n_startup_trials=args.startup_trials,
                                           n_warmup_steps=1)
               if args.objective == "scalar" else optuna.pruners.NopPruner())
@@ -401,8 +509,16 @@ def main():
     study = optuna.create_study(**kwargs)
 
     if args.report:
+        print(f"[contract] {study.user_attrs.get('benchmark_contract_sha256', 'historical/unfingerprinted')}")
         report(study, args)
         return
+
+    try:
+        fingerprint = bind_study_contract(study, make_contract(args), args.storage)
+    except ValueError as error:
+        ap.error(str(error))
+    print(f"[contract] {fingerprint} worker_id={args.worker_id} sampler_seed={worker_seed}",
+          flush=True)
 
     done = len([t for t in study.trials
                 if t.state == optuna.trial.TrialState.COMPLETE])
@@ -429,8 +545,15 @@ def main():
 def _rank(xs):
     order = sorted(range(len(xs)), key=lambda i: xs[i])
     r = [0.0] * len(xs)
-    for pos, i in enumerate(order):
-        r[i] = float(pos)
+    start = 0
+    while start < len(order):
+        end = start + 1
+        while end < len(order) and xs[order[end]] == xs[order[start]]:
+            end += 1
+        rank = (start + end - 1) / 2.0
+        for i in order[start:end]:
+            r[i] = rank
+        start = end
     return r
 
 
@@ -530,7 +653,10 @@ def report(study, args):
     # Mass ratio is recorded but NOT optimised, so the search is free to inflate
     # it. Show its spread among the strongest trials so that stays visible.
     ranked = sorted(complete, key=lambda t: -_trial_ap(t))
-    print("  top 5 by AP (mass ratio is NOT an objective - watch it):")
+    mass_is_objective = ((args.objective == "multi" and args.multi_second == "mass")
+                         or (args.objective == "scalar" and bool(args.mass_penalty)))
+    print("  top 5 by AP (mass error " +
+          ("included in objective" if mass_is_objective else "diagnostic only") + "):")
     for t in ranked[:5]:
         print(f"    AP={_trial_ap(t):.4f}  viol={t.user_attrs.get('mean_fdr_violation_n20', float('nan')):.4f}"
               f"  mass={t.user_attrs.get('mean_total_mass_ratio', float('nan')):.2f}"
@@ -569,7 +695,7 @@ def report(study, args):
 
     if args.objective == "multi":
         second = getattr(args, "multi_second", "violation")
-        label = {"mass": "|mass-1|", "reliab": "1-hi_pip_reliab"}.get(second, "FDR violation")
+        label = {"mass": "mean |scenario mass-1|", "reliab": "1-hi_pip_reliab"}.get(second, "FDR violation")
         print(f"Pareto front (AP up, {label} down)  [{len(study.best_trials)} points]:")
         for t in sorted(study.best_trials, key=lambda x: -x.values[0]):
             print(f"  AP={t.values[0]:.4f}  obj2={t.values[1]:.4f}  "

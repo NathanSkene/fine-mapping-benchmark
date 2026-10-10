@@ -284,7 +284,8 @@ run_simulation <- function(n_regions = 3,
   # we keep BOTH the in-sample LD (LD_true) and the ref-panel-derived LD per
   # region, doubling the LD-side memory footprint.
   ld_factor <- if (is.null(n_ref)) 1 else 2
-  ld_bytes  <- 8 * ld_factor * sum(as.numeric(p)^2)
+  p_memory <- if (length(p) == 1L) rep(p, n_regions) else p
+  ld_bytes  <- 8 * ld_factor * sum(as.numeric(p_memory)^2)
   ld_gb     <- ld_bytes / 1e9
   if (ld_gb > 4) {
     warning(sprintf(
@@ -337,6 +338,15 @@ run_simulation <- function(n_regions = 3,
   # Pre-generate annotation matrices (once per region, shared across all scenarios)
   # Only applies to synthetic annotations; user-supplied matrices are already fixed.
   annotation_type_internal <- if (is.matrix(annotations)) "user_supplied" else annotations
+  actual_n_annotations <- if (is.matrix(annotations)) ncol(annotations) else n_annotations
+  enrichment_actual <- enrichment
+  if (annotation_type_internal != "none" && is.null(enrichment_actual)) {
+    enrichment_actual <- runif(actual_n_annotations, min = 2, max = 10)
+  }
+  if (!is.null(enrichment_actual) && length(enrichment_actual) == 1L) {
+    enrichment_actual <- rep(enrichment_actual, actual_n_annotations)
+  }
+
   if (annotation_type_internal %in% c("binary", "continuous")) {
     if (verbose) message("\nPre-generating annotation matrices...")
     # Broadcast scalar annotation_proportions to the required length so that
@@ -352,7 +362,7 @@ run_simulation <- function(n_regions = 3,
         annotation_proportions = ap_internal,
         user_annotation_matrix = NULL,
         annotation_correlation = annotation_correlation,
-        enrichment = enrichment
+        enrichment = enrichment_actual
       )
       genotypes[[i]]$annotations_matrix    <- annot$matrix
       genotypes[[i]]$annotation_proportions <- annot$proportions
@@ -412,7 +422,7 @@ run_simulation <- function(n_regions = 3,
       annotations = annotations,
       n_annotations = n_annotations,
       annotation_proportions = annotation_proportions,
-      enrichment = enrichment,
+      enrichment = enrichment_actual,
       annotation_correlation = annotation_correlation,
       seed = NULL,  # let the RNG continue sequentially
       verbose = FALSE
@@ -426,6 +436,8 @@ run_simulation <- function(n_regions = 3,
         z = sim_result[[i]]$z,
         beta_hat = sim_result[[i]]$beta_hat,
         se = sim_result[[i]]$se,
+        statistic_type = sim_result[[i]]$statistic_type,
+        degrees_of_freedom = sim_result[[i]]$degrees_of_freedom,
         annotations_matrix = sim_result[[i]]$annotations_matrix,
         truth = sim_result[[i]]$truth
       )
@@ -466,6 +478,7 @@ run_simulation <- function(n_regions = 3,
     n_annotations = n_annotations,
     annotation_proportions = annotation_proportions,
     enrichment = enrichment,
+    enrichment_actual = enrichment_actual,
     annotation_correlation = annotation_correlation,
     min_maf = min_maf,
     vcf_files_used = vcf_files,
