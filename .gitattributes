@@ -1,0 +1,2 @@
+# CSV's standard CRLF records are preserved in frozen benchmark evidence.
+*.csv whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

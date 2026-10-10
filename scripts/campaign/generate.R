@@ -72,4 +72,3 @@ cat(sprintf("Generated %s in %.1f seconds\n", row$family,
             as.numeric(difftime(Sys.time(), started, units = "secs"))))
 }
 main()
-

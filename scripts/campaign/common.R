@@ -16,4 +16,3 @@ for (.path in list.files(file.path(.campaign_repo, "R"), "\\.R$", full.names = T
   defaults
 }
 .campaign_main_source <- .campaign_repo
-

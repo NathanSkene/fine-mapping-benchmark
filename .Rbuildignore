@@ -24,6 +24,7 @@
 # --- Git / forge tooling -----------------------------------------------------
 ^\.git$
 ^\.gitignore$
+^\.gitattributes$
 ^\.github$
 
 # --- Claude Code / IDE config ------------------------------------------------
