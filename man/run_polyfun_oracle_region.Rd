@@ -4,7 +4,12 @@
 \alias{run_polyfun_oracle_region}
 \title{Run polyfun_oracle on a single region from simulation data structures}
 \usage{
-run_polyfun_oracle_region(region_geno, region_pheno, ...)
+run_polyfun_oracle_region(
+  region_geno,
+  region_pheno,
+  ...,
+  statistic_type = NULL
+)
 }
 \arguments{
 \item{region_geno}{List. One element of \code{simulation$genotypes},
@@ -18,6 +23,9 @@ accepted as a fallback location for the matrix.}
 
 \item{...}{Additional arguments passed to \code{\link{run_polyfun_oracle}}
 (e.g. \code{L}, \code{coverage}, \code{min_abs_corr}).}
+
+\item{statistic_type}{Optional summary type inherited from the region;
+defaults to \code{marginal_ols_t} when no type is declared.}
 }
 \value{
 The output of \code{\link{run_polyfun_oracle}}.

@@ -267,6 +267,14 @@ Stochastic shotgun search over causal configurations. Allows multiple causal
 variants and reports credible sets for the most probable number of causal
 variants k*.
 
+The adapter reads model-size probabilities from the complete native log,
+because the configuration table contains only the top retained configurations.
+It reads only the `cred1`, `cred2`, … identifier columns as sets, retaining their
+paired conditional probabilities separately. Invalid IDs, probabilities or
+nonzero native exit status are explicit failures.
+FINEMAP's sets condition on a selected causal configuration; see its
+[official output specification](https://www.christianbenner.com/).
+
 **Setup:** `setup_finemap()` — checks for the binary. If not found,
 downloads it automatically (macOS and Linux only):
 
@@ -692,8 +700,11 @@ panel. This makes CARMA more robust than SuSiE or FINEMAP when the GWAS
 sample and the LD reference are mismatched.
 
 Unlike SuSiE, CARMA does not decompose signals into independent components.
-It returns one global credible set per region — the minimal set of variants
-whose joint posterior reaches `rho.index`.
+It returns multiple LD-clustered sets, built using summed marginal PIPs and
+`rho.index`. The adapter preserves each native group. Summed PIPs give an
+expected causal count, so reaching this threshold does not establish a joint
+coverage guarantee. Per-set hits and distinct-signal recovery remain empirical
+diagnostics. See the [official construction](https://github.com/ZikunY/CARMA/blob/51f0fcf6a74ee74c75fd2ce70912fdd6cdd214fe/R/CARMA.R#L146-L200).
 
 **Setup:** Pure R package, no external binary or Python needed.
 
@@ -749,7 +760,7 @@ run_methods(
 # - Funmap requires sim to have been run with annotations = "binary" or "continuous"
 # - PAINTOR uses annotations automatically if present; falls back to uniform prior if not
 # - BEATRICE requires PyTorch; ~10 s/region at max_iter = 500, ~35 s at max_iter = 2000
-# - CARMA returns one global credible set per region (not per-signal like SuSiE)
+# - CARMA preserves its separate LD-clustered PIP-mass sets
 ```
 
 Arguments not listed use the method's default value. Methods not mentioned

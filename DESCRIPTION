@@ -30,6 +30,7 @@ Encoding: UTF-8
 Depends:
     R (>= 4.1.0)
 Imports:
+    codetools,
     ggplot2,
     grid,
     gridExtra,
@@ -49,7 +50,8 @@ Suggests:
     rmarkdown,
     testthat (>= 3.0.0),
     yaml
-SystemRequirements: htslib (>= 1.0) for tabix and bgzip; required by the
+SystemRequirements: openssl for SHA-256 release and pooled-input integrity;
+    htslib (>= 1.0) for tabix and bgzip; required by the
     scripts that download 1000 Genomes Phase 3 VCF windows.
 Roxygen: list(markdown = TRUE)
 Config/testthat/edition: 3

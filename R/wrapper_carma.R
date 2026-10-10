@@ -10,8 +10,7 @@
 # It uses a spike-slab (or Cauchy/Hyper-g) prior on effect sizes and fits
 # an EM algorithm over causal configurations.
 #
-# Unlike SuSiE, CARMA does not decompose signals into independent components;
-# instead it returns a single global credible set and per-variant PIPs.
+# CARMA returns per-variant PIPs and multiple LD-clustered PIP-mass sets.
 #
 # This file provides:
 #   - setup_carma()        : installs the package if needed and verifies it
@@ -20,9 +19,7 @@
 #
 # Standard output format:
 #   pip              Numeric vector (length p). Marginal PIPs.
-#   credible_sets    List containing one integer vector: the global credible
-#                    set (1-based variant indices, sorted). Empty list if
-#                    CARMA returns no variants.
+#   credible_sets    Native LD-clustered sets (1-based indices), kept separate.
 #   method           Character. "carma".
 #   input_type       Character. Always "summary".
 #   params           List. Hyperparameters used.
@@ -81,9 +78,10 @@ setup_carma <- function() {
 #' Calls \code{CARMA::CARMA()} on a single locus and returns results in the
 #' standardised format.
 #'
-#' CARMA returns one global credible set per region (not one per causal
-#' signal as SuSiE does). The credible set contains the minimal set of
-#' variants whose joint posterior probability reaches \code{rho.index}.
+#' CARMA returns multiple LD-clustered sets, constructed using summed marginal
+#' PIPs and \code{rho.index}. These are preserved separately. A sum of marginal
+#' PIPs is an expected causal count; it does not establish a joint posterior
+#' coverage guarantee when multiple causes can occur in a cluster.
 #'
 #' @param z Numeric vector. Marginal z-scores (length p).
 #' @param LD Matrix. LD (correlation) matrix (p x p).
@@ -105,9 +103,8 @@ setup_carma <- function() {
 #' \describe{
 #'   \item{pip}{Numeric vector (length p). Marginal posterior inclusion
 #'     probabilities.}
-#'   \item{credible_sets}{List containing one integer vector: the global
-#'     credible set (1-based indices, sorted). Empty list if CARMA produced
-#'     no credible set.}
+#'   \item{credible_sets}{List of native LD-clustered sets (1-based indices,
+#'     sorted), or an empty list if CARMA produced no sets.}
 #'   \item{method}{Character. Always \code{"carma"}.}
 #'   \item{input_type}{Character. Always \code{"summary"}.}
 #'   \item{params}{List. Hyperparameters used.}
@@ -173,7 +170,7 @@ run_carma <- function(z,
   fit <- tryCatch({
     # capture.output suppresses CARMA's per-locus timing print statements
     invisible(utils::capture.output(
-      res_list <- CARMA::CARMA(
+      res_list <- getExportedValue("CARMA", "CARMA")(
         z.list            = list(z),
         ld.list           = list(LD),
         lambda.list       = list(lambda),
@@ -211,21 +208,24 @@ run_carma <- function(z,
   # --- Extract PIPs -----------------------------------------------------------
 
   pip <- as.numeric(fit$PIPs)
-  pip <- pmax(0, pmin(1, pip))
+  if (length(pip) != p || any(!is.finite(pip)) || any(pip < 0 | pip > 1))
+    return(.carma_error_result(p, params, elapsed,
+      "CARMA must return one finite probability in [0,1] per input variant."))
 
   # --- Extract credible set ---------------------------------------------------
-  # CARMA returns one global credible set per locus.
-  # Structure: fit[["Credible set"]][[2]] is a list of 1-based variant indices.
+  # The official credible.set.fun.improved returns multiple LD-clustered
+  # PIP-mass sets. Unlisting them destroys their distinct-signal structure.
 
   credible_sets <- list()
 
   cs_raw <- fit[["Credible set"]]
   if (!is.null(cs_raw) && length(cs_raw) >= 2) {
-    cs_indices <- sort(as.integer(unlist(cs_raw[[2]])))
-    cs_indices <- cs_indices[!is.na(cs_indices) & cs_indices >= 1L & cs_indices <= p]
-    if (length(cs_indices) > 0) {
-      credible_sets <- list(cs_indices)
-    }
+    groups <- cs_raw[[2]]
+    if (!is.list(groups) || any(vapply(groups, function(s)
+      !is.numeric(s) || any(!is.finite(s)) || any(s != floor(s)) ||
+      any(s < 1 | s > p) || anyDuplicated(s) > 0L, TRUE)))
+      return(.carma_error_result(p, params, elapsed, "CARMA returned invalid native set indices."))
+    credible_sets <- lapply(groups[lengths(groups) > 0L], function(s) sort(as.integer(s)))
   }
 
   # --- Extract outliers -------------------------------------------------------
@@ -243,7 +243,10 @@ run_carma <- function(z,
     params          = params,
     runtime_seconds = elapsed,
     additional      = list(
-      outliers = outliers
+      outliers = outliers,
+      credible_set_semantics = "ld_clustered_pip_mass_atleastone",
+      credible_set_construction = "absolute-LD clustering and summed marginal PIP threshold",
+      nominal_joint_coverage_guarantee = FALSE
     )
   )
 }

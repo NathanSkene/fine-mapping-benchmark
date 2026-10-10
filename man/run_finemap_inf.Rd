@@ -9,14 +9,16 @@ run_finemap_inf(
   LD,
   n,
   variant_ids = NULL,
-  finemap_inf_dir,
+  finemap_inf_dir = NULL,
   python = "python",
   num_sparse_effects = 10L,
   coverage = 0.95,
   purity = 0.5,
   method = "finemapinf",
   run_methods_str = "susieinf,finemapinf",
-  est_tausq = FALSE
+  est_tausq = FALSE,
+  statistic_type = "marginal_ols_t",
+  meansq = 1
 )
 }
 \arguments{
@@ -55,6 +57,16 @@ method is distributed to run.}
 
 \item{est_tausq}{Logical. Force FINEMAP-inf to estimate tau^2 itself even
 when SuSiE-inf is in the run (\code{--est-finemapinf-tausq}). Default FALSE.}
+
+\item{statistic_type}{\code{marginal_ols_t} (default). OLS t statistics are
+converted exactly to the author's score sufficient statistics.
+\code{normal_score} is unsupported because the joint variance estimator
+requires a phenotype second moment absent from the Gaussian score challenge.}
+
+\item{meansq}{Positive phenotype mean square on the chosen centered trait
+scale. Default 1 explicitly population-SD standardizes the phenotype.
+A supplied mean square reconstructs that trait scale and changes effect
+and prior units accordingly. Genotypes use population-SD standardized units.}
 }
 \value{
 A list in the benchmark's standard fine-mapping output format.

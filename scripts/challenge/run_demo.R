@@ -23,9 +23,11 @@ methods <- list(exact = challenge_exact, forced_one = challenge_forced_one,
                 annotation_positive = function(x) challenge_exact(x, annotation_coefficient = 1),
                 abf = challenge_region_adapter(run_abf_region))
 if (requireNamespace("susieR", quietly = TRUE)) {
-  methods$susie <- challenge_region_adapter(run_susie_region, list(L = 10, coverage = .95))
+  gaussian_args <- list(L = 10, coverage = .95, statistic_type = "normal_score",
+                        residual_variance = 1, estimate_residual_variance = FALSE)
+  methods$susie <- challenge_region_adapter(run_susie_region, gaussian_args)
   if (utils::packageVersion("susieR") >= "0.15.0")
-    methods$susie_inf <- challenge_region_adapter(run_susie_inf_region, list(L = 10, coverage = .95))
+    methods$susie_inf <- challenge_region_adapter(run_susie_inf_region, gaussian_args)
 }
 message("Evaluating ", length(panel$inputs), " development tasks with ", length(methods), " predictors")
 predictions <- run_challenge(public$inputs, methods)

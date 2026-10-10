@@ -1,0 +1,6 @@
+spec_version: 1
+name: finemap_rl
+type: space
+runtime: fastapi
+app: finemap_rl.openenv_adapter:app
+port: 8000

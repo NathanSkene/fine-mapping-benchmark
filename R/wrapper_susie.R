@@ -80,6 +80,9 @@ setup_susie <- function() {
 #' @param max_iter Integer. Maximum IBSS iterations. Default: 100.
 #' @param verbose_susie Logical. Print SuSiE's own progress messages.
 #'   Default: FALSE.
+#' @param statistic_type \code{marginal_ols_t} (default) or \code{normal_score}.
+#'   Gaussian scores use a fixed-noise score likelihood without OLS-t conversion.
+#' @param residual_variance Specified Gaussian score noise variance; default 1.
 #'
 #' @return A list with the standardised fine-mapping output:
 #' \describe{
@@ -121,7 +124,8 @@ run_susie <- function(z = NULL,
                       coverage = 0.95,
                       min_abs_corr = 0.5,
                       max_iter = 100,
-                      verbose_susie = FALSE) {
+                      verbose_susie = FALSE,
+                      statistic_type = "marginal_ols_t", residual_variance = 1) {
 
   # --- Validate inputs --------------------------------------------------------
 
@@ -131,6 +135,9 @@ run_susie <- function(z = NULL,
 
   use_individual <- !is.null(X) && !is.null(y)
   use_summary    <- !is.null(z) && !is.null(LD) && !is.null(n)
+  statistic_type <- match.arg(statistic_type, c("marginal_ols_t", "normal_score"))
+  if (use_individual && statistic_type == "normal_score")
+    stop("normal_score describes summary inputs; individual data use the phenotype likelihood.", call. = FALSE)
 
   if (!use_individual && !use_summary) {
     stop(
@@ -163,6 +170,9 @@ run_susie <- function(z = NULL,
     min_abs_corr = min_abs_corr,
     max_iter = max_iter
   )
+  params$statistic_type <- statistic_type
+  params$score_residual_variance <- residual_variance
+  params$effective_estimate_residual_variance <- if (statistic_type == "normal_score") FALSE else estimate_residual_variance
 
   p_snps <- if (use_individual) ncol(X) else length(z)
 
@@ -185,10 +195,11 @@ run_susie <- function(z = NULL,
         verbose = verbose_susie
       )
     } else {
-      susieR::susie_rss(
+      .fm_susie_rss(
         z = z,
         R = LD,
         n = n,
+        statistic_type = statistic_type, residual_variance = residual_variance,
         L = L,
         prior_variance = prior_variance,
         estimate_residual_variance = estimate_residual_variance,
@@ -247,7 +258,7 @@ run_susie <- function(z = NULL,
 
   additional <- list(
     alpha          = fit$alpha,
-    posterior_mean = colSums(fit$alpha * fit$mu),
+    posterior_mean = .fm_susie_posterior_mean(fit),
     lbf            = if (!is.null(fit$lbf)) fit$lbf else rep(NA_real_, L),
     cs_purity      = cs_purity,
     converged      = fit$converged,
@@ -289,16 +300,20 @@ run_susie <- function(z = NULL,
 #'   Default: FALSE.
 #' @param ... Additional arguments passed to \code{\link{run_susie}}
 #'   (e.g. \code{L}, \code{coverage}, \code{min_abs_corr}).
+#' @param statistic_type Optional summary type. Defaults to the region's declared
+#'   type, or \code{marginal_ols_t} when no type is declared.
 #'
 #' @return The output of \code{\link{run_susie}}.
 #' @export
 run_susie_region <- function(region_geno, region_pheno,
-                             use_individual = FALSE, ...) {
+                             use_individual = FALSE, ..., statistic_type = NULL) {
   if (use_individual &&
       !is.null(region_geno$X) &&
       !is.null(region_pheno$y)) {
-    run_susie(X = region_geno$X, y = region_pheno$y, ...)
+    run_susie(X = region_geno$X, y = region_pheno$y,
+              statistic_type = statistic_type %||% "marginal_ols_t", ...)
   } else {
-    run_susie(z = region_pheno$z, LD = region_geno$LD, n = region_geno$n, ...)
+    run_susie(z = region_pheno$z, LD = region_geno$LD, n = region_geno$n,
+              statistic_type = statistic_type %||% region_pheno$statistic_type %||% "marginal_ols_t", ...)
   }
 }

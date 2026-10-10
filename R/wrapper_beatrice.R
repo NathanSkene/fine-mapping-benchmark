@@ -40,8 +40,9 @@
 
 #' Set up BEATRICE
 #'
-#' Verifies that the BEATRICE Python script can be found at \code{beatrice_dir}
-#' and that the required Python packages (torch, numpy, scipy, pandas) are
+#' Verifies that a BEATRICE Python script can be found at \code{beatrice_dir}
+#' (preferring \code{beatrice_annot.py}, as the runner does), and that its
+#' required Python packages are
 #' importable by the specified Python executable.
 #'
 #' Install BEATRICE by cloning the repository and creating its conda
@@ -64,22 +65,21 @@
 #' }
 #'
 #' @param beatrice_dir Character. Path to the cloned Beatrice-Finemapping
-#'   repository root (must contain \code{beatrice.py}).
+#'   repository root (must contain \code{beatrice_annot.py} or \code{beatrice.py}).
 #' @param python Character. Path to the Python executable to use.
 #'   Default: \code{"python"} (searches PATH).
 #'
 #' @return Invisibly returns a named list with \code{beatrice_script} (full
-#'   path to \code{beatrice.py}) and \code{python} (resolved Python path).
+#'   path to the selected script) and \code{python} (resolved Python path).
 #' @export
 setup_beatrice <- function(beatrice_dir, python = "python") {
 
   beatrice_dir <- path.expand(beatrice_dir)
 
-  # Check beatrice.py exists
-  script_path <- file.path(beatrice_dir, "beatrice.py")
-  if (!file.exists(script_path)) {
+  script_path <- .beatrice_script_path(beatrice_dir)
+  if (is.null(script_path)) {
     stop(
-      "beatrice.py not found in: ", beatrice_dir, "\n\n",
+      "No BEATRICE script (beatrice_annot.py or beatrice.py) found in: ", beatrice_dir, "\n\n",
       "Please clone the repository:\n",
       "  git clone https://github.com/sayangsep/Beatrice-Finemapping\n\n",
       "Then pass the path:\n",
@@ -90,7 +90,7 @@ setup_beatrice <- function(beatrice_dir, python = "python") {
 
   # Check Python executable
   resolved_python <- if (file.exists(path.expand(python))) {
-    normalizePath(path.expand(python))
+    .fm_python_path(python)
   } else {
     py <- Sys.which(python)
     if (nchar(py) == 0) {
@@ -115,7 +115,7 @@ setup_beatrice <- function(beatrice_dir, python = "python") {
     out == 0L
   }
 
-  missing_pkgs <- Filter(Negate(check_pkg), c("torch", "numpy", "scipy", "pandas"))
+  missing_pkgs <- Filter(Negate(check_pkg), .beatrice_required_packages(script_path))
 
   if (length(missing_pkgs) > 0) {
     stop(
@@ -152,6 +152,9 @@ setup_beatrice <- function(beatrice_dir, python = "python") {
 #' \code{beatrice.py} via the specified Python executable, parses the output,
 #' and returns results in the standardised format. The temporary directory is
 #' deleted on exit.
+#' Nonzero process exits and malformed, incomplete, or unaligned native
+#' probabilities or credible sets return a failed fit; evidence is never clipped
+#' or repaired. Synthetic tokens serialize variants without changing their IDs.
 #'
 #' BEATRICE trains a neural network for each region; runtime scales with
 #' \code{max_iter}. For large-scale benchmarking, reduce \code{max_iter}
@@ -162,6 +165,8 @@ setup_beatrice <- function(beatrice_dir, python = "python") {
 #' @param n Integer. Sample size (GWAS N).
 #' @param variant_ids Character vector or NULL. Variant identifiers (length p).
 #'   If NULL, set to \code{"rs0", "rs1", ...} (matching BEATRICE convention).
+#'   Original identifiers are retained in \code{additional$variant_ids} and
+#'   \code{additional$variant_alignment}; native files use collision-free tokens.
 #' @param beatrice_dir Character. Path to the cloned Beatrice-Finemapping
 #'   repository root.
 #' @param python Character. Path to the Python executable. Default:
@@ -213,39 +218,27 @@ run_beatrice <- function(z,
   p <- length(z)
 
   stopifnot(
+    "z must contain finite numeric statistics" =
+      is.numeric(z) && p > 0L && all(is.finite(z)),
     "LD must be a p x p matrix" =
-      is.matrix(LD) && nrow(LD) == p && ncol(LD) == p,
+      is.matrix(LD) && is.numeric(LD) && nrow(LD) == p && ncol(LD) == p && all(is.finite(LD)),
     "n must be a positive integer" =
-      is.numeric(n) && length(n) == 1 && n > 0,
+      is.numeric(n) && length(n) == 1 && is.finite(n) && n > 0 && n == floor(n),
     "max_iter must be >= 500" =
       is.numeric(max_iter) && max_iter >= 500
   )
 
-  if (is.null(variant_ids)) variant_ids <- paste0("rs", seq(0, p - 1))
-
-  # CRITICAL: BEATRICE's .z file is space-separated and trainer.py reads the
-  # z-score as column 1:
-  #     Z = pd.read_table(z_file, sep=' ', header=None).to_numpy()[:,1]
-  # VCF-derived variant_ids look like "1 40023356 . A T" - embedded spaces.
-  # Writing those verbatim shifts the columns so column 1 is the POSITION,
-  # and BEATRICE silently fine-maps base-pair positions instead of z-scores
-  # (every "z" ~4e7 -> every PIP ~1 -> AUPRC at the random baseline, and
-  # completely invariant to the simulated signal). Collapse whitespace so
-  # each variant_id is a single token.
-  variant_ids <- gsub("\\s+", "_", variant_ids)
+  identity <- .beatrice_variant_identity(variant_ids, p)
+  variant_ids <- identity$native_ids
 
   beatrice_dir   <- path.expand(beatrice_dir)
-  python         <- if (file.exists(path.expand(python))) normalizePath(path.expand(python)) else python
+  python         <- if (file.exists(path.expand(python))) .fm_python_path(python) else python
 
   # Prefer beatrice_annot.py (BEATRICE_annot_sparse fork) when present -
   # upstream beatrice.py has a numpy-2.x bug in trainer.py:calculate_pip that
   # crashes late in training. The fork fixes it and accepts the same flags
   # when --annot is omitted, giving vanilla BEATRICE semantics.
-  script_path <- NULL
-  for (cand in c("beatrice_annot.py", "beatrice.py")) {
-    p_cand <- file.path(beatrice_dir, cand)
-    if (file.exists(p_cand)) { script_path <- p_cand; break }
-  }
+  script_path <- .beatrice_script_path(beatrice_dir)
 
   if (is.null(script_path)) {
     return(.beatrice_error_result(
@@ -259,6 +252,7 @@ run_beatrice <- function(z,
 
   params <- .beatrice_params(n, max_iter, n_caus, sigma_sq, gamma_coverage,
                              sparse_concrete, beatrice_dir, python)
+  params$beatrice_script <- script_path
 
   # --- Set up temp working directory ------------------------------------------
 
@@ -315,6 +309,10 @@ run_beatrice <- function(z,
   if (inherits(run_output, "beatrice_error")) {
     return(.beatrice_error_result(p, params, elapsed, run_output))
   }
+  if (.beatrice_process_failed(run_output)) {
+    return(.beatrice_error_result(p, params, elapsed,
+      paste(c("BEATRICE exited unsuccessfully.", run_output), collapse = "\n")))
+  }
 
   # --- Check output -----------------------------------------------------------
 
@@ -329,62 +327,16 @@ run_beatrice <- function(z,
     return(.beatrice_error_result(p, params, elapsed, err_msg))
   }
 
-  # --- Parse pip.csv ----------------------------------------------------------
-
-  pip_df <- tryCatch(
-    utils::read.csv(pip_path, stringsAsFactors = FALSE),
-    error = function(e) NULL
-  )
-
-  if (is.null(pip_df) || !"pip" %in% names(pip_df)) {
-    return(.beatrice_error_result(
-      p, params, elapsed,
-      "Failed to parse BEATRICE pip.csv or 'pip' column missing."
-    ))
+  # The joint and single-region implementations share one strict native contract.
+  parsed <- tryCatch(.fb_joint_parse_output(out_dir, variant_ids, p),
+                     error = function(e) NULL)
+  if (is.null(parsed)) {
+    return(.beatrice_error_result(p, params, elapsed,
+      "BEATRICE output has invalid variant IDs, finite probabilities, or credible-set evidence."))
   }
-
-  # Re-order to match the original variant order.
-  # pip.csv has a variant_names column; use it if available.
-  if ("variant_names" %in% names(pip_df)) {
-    ord <- match(variant_ids, pip_df$variant_names)
-    if (anyNA(ord)) ord <- seq_len(p)   # fallback: assume order preserved
-  } else {
-    ord <- seq_len(p)
-  }
-
-  pip <- as.numeric(pip_df$pip[ord])
-  pip <- pmax(0, pmin(1, pip))   # clamp for safety
-
-  # --- Parse credible_set.txt -------------------------------------------------
-  # Format: one credible set per line, space-separated 0-based variant indices.
-  # Convert to 1-based.
-
-  credible_sets <- list()
-  cs_pip        <- NULL
-
-  if (file.exists(cred_path)) {
-    cred_lines <- readLines(cred_path, warn = FALSE)
-    cred_lines <- cred_lines[nchar(trimws(cred_lines)) > 0]
-
-    if (length(cred_lines) > 0) {
-      credible_sets <- lapply(cred_lines, function(line) {
-        idx_0based <- suppressWarnings(as.integer(strsplit(trimws(line), "\\s+")[[1]]))
-        idx_0based <- idx_0based[!is.na(idx_0based)]
-        sort(idx_0based + 1L)   # 0-based → 1-based
-      })
-      credible_sets <- credible_sets[lengths(credible_sets) > 0]
-    }
-  }
-
-  # Parse conditional inclusion probabilities (optional output)
-  cond_path <- file.path(out_dir, "conditional_credible_variants_probability.txt")
-  if (file.exists(cond_path)) {
-    cond_lines <- readLines(cond_path, warn = FALSE)
-    cond_lines <- cond_lines[nchar(trimws(cond_lines)) > 0]
-    cs_pip <- lapply(cond_lines, function(line) {
-      suppressWarnings(as.numeric(strsplit(trimws(line), "\\s+")[[1]]))
-    })
-  }
+  pip <- parsed$pip
+  credible_sets <- parsed$credible_sets
+  cs_pip <- parsed$cs_pip
 
   # --- Return -----------------------------------------------------------------
 
@@ -396,6 +348,8 @@ run_beatrice <- function(z,
     params          = params,
     runtime_seconds = elapsed,
     additional      = list(
+      variant_ids = identity$original_ids,
+      variant_alignment = identity$alignment,
       cs_pip = cs_pip
     )
   )
@@ -436,6 +390,35 @@ run_beatrice_region <- function(region_geno, region_pheno, ...) {
 # =============================================================================
 # Internal helpers
 # =============================================================================
+
+.beatrice_script_path <- function(beatrice_dir) {
+  candidates <- file.path(beatrice_dir, c("beatrice_annot.py", "beatrice.py"))
+  found <- candidates[file.exists(candidates)]
+  if (length(found)) found[[1L]] else NULL
+}
+
+.beatrice_required_packages <- function(script_path) {
+  c("torch", "numpy", "scipy", "pandas", "tqdm", "absl", "imageio",
+    "seaborn", "matplotlib")
+}
+
+.beatrice_variant_identity <- function(variant_ids, p) {
+  if (is.null(variant_ids)) variant_ids <- paste0("rs", seq_len(p) - 1L)
+  if (!is.character(variant_ids) || length(variant_ids) != p || anyNA(variant_ids) ||
+      any(!nzchar(trimws(variant_ids))) || anyDuplicated(variant_ids)) {
+    stop("variant_ids must be p unique nonempty character identifiers.", call. = FALSE)
+  }
+  native_ids <- paste0("variant_", seq_len(p))
+  list(original_ids = variant_ids, native_ids = native_ids,
+       alignment = data.frame(index = seq_len(p), native_id = native_ids,
+                              variant_id = variant_ids, stringsAsFactors = FALSE))
+}
+
+.beatrice_process_failed <- function(output) {
+  status <- attr(output, "status")
+  !is.null(status) && !(length(status) == 1L && is.numeric(status) &&
+                         is.finite(status) && status == 0)
+}
 
 .beatrice_params <- function(n, max_iter, n_caus, sigma_sq, gamma_coverage,
                              sparse_concrete, beatrice_dir, python) {

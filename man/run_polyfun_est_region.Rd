@@ -4,7 +4,13 @@
 \alias{run_polyfun_est_region}
 \title{Run polyfun_est on a single region from simulation data structures}
 \usage{
-run_polyfun_est_region(region_geno, region_pheno, pooled_tau = NULL, ...)
+run_polyfun_est_region(
+  region_geno,
+  region_pheno,
+  pooled_tau = NULL,
+  ...,
+  statistic_type = NULL
+)
 }
 \arguments{
 \item{region_geno}{List. One element of \code{simulation$genotypes},
@@ -18,6 +24,9 @@ Typically supplied automatically by
 \code{run_polyfun_est_scenario_setup()}. Default: NULL.}
 
 \item{...}{Additional arguments passed to \code{\link{run_polyfun_est}}.}
+
+\item{statistic_type}{Optional summary type inherited from the region;
+defaults to \code{marginal_ols_t} when no type is declared.}
 }
 \value{
 The output of \code{\link{run_polyfun_est}}.

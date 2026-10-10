@@ -4,12 +4,23 @@
 \alias{run_finemap_inf_region}
 \title{Run FINEMAP-inf on a single region from simulation data structures}
 \usage{
-run_finemap_inf_region(region_geno, region_pheno, ...)
+run_finemap_inf_region(
+  region_geno,
+  region_pheno,
+  statistic_type = NULL,
+  meansq = 1,
+  ...
+)
 }
 \arguments{
 \item{region_geno}{One element of \code{simulation$genotypes}.}
 
 \item{region_pheno}{One element of a scenario's \code{regions}.}
+
+\item{statistic_type}{Optional summary type; defaults to the region's declared
+type or \code{marginal_ols_t}.}
+
+\item{meansq}{Phenotype mean square in the chosen native effect units; default 1.}
 
 \item{...}{Passed to \code{\link{run_finemap_inf}}.}
 }

@@ -525,6 +525,20 @@ simulate_single_region <- function(vcf_file,
     region_id = region_id,
     vcf_source = vcf_file
   )
+  # sim1000G 1.40 reads phased 0/1 allele indices and sums gt1 + gt2:
+  # X_raw counts VCF ALT, not necessarily the minor allele. Preserve the
+  # exact retained rows so external-file methods need not guess orientation.
+  if (!is.null(vcf_obj$vcf) && nrow(vcf_obj$vcf) == length(polymorphic) &&
+      ncol(vcf_obj$vcf) >= 5L) {
+    retained <- vcf_obj$vcf[polymorphic, seq_len(5L), drop = FALSE]
+    out$variant_metadata <- data.frame(
+      chrom = as.character(retained[[1L]]), position = as.numeric(retained[[2L]]),
+      source_id = as.character(retained[[3L]]), ref = as.character(retained[[4L]]),
+      alt = as.character(retained[[5L]]), stringsAsFactors = FALSE)
+    out$counted_allele <- "ALT"
+    out$allele_frequency <- colMeans(genotype_raw) / 2
+    out$genotype_sd <- apply(genotype_raw, 2L, stats::sd)
+  }
   if (!is.null(X_ref)) {
     out$X_ref     <- X_ref
     out$X_ref_raw <- genotype_ref_raw

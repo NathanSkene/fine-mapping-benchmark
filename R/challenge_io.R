@@ -90,7 +90,8 @@ challenge_region_adapter <- function(wrapper, method_args = list()) {
     geno <- list(n = input$n, p = p, LD = input$LD, LD_ref = input$LD,
                  maf = rep(.25, p), variant_ids = input$variant_id)
     pheno <- list(n = input$n, z = input$z, beta_hat = input$beta_hat,
-                  se = input$se, LD = input$LD, annotations_matrix = input$annotations)
+                  se = input$se, LD = input$LD, annotations_matrix = input$annotations,
+                  statistic_type = "normal_score")
     result <- do.call(wrapper, c(list(region_geno = geno, region_pheno = pheno), method_args))
     if (!is.null(result$error)) stop(result$error)
     native <- result$credible_sets %||% list()

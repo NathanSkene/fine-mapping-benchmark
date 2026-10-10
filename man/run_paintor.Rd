@@ -37,17 +37,17 @@ when using enumeration mode. Default: 2.}
 enumeration. Recommended for large regions (p > 500) or when
 \code{max_causal > 3}. Default: FALSE.}
 
-\item{coverage}{Numeric. Coverage level for constructing credible sets from
-PIPs. Default: 0.95.}
+\item{coverage}{Numeric. Threshold for the descriptive PIP-mass selection
+stored in \code{additional$pip_mass_set}. Default: 0.95. This selection
+has no signal-specific credible-set coverage interpretation.}
 }
 \value{
 A list with the standardised fine-mapping output:
 \describe{
 \item{pip}{Numeric vector (length p). Marginal posterior inclusion
 probabilities.}
-\item{credible_sets}{List containing one integer vector: the indices of
-variants in the credible set (ordered by decreasing PIP), constructed
-greedily from PIPs until cumulative PIP >= \code{coverage}.}
+\item{credible_sets}{Empty list. Signal-specific credible sets are not
+provided by this upstream output.}
 \item{method}{Character. Always \code{"paintor"}.}
 \item{input_type}{Character. Always \code{"summary"}.}
 \item{params}{List. Hyperparameters used.}

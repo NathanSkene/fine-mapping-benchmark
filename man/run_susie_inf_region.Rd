@@ -4,7 +4,13 @@
 \alias{run_susie_inf_region}
 \title{Run SuSiE-inf on a single region from simulation data structures}
 \usage{
-run_susie_inf_region(region_geno, region_pheno, use_individual = FALSE, ...)
+run_susie_inf_region(
+  region_geno,
+  region_pheno,
+  use_individual = FALSE,
+  ...,
+  statistic_type = NULL
+)
 }
 \arguments{
 \item{region_geno}{List. One element of \code{simulation$genotypes}.}
@@ -15,6 +21,9 @@ run_susie_inf_region(region_geno, region_pheno, use_individual = FALSE, ...)
 individual-level data. Default: FALSE.}
 
 \item{...}{Additional arguments passed to \code{\link{run_susie_inf}}.}
+
+\item{statistic_type}{Optional summary type. Defaults to the region's declared
+type, or \code{marginal_ols_t} when no type is declared.}
 }
 \value{
 The output of \code{\link{run_susie_inf}}.

@@ -94,6 +94,8 @@ setup_polyfun_oracle <- function() {
 #' @param estimate_prior_variance Logical. Default: TRUE.
 #' @param verbose_susie Logical. Print SuSiE's own progress messages.
 #'   Default: FALSE.
+#' @param statistic_type \code{marginal_ols_t} (default) or \code{normal_score}.
+#' @param residual_variance Specified Gaussian score noise variance; default 1.
 #'
 #' @return A list with the standardised fine-mapping output. The
 #'   \code{additional} sub-list contains:
@@ -128,7 +130,8 @@ run_polyfun_oracle <- function(z,
                                 max_iter    = 100,
                                 estimate_residual_variance = TRUE,
                                 estimate_prior_variance    = TRUE,
-                                verbose_susie = FALSE) {
+                                verbose_susie = FALSE,
+                                statistic_type = "marginal_ols_t", residual_variance = 1) {
 
   # --- Validate ---------------------------------------------------------------
 
@@ -183,16 +186,20 @@ run_polyfun_oracle <- function(z,
                                     estimate_residual_variance,
                                     estimate_prior_variance,
                                     prior_source = prior_source)
+  params$statistic_type <- statistic_type
+  params$score_residual_variance <- residual_variance
+  params$effective_estimate_residual_variance <- if (statistic_type == "normal_score") FALSE else estimate_residual_variance
 
   # --- Run SuSiE-RSS with the per-SNP priors ---------------------------------
 
   start_time <- proc.time()
 
   fit <- tryCatch({
-    susieR::susie_rss(
+    .fm_susie_rss(
       z = z,
       R = LD,
       n = n,
+      statistic_type = statistic_type, residual_variance = residual_variance,
       L = L,
       prior_weights = prior_weights,
       estimate_residual_variance = estimate_residual_variance,
@@ -235,7 +242,7 @@ run_polyfun_oracle <- function(z,
     strict_performance_ceiling = FALSE,
     implementation = "annotation_enrichment_oracle_susie",
     alpha           = fit$alpha,
-    posterior_mean  = colSums(fit$alpha * fit$mu),
+    posterior_mean  = .fm_susie_posterior_mean(fit),
     lbf             = if (!is.null(fit$lbf)) fit$lbf else rep(NA_real_, L),
     cs_purity       = cs_purity,
     converged       = fit$converged,
@@ -278,10 +285,12 @@ run_polyfun_oracle <- function(z,
 #'   accepted as a fallback location for the matrix.
 #' @param ... Additional arguments passed to \code{\link{run_polyfun_oracle}}
 #'   (e.g. \code{L}, \code{coverage}, \code{min_abs_corr}).
+#' @param statistic_type Optional summary type inherited from the region;
+#'   defaults to \code{marginal_ols_t} when no type is declared.
 #'
 #' @return The output of \code{\link{run_polyfun_oracle}}.
 #' @export
-run_polyfun_oracle_region <- function(region_geno, region_pheno, ...) {
+run_polyfun_oracle_region <- function(region_geno, region_pheno, ..., statistic_type = NULL) {
 
   # Annotation matrix is stored on either side depending on pipeline path:
   # - run_simulation() places it on region_geno (shared across scenarios)
@@ -300,6 +309,7 @@ run_polyfun_oracle_region <- function(region_geno, region_pheno, ...) {
     n           = region_geno$n,
     annotations = A,
     enrichment  = enrich,
+    statistic_type = statistic_type %||% region_pheno$statistic_type %||% "marginal_ols_t",
     ...
   )
 }

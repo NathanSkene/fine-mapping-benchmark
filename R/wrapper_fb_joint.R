@@ -20,34 +20,25 @@
 # returned list into every region's args. We use that hook to run the joint Python
 # trainer (BEATRICE_annot_sparse/beatrice_joint.py) over ALL regions in one process,
 # parse each region's pip.csv/credible_set.txt, and return a cache keyed by a
-# z-fingerprint. The thin per-region function looks up its own region's result.
+# complete ordered-input digest. The per-region function retrieves its result.
 #
-# Falls back to per-region (single-locus) FB when a scenario has no annotations
-# (the `none` arm -> plain BEATRICE) or when the joint run fails for a region;
-# such results are tagged additional$joint_fallback = TRUE so they are traceable.
+# The annotation-free arm explicitly runs the locus-only BEATRICE ablation.
+# Failed annotated joint fits remain failures; they never change estimator.
 # =============================================================================
 
 
-# --- deterministic per-region key from the z vector (always available) -------
-# Computed identically in the scenario hook (regions[[i]]$z) and the per-region
-# wrapper (region_pheno$z); those are the same in-memory vector, so the key is
-# exact. Does not rely on region_id being set by the simulator.
-.fb_fingerprint <- function(z) {
-  z <- as.numeric(z)
-  paste(length(z),
-        format(sum(z),      digits = 15),
-        format(sum(z * z),  digits = 15),
-        format(z[1],        digits = 15),
-        format(z[length(z)], digits = 15),
-        sep = "|")
+# --- complete ordered observed input identity, shared with PAINTOR -----------
+.fb_fingerprint <- function(z, LD = NULL, annotations = NULL, n = NULL,
+                             variant_ids = NULL) {
+  .fm_pooled_input_key(z, LD, annotations, n, variant_ids)
 }
 
 
 # --- write one region's .z/.ld/.annot into work_dir (mirrors FB wrapper I/O) --
 .fb_joint_write_region <- function(work_dir, idx, z, LD, annotations, variant_ids) {
   p <- length(z)
-  if (is.null(variant_ids)) variant_ids <- paste0("rs", seq(0, p - 1))
-  variant_ids <- gsub("\\s+", "_", variant_ids)   # collapse embedded spaces (see FB wrapper)
+  identity <- .beatrice_variant_identity(variant_ids, p)
+  variant_ids <- identity$native_ids
 
   z_path     <- file.path(work_dir, sprintf("region%d.z", idx))
   ld_path    <- file.path(work_dir, sprintf("region%d.ld", idx))
@@ -63,7 +54,8 @@
                      quote = FALSE, row.names = FALSE, col.names = FALSE, sep = " ")
 
   list(z = z_path, LD = ld_path, annot = annot_path, target = target_dir,
-       variant_ids = variant_ids, p = p)
+       variant_ids = variant_ids, original_ids = identity$original_ids,
+       variant_alignment = identity$alignment, p = p)
 }
 
 
@@ -76,26 +68,31 @@
 
   pip_df <- tryCatch(utils::read.csv(pip_path, stringsAsFactors = FALSE),
                      error = function(e) NULL)
-  if (is.null(pip_df) || !"pip" %in% names(pip_df)) return(NULL)
-
-  if ("variant_names" %in% names(pip_df)) {
-    ord <- match(variant_ids, pip_df$variant_names)
-    if (anyNA(ord)) ord <- seq_len(p)
-  } else {
-    ord <- seq_len(p)
-  }
-  pip <- pmax(0, pmin(1, as.numeric(pip_df$pip[ord])))
+  if (is.null(pip_df) || !all(c("pip", "variant_names") %in% names(pip_df))) return(NULL)
+  if (anyNA(pip_df$variant_names) || anyDuplicated(pip_df$variant_names)) return(NULL)
+  ord <- match(variant_ids, pip_df$variant_names)
+  if (anyNA(ord) || nrow(pip_df) != p) return(NULL)
+  if ("variant_index" %in% names(pip_df) &&
+      !identical(as.numeric(pip_df$variant_index[ord]), as.numeric(seq_len(p) - 1L))) return(NULL)
+  pip <- suppressWarnings(as.numeric(pip_df$pip[ord]))
+  if (length(pip) != p || any(!is.finite(pip)) || any(pip < 0 | pip > 1)) return(NULL)
 
   credible_sets <- list()
+  set_orders <- list()
   if (file.exists(cred_path)) {
     cred_lines <- readLines(cred_path, warn = FALSE)
     cred_lines <- cred_lines[nchar(trimws(cred_lines)) > 0]
     if (length(cred_lines) > 0) {
-      credible_sets <- lapply(cred_lines, function(line) {
-        idx <- suppressWarnings(as.integer(strsplit(trimws(line), "\\s+")[[1]]))
-        sort(idx[!is.na(idx)] + 1L)                # 0-based -> 1-based
-      })
-      credible_sets <- credible_sets[lengths(credible_sets) > 0]
+      for (line in cred_lines) {
+        tokens <- strsplit(trimws(line), "\\s+")[[1L]]
+        if (any(!grepl("^[0-9]+$", tokens))) return(NULL)
+        native_idx <- suppressWarnings(as.numeric(tokens))
+        if (any(!is.finite(native_idx)) || any(native_idx < 0 | native_idx >= p) ||
+            anyDuplicated(native_idx)) return(NULL)
+        idx <- as.integer(native_idx) + 1L  # native zero-based indices
+        set_orders[[length(set_orders) + 1L]] <- order(idx)
+        credible_sets[[length(credible_sets) + 1L]] <- sort(idx)
+      }
     }
   }
 
@@ -103,8 +100,14 @@
   if (file.exists(cond_path)) {
     cond_lines <- readLines(cond_path, warn = FALSE)
     cond_lines <- cond_lines[nchar(trimws(cond_lines)) > 0]
-    cs_pip <- lapply(cond_lines, function(line)
-      suppressWarnings(as.numeric(strsplit(trimws(line), "\\s+")[[1]])))
+    if (length(cond_lines) != length(credible_sets)) return(NULL)
+    cs_pip <- vector("list", length(cond_lines))
+    for (i in seq_along(cond_lines)) {
+      values <- suppressWarnings(as.numeric(strsplit(trimws(cond_lines[i]), "\\s+")[[1L]]))
+      if (length(values) != length(credible_sets[[i]]) || any(!is.finite(values)) ||
+          any(values < 0 | values > 1)) return(NULL)
+      cs_pip[[i]] <- values[set_orders[[i]]]
+    }
   }
 
   list(pip = pip, credible_sets = credible_sets, cs_pip = cs_pip)
@@ -114,37 +117,43 @@
 # --- the shared scenario-setup core ------------------------------------------
 # Returns list(.fb_joint_cache = <fingerprint -> parsed result>,
 #              .fb_joint_annotated = TRUE/FALSE, .fb_joint_head = head).
-# Empty annotated-arm cache means the joint run failed -> per-region fallback.
+# Empty annotated-arm cache means the joint run failed, not another estimator.
 .fb_joint_scenario_setup <- function(genotypes, regions, user_args, prior_head) {
   n_regions <- length(regions)
+  annotation_inputs <- lapply(seq_len(n_regions), function(i) {
+    A <- genotypes[[i]]$annotations_matrix
+    if (is.null(A)) A <- regions[[i]]$annotations_matrix
+    A
+  })
+  if (all(vapply(annotation_inputs, is.null, logical(1)))) {
+    return(list(.fb_joint_annotated = FALSE, .fb_joint_head = prior_head))
+  }
 
   # collect regions that have an annotation matrix (joint prior needs annotations)
   specs <- vector("list", n_regions)
   keys  <- character(n_regions)
   m_ann <- NULL
   for (i in seq_len(n_regions)) {
-    A <- genotypes[[i]]$annotations_matrix
-    if (is.null(A)) A <- regions[[i]]$annotations_matrix
+    A <- annotation_inputs[[i]]
     z <- regions[[i]]$z
     if (is.null(A) || !is.matrix(A) || is.null(z) || nrow(A) != length(z)) {
-      return(list(.fb_joint_annotated = FALSE, .fb_joint_head = prior_head))
+      stop("Joint Functional BEATRICE requires a valid annotation matrix for every region.", call. = FALSE)
     }
     if (is.null(m_ann)) m_ann <- ncol(A) else if (ncol(A) != m_ann) {
-      return(list(.fb_joint_annotated = FALSE, .fb_joint_head = prior_head))
+      stop("Joint Functional BEATRICE annotation columns must agree across regions.", call. = FALSE)
     }
     specs[[i]] <- list(z = z, LD = genotypes[[i]]$LD, A = A,
                        variant_ids = genotypes[[i]]$variant_ids, n = genotypes[[i]]$n)
-    keys[i] <- .fb_fingerprint(z)
+    keys[i] <- .fb_fingerprint(z, specs[[i]]$LD, A, specs[[i]]$n, specs[[i]]$variant_ids)
   }
 
   beatrice_dir <- user_args$beatrice_dir
   python       <- user_args$python
   script       <- file.path(beatrice_dir, "beatrice_joint.py")
   if (is.null(beatrice_dir) || is.null(python) || !file.exists(script)) {
-    return(list(.fb_joint_annotated = TRUE, .fb_joint_head = prior_head,
-                .fb_joint_cache = list()))
+    stop("Joint Functional BEATRICE needs Python and beatrice_joint.py; no fallback is performed.", call. = FALSE)
   }
-  py <- if (file.exists(path.expand(python))) normalizePath(path.expand(python)) else python
+  py <- if (file.exists(path.expand(python))) .fm_python_path(python) else python
 
   work_dir <- tempfile(pattern = "fbjoint_")
   dir.create(work_dir, recursive = TRUE)
@@ -178,15 +187,15 @@
     "--hierarchy_M",          as.character(gv("hierarchy_M", 10.0))
   )
 
+  started <- proc.time()
   run_output <- tryCatch(
     system2(py, args = args, stdout = TRUE, stderr = TRUE),
     error = function(e) structure(conditionMessage(e), class = "fb_joint_error"))
+  elapsed <- as.numeric((proc.time() - started)["elapsed"])
 
-  if (inherits(run_output, "fb_joint_error")) {
-    message(sprintf("    WARNING: fb_joint (%s) system2 failed: %s",
-                    prior_head, as.character(run_output)))
-    return(list(.fb_joint_annotated = TRUE, .fb_joint_head = prior_head,
-                .fb_joint_cache = list()))
+  if (inherits(run_output, "fb_joint_error") || .beatrice_process_failed(run_output)) {
+    stop(paste(c(sprintf("Joint Functional BEATRICE (%s) execution failed:", prior_head),
+                 tail(as.character(run_output), 20L)), collapse = "\n"), call. = FALSE)
   }
 
   # parse per-region outputs into the fingerprint-keyed cache
@@ -194,11 +203,17 @@
   for (i in seq_len(n_regions)) {
     parsed <- .fb_joint_parse_output(written[[i]]$target,
                                      written[[i]]$variant_ids, written[[i]]$p)
-    if (!is.null(parsed)) cache[[keys[i]]] <- parsed
+    if (!is.null(parsed)) {
+      parsed$variant_ids <- written[[i]]$original_ids
+      parsed$variant_alignment <- written[[i]]$variant_alignment
+      parsed$runtime_seconds <- elapsed / n_regions
+      parsed$pooled_runtime_seconds <- elapsed
+      parsed$n_loci_pooled <- n_regions
+      cache[[keys[i]]] <- parsed
+    }
   }
-  if (length(cache) == 0L) {
-    message(sprintf("    WARNING: fb_joint (%s) produced no parseable region output.",
-                    prior_head))
+  if (length(cache) != n_regions) {
+    stop("Joint Functional BEATRICE did not return valid output for every region.", call. = FALSE)
   }
   list(.fb_joint_cache = cache, .fb_joint_annotated = TRUE, .fb_joint_head = prior_head)
 }
@@ -229,7 +244,9 @@ run_fb_xregion_scenario_setup <- function(genotypes, regions, user_args) {
                              .fb_joint_cache = NULL, .fb_joint_annotated = TRUE,
                              .fb_joint_head = NULL, ...) {
   p <- length(region_pheno$z)
-  key <- .fb_fingerprint(region_pheno$z)
+  A <- region_geno$annotations_matrix %||% region_pheno$annotations_matrix
+  key <- .fb_fingerprint(region_pheno$z, region_geno$LD, A,
+                         region_geno$n, region_geno$variant_ids)
   entry <- if (!is.null(.fb_joint_cache)) .fb_joint_cache[[key]] else NULL
 
   if (!is.null(entry)) {
@@ -239,14 +256,24 @@ run_fb_xregion_scenario_setup <- function(genotypes, regions, user_args) {
       method          = method_name,
       input_type      = "summary",
       params          = list(prior_head = .fb_joint_head, joint = TRUE),
-      runtime_seconds = NA_real_,
-      additional      = list(cs_pip = entry$cs_pip, joint_fallback = FALSE)
+      runtime_seconds = entry$runtime_seconds,
+      additional      = list(cs_pip = entry$cs_pip, joint_fallback = FALSE,
+                             variant_ids = entry$variant_ids,
+                             variant_alignment = entry$variant_alignment,
+                             pooled_runtime_seconds = entry$pooled_runtime_seconds,
+                             n_loci_pooled = entry$n_loci_pooled,
+                             pooled_across_loci = TRUE)
     ))
   }
 
-  # Cache miss: no annotations (none arm) or joint failed -> per-region FB.
-  # On the none arm this is plain BEATRICE; on an annotated arm it is single-locus
-  # FB. Tagged joint_fallback = TRUE so it is distinguishable in analysis.
+  if (!identical(.fb_joint_annotated, FALSE)) {
+    return(list(pip = rep(NA_real_, p), credible_sets = list(), method = method_name,
+                input_type = "summary", params = list(prior_head = .fb_joint_head, joint = TRUE),
+                runtime_seconds = NA_real_, additional = list(joint_fallback = FALSE),
+                error = "Annotated joint fit has no valid cached prediction; no fallback is performed."))
+  }
+
+  # The prespecified annotation-free ablation is ordinary locus-only BEATRICE.
   fb <- tryCatch(
     run_functional_beatrice_region(region_geno = region_geno,
                                    region_pheno = region_pheno, ...),
@@ -256,7 +283,9 @@ run_fb_xregion_scenario_setup <- function(genotypes, regions, user_args) {
                              additional = list(), error = conditionMessage(e)))
   fb$method <- method_name
   if (is.null(fb$additional)) fb$additional <- list()
-  fb$additional$joint_fallback <- TRUE
+  fb$additional$joint_fallback <- FALSE
+  fb$additional$annotation_free_equivalent <- "beatrice_locus_only"
+  fb$additional$joint <- FALSE
   fb
 }
 

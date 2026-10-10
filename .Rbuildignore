@@ -45,6 +45,8 @@
 # Man pages (man/) and the vignette (vignettes/getting-started.Rmd) stay
 # part of the package.
 ^docs$
+^paper$
+^rl_envs$
 ^CITATION\.cff$
 
 # --- Runtime output directory ------------------------------------------------

@@ -17,7 +17,9 @@ run_susie_inf(
   coverage = 0.95,
   min_abs_corr = 0.5,
   max_iter = 100,
-  verbose_susie = FALSE
+  verbose_susie = FALSE,
+  statistic_type = "marginal_ols_t",
+  residual_variance = 1
 )
 }
 \arguments{
@@ -50,6 +52,12 @@ Default: 0.5.}
 \item{max_iter}{Integer. Maximum IBSS iterations. Default: 100.}
 
 \item{verbose_susie}{Logical. Print susieR's internal progress. Default: FALSE.}
+
+\item{statistic_type}{\code{marginal_ols_t} (default). \code{normal_score}
+is explicitly unsupported for this method: susieR jointly learns the
+infinitesimal and residual variances using phenotype sufficient statistics.}
+
+\item{residual_variance}{Reserved score-noise parameter; default 1.}
 }
 \value{
 A list with the standardised fine-mapping output:

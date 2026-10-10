@@ -26,7 +26,9 @@ run_beatrice(
 \item{n}{Integer. Sample size (GWAS N).}
 
 \item{variant_ids}{Character vector or NULL. Variant identifiers (length p).
-If NULL, set to \code{"rs0", "rs1", ...} (matching BEATRICE convention).}
+If NULL, set to \code{"rs0", "rs1", ...} (matching BEATRICE convention).
+Original identifiers are retained in \code{additional$variant_ids} and
+\code{additional$variant_alignment}; native files use collision-free tokens.}
 
 \item{beatrice_dir}{Character. Path to the cloned Beatrice-Finemapping
 repository root.}
@@ -73,6 +75,9 @@ Writes the required BEATRICE input files to a temporary directory, calls
 \code{beatrice.py} via the specified Python executable, parses the output,
 and returns results in the standardised format. The temporary directory is
 deleted on exit.
+Nonzero process exits and malformed, incomplete, or unaligned native
+probabilities or credible sets return a failed fit; evidence is never clipped
+or repaired. Synthetic tokens serialize variants without changing their IDs.
 }
 \details{
 BEATRICE trains a neural network for each region; runtime scales with

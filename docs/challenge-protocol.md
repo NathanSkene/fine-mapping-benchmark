@@ -84,6 +84,15 @@ predictor <- function(input) {
 ```
 
 `challenge_region_adapter()` connects summary-based legacy region wrappers.
+The Gaussian challenge schema specifies `normal_score` statistics, and this
+adapter forwards that type to supported region wrappers. When invoking a
+wrapper directly, specify the type explicitly. For SuSiE, use
+`list(statistic_type = "normal_score", residual_variance = 1,
+estimate_residual_variance = FALSE)`: the adapter fits the stated score
+likelihood and returns effects on the original beta scale. Passing these scores
+to an OLS-t reconstruction with its sample-size correction changes the
+experiment. A wrapper that cannot support the typed experiment must return an
+explicit unsupported outcome.
 It rejects multi-cohort and variable-n inputs because discarding these fields
 would silently change the declared method. Existing oracle wrappers depend on
 simulator truth and do not belong in this participant API. The source-only

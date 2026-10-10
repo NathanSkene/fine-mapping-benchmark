@@ -14,8 +14,9 @@ run_paintor_scenario_setup(genotypes, regions, user_args)
 \item{user_args}{List. The user's method_args for paintor.}
 }
 \value{
-A list with \code{.paintor_cache}, or an empty list if the pooled run
-could not be performed (callers then fall back to per-locus runs).
+A list with \code{.paintor_cache}; a one-locus input returns an empty
+setup list for the prespecified locus-only call. Failed pooled fits raise
+errors and never substitute a different estimator.
 }
 \description{
 PAINTOR's EM algorithm estimates annotation enrichment weights from ALL loci
@@ -29,6 +30,6 @@ enrichment estimate extremely noisy.
 This hook is called once per scenario by \code{\link{run_methods}}. It writes
 every region as its own locus, lists them all in one \code{input.txt}, makes a
 single PAINTOR call, and returns the per-region results keyed by a
-fingerprint of the region's z-vector. \code{run_paintor_region()} then looks
+digest of the complete ordered region inputs. \code{run_paintor_region()} then looks
 up its own region.
 }

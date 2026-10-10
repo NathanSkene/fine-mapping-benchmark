@@ -17,7 +17,9 @@ run_susie(
   coverage = 0.95,
   min_abs_corr = 0.5,
   max_iter = 100,
-  verbose_susie = FALSE
+  verbose_susie = FALSE,
+  statistic_type = "marginal_ols_t",
+  residual_variance = 1
 )
 }
 \arguments{
@@ -51,6 +53,11 @@ Default: 0.5.}
 
 \item{verbose_susie}{Logical. Print SuSiE's own progress messages.
 Default: FALSE.}
+
+\item{statistic_type}{\code{marginal_ols_t} (default) or \code{normal_score}.
+Gaussian scores use a fixed-noise score likelihood without OLS-t conversion.}
+
+\item{residual_variance}{Specified Gaussian score noise variance; default 1.}
 }
 \value{
 A list with the standardised fine-mapping output:

@@ -102,6 +102,8 @@ setup_polyfun_ldsc <- function() {
 #' @param estimate_residual_variance Logical. Default: TRUE.
 #' @param estimate_prior_variance Logical. Default: TRUE.
 #' @param variant_ids Character or NULL. Optional variant labels.
+#' @param statistic_type \code{marginal_ols_t} (default) or \code{normal_score}.
+#' @param residual_variance Specified Gaussian score noise variance; default 1.
 #' @param ... Ignored (for wrapper compatibility).
 #'
 #' @return List with pip, credible_sets, method = "polyfun_ldsc", params,
@@ -118,6 +120,7 @@ run_polyfun_ldsc <- function(z, LD, n,
                              estimate_residual_variance = TRUE,
                              estimate_prior_variance    = TRUE,
                              variant_ids = NULL,
+                             statistic_type = "marginal_ols_t", residual_variance = 1,
                              ...) {
   setup_polyfun_ldsc()
   t0 <- Sys.time()
@@ -162,8 +165,9 @@ run_polyfun_ldsc <- function(z, LD, n,
     .tau_annot_to_prior_weights(annotations, tau)
   }
 
-  fit <- susieR::susie_rss(
+  fit <- .fm_susie_rss(
     z            = z, R = LD, n = n, L = L, coverage = coverage,
+    statistic_type = statistic_type, residual_variance = residual_variance,
     min_abs_corr = min_abs_corr, max_iter = max_iter,
     prior_weights = prior_weights,
     estimate_residual_variance = estimate_residual_variance,
@@ -184,6 +188,8 @@ run_polyfun_ldsc <- function(z, LD, n,
       L = L, coverage = coverage, min_abs_corr = min_abs_corr,
       max_iter = max_iter,
       estimate_residual_variance = estimate_residual_variance,
+      statistic_type = statistic_type, score_residual_variance = residual_variance,
+      effective_estimate_residual_variance = if (statistic_type == "normal_score") FALSE else estimate_residual_variance,
       estimate_prior_variance    = estimate_prior_variance
     ),
     runtime_seconds = runtime,
@@ -209,11 +215,13 @@ run_polyfun_ldsc <- function(z, LD, n,
 #' @param pooled_tau Numeric or NULL. LOCO-fitted per-region coefficients
 #'   supplied by the scenario_setup hook.
 #' @param ... Forwarded to run_polyfun_ldsc().
+#' @param statistic_type Optional summary type inherited from the region;
+#'   defaults to \code{marginal_ols_t} when no type is declared.
 #'
 #' @return Output of run_polyfun_ldsc.
 #' @export
 run_polyfun_ldsc_region <- function(region_geno, region_pheno,
-                                    pooled_tau = NULL, ...) {
+                                    pooled_tau = NULL, ..., statistic_type = NULL) {
   A <- region_geno$annotations_matrix
   if (is.null(A)) A <- region_pheno$annotations_matrix
   run_polyfun_ldsc(
@@ -222,6 +230,7 @@ run_polyfun_ldsc_region <- function(region_geno, region_pheno,
     n           = region_geno$n,
     annotations = A,
     pooled_tau  = pooled_tau,
+    statistic_type = statistic_type %||% region_pheno$statistic_type %||% "marginal_ols_t",
     region_id   = region_geno$region_id,
     variant_ids = region_geno$variant_ids,
     ...

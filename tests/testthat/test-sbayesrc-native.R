@@ -89,6 +89,13 @@ test_that("native adapter rejects stale outputs and invalid MCMC controls", {
                                                         burn_in = 50, dry_run = TRUE))), "retained")
   expect_error(do.call(run_sbayesrc_native, c(args, list(scale = "subset", seed = .5,
                                                         dry_run = TRUE))), "seed")
+  trace <- do.call(run_sbayesrc_native, c(args, list(scale = "subset", save_mcmc = TRUE,
+                                                   thin = 5L, dry_run = TRUE)))
+  expect_true("--write-mcmc-txt" %in% trace$args)
+  expect_equal(trace$args[match("--thin", trace$args) + 1L], "5")
+  expect_true(trace$manifest$params$save_mcmc)
+  expect_error(do.call(run_sbayesrc_native, c(args, list(scale = "subset", thin = 0,
+                                                        dry_run = TRUE))), "thin")
   dir.create(f$output_dir)
   writeLines("stale", file.path(f$output_dir, ".old-fit"))
   expect_error(do.call(run_sbayesrc_native, c(args, list(scale = "subset", dry_run = TRUE))), "new or empty")

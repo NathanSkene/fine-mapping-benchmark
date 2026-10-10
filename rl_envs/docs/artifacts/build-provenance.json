@@ -1,0 +1,24 @@
+{
+  "artifacts": {
+    "finemap_rl-0.1.0-py3-none-any.whl": "63f48793dc6b974b3cbe162079690a266cd61f6cc693a4b655e9a7be7fe88d39",
+    "finemap_rl-0.1.0.tar.gz": "e8cf281b816fef9c0ac9f3ea1ca6792c3ead99ec1165126b45b293c684d9a19f"
+  },
+  "wheel_matches_clean_linux_validated_wheel": true,
+  "linux_core_tests": {
+    "run": 30,
+    "passed": 23,
+    "skipped_optional_integration": 7,
+    "failures": 0,
+    "errors": 0
+  },
+  "full_local_tests": {
+    "run": 30,
+    "passed": 30,
+    "skipped": 0,
+    "failures": 0,
+    "errors": 0
+  },
+  "linux_runtime": "Python3.11.14 NumPy2.2.6 LinuxARM Docker29.2.1",
+  "sdist_excludes_own_build_provenance": true,
+  "runtime_image": "sha256:ec80cbe8ad8612c58e4db36cf7f7af982a059f4c95e97310494fca2df65d743f"
+}

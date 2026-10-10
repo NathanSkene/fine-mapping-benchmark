@@ -10,6 +10,14 @@ before the repairs require reevaluation; passing new tests does not validate
 old method rankings. The [scientific contract](docs/challenge-science.md)
 explains exactly what the new experiments measure.
 
+The [paired campaign runner](scripts/campaign/README.md) preserves the full
+historical design grids, distinguishes scoring changes from inference changes,
+and adds the stress suite. The [paper draft](paper/manuscript.md) records the
+comparison design and marks results that still require completed runs.
+The separately installable [FineMap RL package](rl_envs/README.md) provides
+inference, experiment allocation, method design and isolated code improvement
+environments, with a [submission dossier](rl_envs/docs/submission-dossier.md).
+
 ## Two complementary simulation families
 
 | Family | Inputs and purpose | Boundary |
@@ -27,7 +35,7 @@ independent cohorts. See the [scenario and input protocol](docs/challenge-protoc
 
 ## Run the challenge without genotype downloads
 
-Requirements: R >= 4.1 and `openssl` on PATH for SHA-256 release integrity.
+Requirements: R >= 4.1 and `openssl` on PATH for SHA-256 release and pooled-input integrity.
 The generator, exact reference and ABF baseline use base/recommended R packages.
 
 ```bash
@@ -122,7 +130,7 @@ use `FMB_NEURAL_SMOKE=1` in an environment with the documented Python packages.
 
 - Exact AP measures ranking; macro and pooled AP answer different questions.
   The old threshold-grid `auprc` is retained as a labelled legacy quantity.
-- Raw Brier and clipped logarithmic scores evaluate marginal sparse-membership
+- Raw Brier and logarithmic scores evaluate marginal sparse-membership
   forecasts. Binned reliability diagrams are descriptive, not proof of calibration.
 - Native credible sets, configuration collections and cumulative-PIP candidate
   lists represent different events. A sum of marginal PIPs is an expected count.

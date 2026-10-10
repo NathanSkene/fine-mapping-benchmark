@@ -279,6 +279,7 @@ run_sbayesrc <- function(z, LD, n,
     additional      = list(
       posterior_mean_beta = bhat,
       component_assignments = comp,
+      pip_event = "any_nonzero_mixture_component",
       pip_mass_set = mass_set,
       credible_set_semantics = "not_provided",
       implementation = "sbayesrc_style_surrogate",
@@ -304,11 +305,13 @@ run_sbayesrc <- function(z, LD, n,
 #'   \code{run_sbayesrc_scenario_setup()}. When supplied, no region-local
 #'   annotation refit happens.
 #' @param ... Forwarded to \code{run_sbayesrc()}.
+#' @param statistic_type Optional summary type inherited from the region;
+#'   defaults to \code{marginal_ols_t} when no type is declared.
 #'
 #' @return Output of run_sbayesrc.
 #' @export
 run_sbayesrc_region <- function(region_geno, region_pheno,
-                                pooled_gamma = NULL, ...) {
+                                pooled_gamma = NULL, ..., statistic_type = NULL) {
   A <- region_geno$annotations_matrix
   if (is.null(A)) A <- region_pheno$annotations_matrix
   run_sbayesrc(
@@ -317,6 +320,7 @@ run_sbayesrc_region <- function(region_geno, region_pheno,
     n            = region_geno$n,
     annotations  = A,
     pooled_gamma = pooled_gamma,
+    statistic_type = statistic_type %||% region_pheno$statistic_type %||% "marginal_ols_t",
     variant_ids  = region_geno$variant_ids,
     ...
   )
@@ -398,6 +402,8 @@ run_sbayesrc_scenario_setup <- function(genotypes, regions, user_args) {
       run_sbayesrc(
         z = z_i, LD = LD_i, n = n_i, annotations = A_i,
         sigma2_scale = sigma2_scale, n_iter = pilot_iter, burn_in = pilot_burn,
+        statistic_type = user_args$statistic_type %||% regions[[i]]$statistic_type %||% "marginal_ols_t",
+        residual_variance = user_args$residual_variance %||% 1,
         pooled_gamma = pilot_prior
       ),
       error = function(e) NULL

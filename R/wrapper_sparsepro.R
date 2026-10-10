@@ -98,7 +98,7 @@ setup_sparsepro <- function(sparsepro_dir, python = "python") {
   }
 
   resolved_python <- if (file.exists(path.expand(python))) {
-    normalizePath(path.expand(python))
+    .fm_python_path(python)
   } else {
     py <- Sys.which(python)
     if (nchar(py) == 0) {
@@ -244,7 +244,7 @@ run_sparsepro <- function(z,
   variant_ids <- gsub("\\s+", "_", variant_ids)
 
   sparsepro_dir <- path.expand(sparsepro_dir)
-  python        <- if (file.exists(path.expand(python))) normalizePath(path.expand(python)) else python
+  python        <- if (file.exists(path.expand(python))) .fm_python_path(python) else python
   script_path   <- file.path(sparsepro_dir, "sparsepro_zld.py")
 
   params <- .sparsepro_params(n, K, cthres, sparsepro_dir, python)
@@ -326,7 +326,8 @@ run_sparsepro <- function(z,
 
   elapsed <- as.numeric((proc.time() - start_time)["elapsed"])
 
-  if (inherits(run_output, "sparsepro_error")) {
+  if (inherits(run_output, "sparsepro_error") ||
+      (!is.null(attr(run_output, "status")) && attr(run_output, "status") != 0L)) {
     return(.sparsepro_error_result(p, params, elapsed, as.character(run_output),
                                     run_log = character(0)))
   }
@@ -372,12 +373,13 @@ run_sparsepro <- function(z,
     ))
   }
 
-  # Re-index PIPs to match the input variant_ids order. Variants present in
-  # the input but missing from .pip get NA.
-  pip <- numeric(p)
+  # Complete predictions must align by unique IDs; never clip invalid output.
   ord <- match(variant_ids, pip_df$rsid)
-  pip <- pip_df$pip[ord]
-  pip <- pmax(0, pmin(1, suppressWarnings(as.numeric(pip))))
+  if (nrow(pip_df) != p || anyNA(ord) || anyNA(pip_df$rsid) || anyDuplicated(pip_df$rsid))
+    return(.sparsepro_error_result(p, params, elapsed, "SparsePro output IDs are incomplete or duplicated.", run_log))
+  pip <- suppressWarnings(as.numeric(pip_df$pip[ord]))
+  if (any(!is.finite(pip)) || any(pip < 0 | pip > 1))
+    return(.sparsepro_error_result(p, params, elapsed, "SparsePro output is not a finite probability vector.", run_log))
 
   # --- Parse .cs file ---------------------------------------------------------
   # SparsePro emits one row per effect group (credible set). Columns:
@@ -421,11 +423,19 @@ run_sparsepro <- function(z,
         effs   <- if (length(cells) >= 3L) suppressWarnings(as.numeric(split_cell(cells[3L]))) else NA_real_
 
         idx <- match(rsids, variant_ids)
-        idx <- idx[!is.na(idx)]
-        list(idx = sort(unique(idx)), pip = pips, effect = effs)
+        if (!length(idx) || anyNA(idx) || anyDuplicated(idx)) return(NULL)
+        if (length(cells) >= 2L && (length(pips) != length(idx) ||
+            any(!is.finite(pips)) || any(pips < 0 | pips > 1))) return(NULL)
+        if (length(cells) >= 3L && (length(effs) != length(idx) || any(!is.finite(effs)))) return(NULL)
+        position <- order(idx)
+        list(idx = idx[position],
+             pip = if (length(cells) >= 2L) pips[position] else NULL,
+             effect = if (length(cells) >= 3L) effs[position] else NULL)
       })
 
-      parsed <- Filter(function(p) !is.null(p) && length(p$idx) > 0L, parsed)
+      if (any(vapply(parsed, is.null, logical(1))))
+        return(.sparsepro_error_result(p, params, elapsed,
+          "SparsePro native sets contain invalid IDs or misaligned probabilities/effects.", run_log))
 
       if (length(parsed) > 0L) {
         credible_sets  <- lapply(parsed, `[[`, "idx")

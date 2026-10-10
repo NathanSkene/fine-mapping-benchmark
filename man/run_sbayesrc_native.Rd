@@ -18,7 +18,9 @@ run_sbayesrc_native(
   burn_in = 1000L,
   seed = 22L,
   threads = 1L,
-  dry_run = FALSE
+  dry_run = FALSE,
+  save_mcmc = FALSE,
+  thin = 10L
 )
 }
 \arguments{
@@ -55,6 +57,11 @@ This changes only imported output, never the full panel fitted upstream.}
 
 \item{dry_run}{Logical. Validate/fingerprint inputs and return a command plan
 without launching the native program. Default FALSE.}
+
+\item{save_mcmc}{Save upstream text parameter draws for convergence diagnostics.
+Default FALSE. SNP-effect binary draws are not requested by this option.}
+
+\item{thin}{Positive integer sampling interval for saved draws. Default 10.}
 }
 \value{
 On execution, standard PIP output and aligned posterior mean effects,

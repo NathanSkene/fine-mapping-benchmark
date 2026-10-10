@@ -2147,7 +2147,15 @@ test_that("[14c] sbayesrc: single-region fit returns valid PIPs + posterior beta
     seed = 11, verbose = FALSE
   )
   rg <- sim$genotypes[[1]]; rp <- sim$scenarios[[1]]$regions[[1]]
-  fit <- run_sbayesrc_region(rg, rp)
+  # This compatibility surrogate uses an unstable annotation refit when a
+  # single region cannot supply pooled coefficients; valid output shape alone
+  # does not establish calibrated inference. Exercise its warning explicitly.
+  warning_state <- get(".sbayesrc_warned", asNamespace("fmbenchmark"))
+  previously_warned <- warning_state$done
+  warning_state$done <- FALSE
+  on.exit(warning_state$done <- previously_warned, add = TRUE)
+  expect_warning(fit <- run_sbayesrc_region(rg, rp),
+                 "unstable in-loop annotation refit")
   expect_equal(length(fit$pip), rg$p)
   expect_true(all(fit$pip >= 0 & fit$pip <= 1))
   expect_equal(fit$method, "sbayesrc")

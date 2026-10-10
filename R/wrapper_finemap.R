@@ -17,7 +17,7 @@
 #   pip              Numeric vector (length p). Marginal PIPs.
 #   credible_sets    List of integer vectors (variant indices). Credible sets
 #                    from the most probable number of causal variants k*.
-#                    Empty list if k* = 0 or no credible set file found.
+#                    Empty list if k* = 0; invalid/missing native sets fail.
 #   method           Character. "finemap".
 #   input_type       Character. Always "summary".
 #   params           List. Hyperparameters used.
@@ -214,6 +214,47 @@ download_finemap <- function() {
 # Run FINEMAP on a single region
 # =============================================================================
 
+.finemap_model_size_probabilities <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  lines <- readLines(path, warn = FALSE)
+  header <- grep("Post-Pr(# of causal SNPs is k)", lines, fixed = TRUE)
+  if (!length(header) || tail(header, 1L) >= length(lines)) return(NULL)
+  values <- lines[seq.int(tail(header, 1L) + 1L, length(lines))]
+  values <- values[grepl("^[[:space:]]*[(]?[0-9]+[[:space:]]*->[[:space:]]*[0-9.eE+-]+[)]?[[:space:]]*$", values)]
+  if (!length(values)) return(NULL)
+  values <- gsub("[()]", "", values)
+  pieces <- strsplit(trimws(values), "[[:space:]]*->[[:space:]]*")
+  sizes <- vapply(pieces, function(x) x[1L], "")
+  prob <- suppressWarnings(as.numeric(vapply(pieces, function(x) x[2L], "")))
+  if (anyDuplicated(sizes) || any(!is.finite(prob)) || any(prob < 0 | prob > 1) ||
+      abs(sum(prob) - 1) > 1e-4) return(NULL)
+  stats::setNames(prob, sizes)
+}
+
+.finemap_component_sets <- function(path, ids, k) {
+  if (!file.exists(path)) return(NULL)
+  table <- tryCatch(utils::read.table(path, header = TRUE, stringsAsFactors = FALSE,
+    fill = TRUE, na.strings = c("", "NA"), comment.char = "#"), error = function(e) NULL)
+  columns <- paste0("cred", seq_len(k))
+  if (is.null(table) || !all(columns %in% names(table))) return(NULL)
+  sets <- probabilities <- vector("list", k)
+  for (j in seq_len(k)) {
+    probability <- paste0("prob", j)
+    if (!probability %in% names(table)) return(NULL)
+    raw <- as.character(table[[columns[j]]])
+    keep <- !is.na(raw) & nzchar(trimws(raw))
+    raw <- raw[keep]
+    idx <- match(raw, ids)
+    prob <- suppressWarnings(as.numeric(table[[probability]][keep]))
+    if (!length(idx) || anyNA(idx) || anyDuplicated(idx) ||
+        any(!is.finite(prob)) || any(prob < 0 | prob > 1)) return(NULL)
+    ordering <- order(idx)
+    sets[[j]] <- as.integer(idx[ordering])
+    probabilities[[j]] <- prob[ordering]
+  }
+  list(sets = sets, probabilities = probabilities)
+}
+
 #' Run FINEMAP fine-mapping on a single region
 #'
 #' Writes the required FINEMAP input files to a temporary directory, calls the
@@ -300,15 +341,11 @@ run_finemap <- function(z,
 
   if (is.null(variant_ids)) variant_ids <- paste0("SNP_", seq_len(p))
 
-  # FINEMAP's .z file is space-separated. VCF-derived variant_ids like
-  # "4 77357492 rs554755626 C A" contain embedded spaces, which
-  # write.table(sep = " ") writes literally and FINEMAP then interprets
-  # as extra columns - shifting the 'position' column and failing with
-  # "Expected a positive integer value in line N column 3".
-  # Collapse embedded whitespace with underscores so each variant_id is
-  # a single token. Used only for the FINEMAP-facing .z file; other
-  # wrappers use tab-separated formats and are unaffected.
-  variant_ids <- gsub("\\s+", "_", variant_ids)
+  if (!is.character(variant_ids) || length(variant_ids) != p || anyNA(variant_ids) ||
+      anyDuplicated(variant_ids) || any(!nzchar(variant_ids))) stop("Invalid variant IDs")
+  original_variant_ids <- variant_ids
+  # A bijective token map avoids whitespace parsing and normalization collisions.
+  variant_ids <- paste0("variant_", seq_len(p))
   if (is.null(maf))         maf         <- rep(0.3, p)
 
   # Derive beta/se if not supplied
@@ -408,7 +445,8 @@ run_finemap <- function(z,
   elapsed <- as.numeric((proc.time() - start_time)["elapsed"])
 
   # Check for binary-level failure
-  if (inherits(run_output, "finemap_error")) {
+  if (inherits(run_output, "finemap_error") ||
+      (!is.null(attr(run_output, "status")) && attr(run_output, "status") != 0L)) {
     return(.finemap_error_result(p, params, elapsed, run_output))
   }
 
@@ -428,15 +466,19 @@ run_finemap <- function(z,
     error = function(e) NULL
   )
 
-  if (is.null(snp_df)) {
+  if (is.null(snp_df) || !all(c("rsid", "prob") %in% names(snp_df))) {
     return(.finemap_error_result(p, params, elapsed,
                                  "Failed to parse FINEMAP .snp output file."))
   }
 
   # Re-order rows to match the original variant order
   ord <- match(variant_ids, snp_df$rsid)
+  if (nrow(snp_df) != p || anyNA(ord) || anyNA(snp_df$rsid) || anyDuplicated(snp_df$rsid))
+    return(.finemap_error_result(p, params, elapsed, "FINEMAP output IDs do not match the complete input."))
 
-  pip            <- snp_df$prob[ord]
+  pip            <- suppressWarnings(as.numeric(snp_df$prob[ord]))
+  if (any(!is.finite(pip)) || any(pip < 0 | pip > 1))
+    return(.finemap_error_result(p, params, elapsed, "FINEMAP must return finite probabilities in [0,1]."))
   posterior_mean <- snp_df$mean[ord]
   posterior_sd   <- snp_df$sd[ord]
   log10bf        <- snp_df$log10bf[ord]
@@ -448,54 +490,28 @@ run_finemap <- function(z,
     error = function(e) NULL
   )
 
-  k_posterior <- NULL
-  best_k      <- 0L   # default when config_df is missing/unparseable
-
-  if (!is.null(config_df) && "config" %in% names(config_df) &&
-      "prob" %in% names(config_df)) {
-
-    # Prefer n_snps column (present in FINEMAP v1.4.1) — more reliable than
-    # parsing the config string, which uses "0" for the null model (0 causal
-    # variants) and would be misclassified as k=1 by a comma-split approach.
-    if ("n_snps" %in% names(config_df)) {
-      config_df$k <- as.integer(config_df$n_snps)
-    } else {
-      config_df$k <- vapply(config_df$config, function(cfg) {
-        cfg <- trimws(cfg)
-        if (is.na(cfg) || nchar(cfg) == 0 || cfg == "0") 0L
-        else length(strsplit(cfg, ",")[[1L]])
-      }, integer(1L))
-    }
-
-    k_probs     <- tapply(config_df$prob, config_df$k, sum)
-    k_posterior <- setNames(as.numeric(k_probs), names(k_probs))
-    best_k      <- as.integer(names(which.max(k_probs)))
-  }
+  # .config contains only the top configurations; summing it need not recover
+  # model-size probabilities. --log writes the complete native posterior.
+  log_candidates <- c(paste0(log_file, "_sss"), log_file)
+  actual_log <- log_candidates[file.exists(log_candidates)][1L]
+  k_posterior <- if (!is.na(actual_log)) .finemap_model_size_probabilities(actual_log) else NULL
+  if (is.null(k_posterior)) return(.finemap_error_result(p, params, elapsed,
+    "FINEMAP produced no valid complete model-size posterior in its log."))
+  best_k <- as.integer(names(which.max(k_posterior)))
 
   # --- Parse .cred<k*> file for credible sets ---------------------------------
 
   credible_sets <- list()
+  cs_pip <- NULL
 
   if (best_k > 0L) {
     cred_k_file <- paste0(cred_base, best_k)
 
-    if (file.exists(cred_k_file)) {
-      cred_df <- tryCatch(
-        utils::read.table(cred_k_file, header = TRUE, stringsAsFactors = FALSE,
-                          fill = TRUE, na.strings = c("", "NA")),
-        error = function(e) NULL
-      )
-
-      if (!is.null(cred_df) && ncol(cred_df) > 0L) {
-        credible_sets <- lapply(seq_len(ncol(cred_df)), function(j) {
-          rsids <- cred_df[[j]]
-          rsids <- rsids[!is.na(rsids) & nchar(trimws(rsids)) > 0L]
-          idx   <- match(rsids, variant_ids)
-          sort(idx[!is.na(idx)])
-        })
-        credible_sets <- credible_sets[lengths(credible_sets) > 0L]
-      }
-    }
+    native_sets <- .finemap_component_sets(cred_k_file, variant_ids, best_k)
+    if (is.null(native_sets)) return(.finemap_error_result(p, params, elapsed,
+      "FINEMAP selected-model credible sets are missing or contain invalid IDs/probabilities."))
+    credible_sets <- native_sets$sets
+    cs_pip <- native_sets$probabilities
   }
 
   # --- Return -----------------------------------------------------------------
@@ -513,7 +529,12 @@ run_finemap <- function(z,
       posterior_sd   = posterior_sd,
       k_posterior    = k_posterior,
       best_k         = best_k,
-      configs        = config_df
+      configs        = config_df,
+      cs_pip         = cs_pip,
+      credible_set_semantics = "native_configuration_conditional_component_sets",
+      k_posterior_source = "complete_native_log",
+      variant_ids = original_variant_ids,
+      native_variant_ids = variant_ids
     )
   )
 }

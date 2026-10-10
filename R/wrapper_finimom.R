@@ -153,7 +153,7 @@ run_finimom <- function(z,
   if (!is.null(purity))      args$purity     <- purity
 
   start_time <- proc.time()
-  fit <- tryCatch(do.call(finimom::finimom, args),
+  fit <- tryCatch(do.call(getExportedValue("finimom", "finimom"), args),
                   error = function(e) structure(conditionMessage(e), class = "finimom_error"))
   elapsed <- as.numeric((proc.time() - start_time)["elapsed"])
 
@@ -167,11 +167,18 @@ run_finimom <- function(z,
               if (is.null(fit$pip)) "NULL" else length(fit$pip), p)))
   }
 
-  pip <- pmax(0, pmin(1, as.numeric(fit$pip)))
+  pip <- as.numeric(fit$pip)
+  if (any(!is.finite(pip)) || any(pip < 0 | pip > 1))
+    return(.finimom_error_result(p, params, elapsed,
+      "FiniMOM must return finite probabilities in [0,1]."))
 
   # FiniMOM's $sets are already 1-based R indices - do NOT add 1.
   credible_sets <- list()
   if (!is.null(fit$sets) && length(fit$sets) > 0L) {
+    if (!is.list(fit$sets) || any(vapply(fit$sets, function(s)
+      !is.numeric(s) || any(!is.finite(s)) || any(s != floor(s)) ||
+      any(s < 1 | s > p) || anyDuplicated(s) > 0L, TRUE)))
+      return(.finimom_error_result(p, params, elapsed, "FiniMOM returned invalid native set indices."))
     credible_sets <- lapply(fit$sets, function(s) sort(as.integer(s)))
     credible_sets <- credible_sets[lengths(credible_sets) > 0L]
   }

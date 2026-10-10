@@ -310,9 +310,11 @@ test_that("SBayesRC surrogate pilots freeze the neutral prior before pooling lab
   }
   setup <- run_sbayesrc_scenario_setup
   environment(setup) <- sandbox
-  setup(g, observed, list())
+  setup(g, observed, list(statistic_type = "normal_score", residual_variance = .7))
   expect_equal(length(calls), 2L)
   for (args in calls) {
+    expect_identical(args$statistic_type, "normal_score")
+    expect_equal(args$residual_variance, .7)
     expect_equal(args$pooled_gamma$alpha, rep(log((.03 / 4) / .97), 4))
     expect_equal(args$pooled_gamma$gamma, matrix(0, 1, 4))
   }

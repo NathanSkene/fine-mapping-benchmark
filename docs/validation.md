@@ -75,6 +75,14 @@ requires a complete panel, adequate chains and mode-specific evaluation.
 
 ## Development challenge runs
 
+The local SuSiE/SuSiE-inf rows below are archived prototype results and have been
+superseded for Gaussian-score comparisons. Their adapters used an OLS-t
+reconstruction for normal scores. The current SuSiE adapter fits the typed
+fixed-noise Gaussian likelihood; SuSiE-inf and FINEMAP-inf explicitly reject
+Gaussian tasks without supported phenotype sufficient statistics. The exact,
+forced-one, annotation reference and ABF rows are unaffected by this correction.
+Use newly frozen campaign artifacts for current method comparisons.
+
 Both final development runs used the validated implementation above, 22
 scenario tracks including controls, seed `20261010`, and sample-size parameter `10000`:
 

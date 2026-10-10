@@ -34,7 +34,9 @@ row is one variant; each column one annotation (binary or continuous).
 Pass \code{NULL} to run without annotations (uniform prior).}
 
 \item{variant_ids}{Character vector or NULL. Variant identifiers (length p).
-If NULL, set to \code{"rs0", "rs1", …}.}
+If NULL, set to \code{"rs0", "rs1", …}.
+Original identifiers are retained in \code{additional$variant_ids} and
+\code{additional$variant_alignment}; native files use collision-free tokens.}
 
 \item{beatrice_dir}{Character. Path to the directory containing
 \code{beatrice_annot.py}.}
@@ -78,7 +80,8 @@ A list with the standardised fine-mapping output:
 \item{cs_pip}{List of numeric vectors. Conditional inclusion
 probabilities within each credible set. NULL if not produced.}
 \item{feature_importance}{Data frame (annotation_index, importance)
-from LassoNet |θ|, sorted descending. NULL if no annotations or
+from the magnitude of the causal-versus-null skip-logit contrast,
+sorted descending. NULL if no annotations or
 file not produced.}
 }
 }
@@ -90,6 +93,9 @@ Writes the required input files to a temporary directory, calls
 \code{beatrice_annot.py} via the specified Python executable, parses the
 output, and returns results in the standardised format. The temporary
 directory is deleted on exit.
+Nonzero process exits and malformed, incomplete, or unaligned native
+probabilities or credible sets return a failed fit; evidence is never clipped
+or repaired. Synthetic tokens serialize variants without changing their IDs.
 }
 \details{
 When \code{annotations} is \code{NULL} the method runs without a functional

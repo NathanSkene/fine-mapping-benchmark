@@ -29,6 +29,9 @@
 #' @param burn_in Native burn-in iterations. Default 1000.
 #' @param seed Positive integer native random seed. Default 22.
 #' @param threads Positive integer thread count. Default 1.
+#' @param save_mcmc Save upstream text parameter draws for convergence diagnostics.
+#'   Default FALSE. SNP-effect binary draws are not requested by this option.
+#' @param thin Positive integer sampling interval for saved draws. Default 10.
 #' @param dry_run Logical. Validate/fingerprint inputs and return a command plan
 #'   without launching the native program. Default FALSE.
 #'
@@ -41,12 +44,17 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
                                 scale, provenance, gctb_path = "gctb",
                                 expected_version = "2.5.5", variant_ids = NULL,
                                 n_iter = 3000L, burn_in = 1000L, seed = 22L,
-                                threads = 1L, dry_run = FALSE) {
+                                threads = 1L, dry_run = FALSE, save_mcmc = FALSE,
+                                thin = 10L) {
   scale <- match.arg(scale, c("genome_wide", "chromosome", "subset"))
   .sbayesrc_native_integer(n_iter, "n_iter", 1L)
   .sbayesrc_native_integer(burn_in, "burn_in", 0L)
   .sbayesrc_native_integer(seed, "seed", 1L)
   .sbayesrc_native_integer(threads, "threads", 1L)
+  .sbayesrc_native_integer(thin, "thin", 1L)
+  if (!is.logical(save_mcmc) || length(save_mcmc) != 1L || is.na(save_mcmc)) {
+    stop("save_mcmc must be TRUE or FALSE.", call. = FALSE)
+  }
   if (burn_in >= n_iter) stop("burn_in must leave retained MCMC iterations.", call. = FALSE)
   if (!is.logical(dry_run) || length(dry_run) != 1L || is.na(dry_run)) {
     stop("dry_run must be TRUE or FALSE.", call. = FALSE)
@@ -83,6 +91,7 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
             "--sbayes", "RC", "--annot", prepared$annotation_file,
             "--chain-length", as.character(n_iter), "--burn-in", as.character(burn_in),
             "--seed", as.character(seed), "--thread", as.character(threads), "--out", prefix)
+  if (save_mcmc) args <- c(args, "--write-mcmc-txt", "--thin", as.character(thin))
   manifest <- list(
     implementation = "official_gctb_sbayesrc", upstream_mode = "sbayes_RC",
     expected_version = expected_version,
@@ -92,7 +101,8 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
     requested_variant_count = length(variant_ids), chromosomes = prepared$chromosomes,
     ld_block_count = prepared$ld_block_count, provenance = provenance,
     input_checksums = .sbayesrc_native_snapshot(prepared$files), checksum_algorithm = "md5",
-    params = list(n_iter = n_iter, burn_in = burn_in, seed = seed, threads = threads),
+    params = list(n_iter = n_iter, burn_in = burn_in, seed = seed, threads = threads,
+                  save_mcmc = save_mcmc, thin = thin),
     native_executed = FALSE, args = args
   )
   if (dry_run) {
@@ -153,6 +163,7 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
     runtime_seconds = elapsed,
     additional = list(
       posterior_mean_beta = imported$beta, posterior_sd_beta = imported$se,
+      pip_event = "any_nonzero_mixture_component",
       variant_ids = variant_ids, effect_allele = imported$effect_allele,
       effects_oriented_to = "prepared_GWAS_A1", native_executed = TRUE,
       implementation = "official_gctb_sbayesrc", upstream_mode = "sbayes_RC",

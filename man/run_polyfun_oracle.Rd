@@ -16,7 +16,9 @@ run_polyfun_oracle(
   max_iter = 100,
   estimate_residual_variance = TRUE,
   estimate_prior_variance = TRUE,
-  verbose_susie = FALSE
+  verbose_susie = FALSE,
+  statistic_type = "marginal_ols_t",
+  residual_variance = 1
 )
 }
 \arguments{
@@ -48,6 +50,10 @@ Default: 0.5.}
 
 \item{verbose_susie}{Logical. Print SuSiE's own progress messages.
 Default: FALSE.}
+
+\item{statistic_type}{\code{marginal_ols_t} (default) or \code{normal_score}.}
+
+\item{residual_variance}{Specified Gaussian score noise variance; default 1.}
 }
 \value{
 A list with the standardised fine-mapping output. The

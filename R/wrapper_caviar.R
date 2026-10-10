@@ -17,7 +17,8 @@
 #   <prefix>_post : per-variant posterior probabilities (header + one row/SNP)
 #   <prefix>_set  : the variant names in the rho-level causal set, one per line
 #
-# STATUS: BUILT AND WORKING, BUT NOT RUN IN THE BENCHMARK (decision 2026-07-29).
+# The historical campaign omitted CAVIAR because enumeration is expensive.
+# The full corrected campaign includes it with explicitly frozen capacity.
 # CAVIAR enumerates causal configurations, so its cost is combinatorial in the
 # region size: C(p, c) configurations each carrying matrix operations. On the
 # verification locus (p = 150, c = 2, ~11k configurations) it was already too
@@ -25,13 +26,9 @@
 # configuration space is ~45x larger. Across 337,500 fits that would dominate the
 # entire allocation for one method.
 #
-# It is also the least informative addition: CAVIAR (2014) is the direct ancestor
-# of FINEMAP and PAINTOR, both already in the benchmark, both using smarter search
-# over the same model class.
-#
-# The wrapper is kept because it is written and structurally correct - if CAVIAR
-# is ever wanted on the small (100-200 SNP) regions only, it is ready. It simply
-# is not included in FMB_METHODS for the full grid.
+# Its native set targets containment of all causal variants, which differs
+# from a SuSiE single-effect credible set. Preserve that event in metadata;
+# generic set hit rate alone does not test CAVIAR's nominal guarantee.
 #
 # This file provides:
 #   - setup_caviar()      : verifies the CAVIAR binary is reachable
@@ -132,7 +129,8 @@ run_caviar <- function(z,
                          error = function(e) structure(conditionMessage(e), class = "caviar_error"))
   elapsed <- as.numeric((proc.time() - start_time)["elapsed"])
 
-  if (inherits(run_output, "caviar_error")) {
+  if (inherits(run_output, "caviar_error") ||
+      (!is.null(attr(run_output, "status")) && attr(run_output, "status") != 0L)) {
     return(.caviar_error_result(p, params, elapsed, as.character(run_output)))
   }
 
@@ -166,21 +164,20 @@ run_caviar <- function(z,
 
   # Re-order to the input variant order using the name column (column 1).
   ord <- match(variant_ids, as.character(post[[1L]]))
-  if (anyNA(ord)) ord <- seq_len(min(p, nrow(post)))
-  pip <- rep(NA_real_, p)
-  vals <- suppressWarnings(as.numeric(post[[pip_col]][ord]))
-  pip[seq_along(vals)] <- vals
-  pip <- pmax(0, pmin(1, pip))
-  if (all(is.na(pip))) {
-    return(.caviar_error_result(p, params, elapsed, "CAVIAR posterior column parsed to all NA."))
-  }
+  if (nrow(post) != p || anyNA(ord) || anyNA(post[[1L]]) || anyDuplicated(post[[1L]]))
+    return(.caviar_error_result(p, params, elapsed, "CAVIAR output IDs are incomplete or duplicated."))
+  pip <- suppressWarnings(as.numeric(post[[pip_col]][ord]))
+  if (any(!is.finite(pip)) || any(pip < 0 | pip > 1))
+    return(.caviar_error_result(p, params, elapsed, "CAVIAR output is not a finite probability vector."))
 
   # _set holds variant NAMES (not indices) in the rho-level causal set.
   credible_sets <- list()
   if (file.exists(set_path)) {
     nm <- readLines(set_path, warn = FALSE)
     nm <- trimws(nm); nm <- nm[nzchar(nm)]
-    idx <- match(nm, variant_ids); idx <- idx[!is.na(idx)]
+    idx <- match(nm, variant_ids)
+    if (anyNA(idx) || anyDuplicated(idx))
+      return(.caviar_error_result(p, params, elapsed, "CAVIAR native set contains invalid IDs."))
     if (length(idx)) credible_sets <- list(sort(as.integer(idx)))
   }
 
@@ -192,6 +189,7 @@ run_caviar <- function(z,
     params          = params,
     runtime_seconds = elapsed,
     additional      = list(set_size = if (length(credible_sets)) length(credible_sets[[1]]) else 0L,
+                           credible_set_semantics = "native_all_causal_containment_set",
                            post_column = names(post)[pip_col])
   )
 }
