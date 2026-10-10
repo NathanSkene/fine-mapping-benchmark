@@ -18,7 +18,7 @@ likelihood, target and limits, and [REVIEW.md](REVIEW.md) for original defects.
 | `ld_reference_small` | Independent 30-observation Gaussian reference by default | Reference sampling error, including singular LD when p >= reference_n |
 | `ld_reference_shift` | Reference correlation differs from generating population | Likelihood robustness under declared LD mismatch |
 | `annotation_informative` | Causal sampling favours activity | Benefit of prespecified useful annotations |
-| `annotation_irrelevant` | Supplied annotation independent of truth | Resistance to fitting-only nuisance annotations |
+| `annotation_irrelevant` | Replicate one-signal control with supplied nuisance annotations independent of truth | Resistance to fitting-only nuisance annotations; not a new architecture |
 | `annotation_reversal` | Causal sampling favours low activity | Negative transfer from an assumed positive annotation relation |
 | `missing_causal` | Remove a generating cause from observed candidates | Recovery ceiling, confidence in proxy variants, and outside-model truth |
 | `perfect_ld` | Two variants generate the same score variable | Inability to resolve identical likelihoods; class ranking diagnostic |
@@ -37,6 +37,13 @@ transportability from them. Both discovery-selection arms use rejection
 sampling with an explicit cap and assessor-side selection counts. Stress
 signals usually scale as `signal_z/sqrt(n)`, so varying n without changing
 that policy does not assess power at fixed effects.
+
+Tracks include invariant and placebo controls, not 22 independent architecture
+perturbations. Nuisance annotations are also supplied in the baseline tracks;
+`annotation_irrelevant` replicates the `single_sparse` distribution under fresh
+draws. Its label identifies an assessment question, and does not confer extra
+problem diversity. The suite's per-track reports avoid silently doubling that
+architecture's weight in an overall score.
 
 ## Predictor contract
 

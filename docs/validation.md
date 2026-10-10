@@ -76,7 +76,7 @@ requires a complete panel, adequate chains and mode-specific evaluation.
 ## Development challenge runs
 
 Both final development runs used the validated implementation above, 22
-mechanisms, seed `20261010`, and sample-size parameter `10000`:
+scenario tracks including controls, seed `20261010`, and sample-size parameter `10000`:
 
 | Run | Tasks and predictors | Evidence |
 |---|---|---|

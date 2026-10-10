@@ -17,7 +17,7 @@ explains exactly what the new experiments measure.
 | Haplotype/phenotype | sim1000G genotypes, individual phenotypes, marginal OLS summaries; existing regional and shared-phenotype workflows | Population composition and reusable reference loci need explicit provenance |
 | Conditional Gaussian challenge | Declared score likelihood, separated predictor inputs and truth, exact small-model reference, adversarial scoring tests | Synthetic experiments; neither empirical genotype realism nor prospective causal truth |
 
-The new generator supports 22 mechanisms: matched-prior calibration, nulls,
+The new generator supports 22 scenario tracks, including controls: matched-prior calibration, nulls,
 one/two/five sparse effects, correlated opposing effects, sparse plus background,
 finite and shifted LD references, informative/irrelevant/reversed annotations,
 missing causes, identical-LD twins, inconsistent allele flips and consistent
