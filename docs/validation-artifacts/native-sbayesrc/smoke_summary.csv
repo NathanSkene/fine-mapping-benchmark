@@ -1,0 +1,2 @@
+"implementation","version","scope","variants","blocks","n_iter","burn_in","runtime_seconds","pip_min","pip_max","sum_pip","convergence_established"
+"official_gctb_sbayesrc","2.5.5","chromosome",256,4,300,150,0.235184192657471,0.0978072,1,61.8637444,FALSE

@@ -1,23 +1,33 @@
 # Validation record — 10 October 2026
 
 This records executed checks, not a universal method ranking. Original upstream
-source was `f053fdf318a3abe2c44eeb0ac3f3c99a03979b81`. The implementation and
+source was `f053fdf318a3abe2c44eeb0ac3f3c99a03979b81`. Validated implementation
+is [`3ac28638a8e4249c2dec2b76eb131c6ff6bf27aa`](https://github.com/NathanSkene/fine-mapping-benchmark/tree/3ac28638a8e4249c2dec2b76eb131c6ff6bf27aa).
+The implementation and
 development artifacts are frozen separately; run provenance records source
 commit and individual R file hashes. The [review](REVIEW.md) and
 [scientific contract](challenge-science.md) define interpretation limits.
 
 ## Executed correctness checks
 
-- The full source R suite passed **947 expectations**, with zero failures or
-  errors, 15 explicitly skipped dependency cases and one warning about the
-  legacy single-region SBayesRC-style annotation refit. Four additional native
-  scope assertions were added afterwards and passed separately. The release
-  package check is recorded below after completion.
+- The final installed-package suite passed **947 expectations**, with zero
+  failures or errors, 15 explicitly skipped dependency cases and one warning
+  about the legacy single-region SBayesRC-style annotation refit. The 17
+  repository-only tuning assertions also passed: **964 R expectations** across
+  these checks. The source-only invariant suite passed **363 expectations**.
 - The focused invariant suite checks hand-computed Gaussian Bayes factors,
   prior-predictive calibration, exact tied AP, raw scores, distinct set matching,
   intercept OLS, realised variance/covariance, annotation probability prevalence,
   singular LD, input recoding, known study overlap, unavailable causes, malformed
   predictions, release tampering, failure denominators and tuning metadata.
+- `R CMD build` and `R CMD check --no-manual` passed **Status: OK**, including
+  vignette construction/rebuilding, examples, installed-package loading,
+  documentation/API consistency and all package tests. The haplotype vignette
+  leaves download-dependent chunks opt-in; its Gaussian example executes.
+- GitHub's full package check and scientific-invariant jobs passed on both
+  Linux and macOS for the validated implementation. See the
+  [package-check run](https://github.com/NathanSkene/fine-mapping-benchmark/actions/runs/38074856951)
+  and [invariant run](https://github.com/NathanSkene/fine-mapping-benchmark/actions/runs/38074857462).
 - **21 Python tests passed**, including real single-locus LassoNet and joint
   two-locus training, credible-set expansion and numerical failure paths.
   Independent Gaussian likelihood and final Bernoulli-prior calculations match
@@ -65,11 +75,35 @@ requires a complete panel, adequate chains and mode-specific evaluation.
 
 ## Development challenge runs
 
-The final local and Imperial release runs, their commits, summaries and paired
-contrasts are recorded here after their frozen-source rerun. Earlier snapshots
-were useful for finding defects but do not replace those final artifacts.
-The initial Imperial run `4309900.pbs-7` passed 1,000 tasks across 20 mechanisms
-with four predictors. Later tracks expanded the specification to 22 mechanisms.
+Both final development runs used the validated implementation above, 22
+mechanisms, seed `20261010`, and sample-size parameter `10000`:
+
+| Run | Tasks and predictors | Evidence |
+|---|---|---|
+| Local ARM R 4.6.1 | 220 tasks, 24 variants, 10 independent synthetic draws per mechanism; six predictors including pinned SuSiE/SuSiE-inf | [Summary](validation-artifacts/local-development-final/summary.csv), [paired contrasts](validation-artifacts/local-development-final/paired-comparisons.csv), [PDF](validation-artifacts/local-development-final/report.pdf), [provenance](validation-artifacts/local-development-final/provenance.txt) |
+| Imperial PBS `4309969.pbs-7`, R 4.5.2 | 1,100 tasks, 40 variants, 50 draws per mechanism; four dependency-light predictors | [Summary](validation-artifacts/imperial-development-final/summary.csv), [paired contrasts](validation-artifacts/imperial-development-final/paired-comparisons.csv), [PDF](validation-artifacts/imperial-development-final/report.pdf), [PBS status](validation-artifacts/imperial-development-final/pbs-status.txt) |
+
+The final Imperial job exited 0 in 2m39s wall time, with 2m30s CPU time and
+282,148 kB peak memory. Source SHA-256 files and R sessions accompany both
+artifact directories. Their recorded R file hashes were independently checked
+against the final implementation. Local Git state was clean; Imperial used an
+exported snapshot with explicit source commit and unavailable Git dirty state.
+
+Unsupported likelihoods remain visible: the exact/forced/annotation references
+complete 1,050/1,100 tasks and reject missing-overlap metadata. ABF completes
+900/1,100, rejecting variable-n and multi-cohort inputs. No other unexpected
+failures remain in this run. Those counts describe scope, not an overall rank;
+proper-score comparisons use eligible paired tasks and mechanism-specific
+uncertainty. The local SuSiE wrappers have the same regional-input restriction.
+
+The initial Imperial run `4309900.pbs-7` tested an earlier 20-mechanism snapshot.
+Release attempt `4309955.pbs-7` failed before producing benchmark results:
+minimal R lacked `nnet`, exposing an unnecessary dependency in fixed-prior
+sampling. The corrected fixed-prior path runs in base R; annotation learning
+fails explicitly without its dependency. Ubuntu CI also exposed missing libuv
+headers while installing its test library; the workflow now uses a binary
+repository/bundled libuv and verifies successful installation. These failures
+were corrected before the final runs rather than counted as successes.
 
 Development runs are not blind tests. Their assessor seeds and truth are
 available to the developer. A final release needs independent custody and

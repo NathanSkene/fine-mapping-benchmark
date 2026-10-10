@@ -1,0 +1,4 @@
+list(specification = "conditional-gaussian-v1", dataset = "development-v1", 
+    run = "server-development-v1", seed = "20261010", replicates = "50", 
+    variants = "40", R = "R version 4.5.2 (2025-10-31)", commit = "3ac28638a8e4249c2dec2b76eb131c6ff6bf27aa", 
+    dirty = NA)

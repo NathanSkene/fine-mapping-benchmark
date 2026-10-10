@@ -1,0 +1,6 @@
+official_release_url=http://www.christianbenner.com/finemap_v1.4.2_x86_64.tgz
+official_documentation_url=https://www.christianbenner.com/
+transport=HTTP publisher endpoint; HTTPS self-signed certificate rejected without bypass
+archive_bytes=2180937
+3b1fc6eb3c2ccafd647b32e02d0244495cd0ade9ed7d474606c31ebf6e98b0c9  finemap_v1.4.2_x86_64.tgz
+41e0af31c18e2e92d2a5fd1fbf35c9832d62ae737746ecd0aa4629a5925c9bcc  finemap_v1.4.2_x86_64/finemap_v1.4.2_x86_64
