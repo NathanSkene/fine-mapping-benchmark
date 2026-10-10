@@ -87,6 +87,9 @@ test_that("fit reuse requires exact reachable code, inputs, settings and randomn
   y <- .campaign_fit_cache_identity(sim, "toy", list(), 7L, b, list(R = "same"))
   expect_true(x$eligible)
   expect_identical(x$key, y$key)
+  evalq(run_toy_region <- function(region_geno, region_pheno, multiplier = 2) helper(region_pheno$z), b)
+  expect_false(identical(x$key, .campaign_fit_cache_identity(sim, "toy", list(), 7L, b, list(R = "same"))$key))
+  evalq(run_toy_region <- function(region_geno, region_pheno) helper(region_pheno$z), b)
   evalq(helper <- function(z) z * 3, b)
   expect_false(identical(x$key, .campaign_fit_cache_identity(sim, "toy", list(), 7L, b, list(R = "same"))$key))
   expect_false(identical(x$key, .campaign_fit_cache_identity(sim, "toy", list(), 8L, a, list(R = "same"))$key))
@@ -211,4 +214,146 @@ test_that("analysis manifests seal derived outputs and expose incomplete collect
   expect_identical(receipt$manifest_sha256, .challenge_sha256(file.path(directory, "analysis-manifest.rds")))
   writeLines("altered derived evidence", file.path(directory, "metrics.csv"))
   expect_error(.campaign_validate_artifacts(manifest$artifacts), "bytes changed")
+})
+
+campaign_bundle_fixture <- function(n = 5L) {
+  directory <- tempfile(); dir.create(directory)
+  ids <- paste0("dataset_", seq_len(n))
+  task <- data.frame(task_id = "task_0000001", index = 1L,
+      dataset_ids = paste(ids, collapse = "|"), stage = "original_refit", method = "abf", seed = 1L)
+  plan <- list(plan_sha256 = strrep("a", 64L),
+               datasets = data.frame(dataset_id = ids, row = seq_len(n)))
+  records <- stats::setNames(vector("list", n), ids)
+  for (i in seq_len(n)) {
+    d <- plan$datasets[i, , drop = FALSE]
+    records[[i]] <- list(terminal = TRUE, plan_sha256 = plan$plan_sha256,
+        task = list(task = task, dataset = d), method_task = task,
+        result = list(abf = list(results = list(list(pip = c(.1, .9),
+                      additional = list(posterior_mean = c(.01, .2), converged = TRUE))))),
+        evaluation = list(score = i / 10), original_evaluation = list(score = i / 5),
+        table = data.frame(dataset_id = ids[i], success = TRUE, ap = i / 10),
+        metadata = as.list(d), session = utils::sessionInfo())
+    path <- file.path(directory, paste0(ids[i], ".rds"))
+    .campaign_atomic_rds(records[[i]], path)
+    .campaign_receipt(directory, path, plan$plan_sha256,
+        paste(task$task_id, ids[i], sep = "."), paste0(ids[i], ".terminal.json"))
+    .campaign_start_attempt(directory, plan, task, d)
+  }
+  list(directory = directory, plan = plan, task = task, records = records)
+}
+
+test_that("terminal task bundles preserve all scientific records and reduce file count", {
+  f <- campaign_bundle_fixture()
+  expect_equal(length(list.files(f$directory, recursive = TRUE)), 15L)
+  expect_length(.campaign_task_evidence(f$directory, f$plan, f$task)$records, 5L)
+  bundle <- .campaign_compact_task(f$directory, f$plan, f$task, list(elapsed_seconds = 123))
+  expect_equal(length(list.files(f$directory, recursive = TRUE)), 2L)
+  expect_false(dir.exists(file.path(f$directory, "attempts")))
+  expect_identical(bundle$dataset_records, f$records)
+  expect_length(bundle$attempt_records, 5L)
+  expect_equal(bundle$elapsed_seconds, 123)
+  evidence <- .campaign_task_evidence(f$directory, f$plan, f$task)
+  expect_true(evidence$complete); expect_true(evidence$bundled)
+  expect_identical(evidence$records, f$records)
+  expect_equal(evidence$started_attempts, 5L)
+  expect_true(.campaign_resume_task_compaction(f$directory, f$plan, f$task))
+  expect_equal(length(list.files(f$directory, recursive = TRUE)), 2L)
+})
+
+test_that("interruptions before receipt, after receipt and after cleanup resume safely", {
+  for (point in c("after_bundle", "after_receipt", "after_cleanup")) {
+    f <- campaign_bundle_fixture()
+    expect_error(.campaign_compact_task(f$directory, f$plan, f$task,
+       interrupt = function(stage) if (stage == point) stop("simulated scheduler kill")), "scheduler kill")
+    evidence <- .campaign_task_evidence(f$directory, f$plan, f$task)
+    expect_identical(evidence$complete, point != "after_bundle")
+    expect_identical(evidence$records, f$records)
+    expect_equal(length(list.files(f$directory, recursive = TRUE)),
+       if (point == "after_bundle") 16L else if (point == "after_receipt") 17L else 2L)
+    expect_true(.campaign_resume_task_compaction(f$directory, f$plan, f$task))
+    expect_identical(.campaign_task_evidence(f$directory, f$plan, f$task)$records, f$records)
+    expect_equal(length(list.files(f$directory, recursive = TRUE)), 2L)
+  }
+})
+
+test_that("compaction refuses unsealed evidence and never deletes changed loose files", {
+  f <- campaign_bundle_fixture()
+  unlink(file.path(f$directory, "dataset_1.terminal.json"))
+  before <- list.files(f$directory, recursive = TRUE)
+  expect_error(.campaign_compact_task(f$directory, f$plan, f$task), "unsealed or missing")
+  expect_identical(list.files(f$directory, recursive = TRUE), before)
+  f <- campaign_bundle_fixture()
+  expect_error(.campaign_compact_task(f$directory, f$plan, f$task,
+      interrupt = function(stage) if (stage == "after_receipt") stop("stop before cleanup")), "before cleanup")
+  path <- file.path(f$directory, "dataset_5.rds")
+  changed <- f$records[[5L]]; changed$result$abf$results[[1L]]$pip <- c(.7, .3)
+  .campaign_atomic_rds(changed, path)
+  before <- list.files(f$directory, recursive = TRUE)
+  expect_error(.campaign_resume_task_compaction(f$directory, f$plan, f$task), "bytes changed")
+  expect_identical(list.files(f$directory, recursive = TRUE), before)
+  # Already sealed bundled predictions remain independently valid, while the
+  # changed loose copy is retained for investigation and cannot be cleaned.
+  expect_identical(.campaign_task_evidence(f$directory, f$plan, f$task)$records, f$records)
+})
+
+test_that("bundle tampering, foreign records and missing seals are rejected", {
+  f <- campaign_bundle_fixture()
+  .campaign_compact_task(f$directory, f$plan, f$task)
+  path <- file.path(f$directory, "completed.rds")
+  bundle <- readRDS(path); bundle$dataset_records[[1L]]$result$abf$results[[1L]]$pip <- c(.9, .1)
+  .campaign_atomic_rds(bundle, path)
+  expect_error(.campaign_task_evidence(f$directory, f$plan, f$task), "bytes changed")
+  bundle$dataset_records[[1L]]$task$dataset$dataset_id <- "foreign"
+  .campaign_atomic_rds(bundle, path)
+  .campaign_receipt(f$directory, path, f$plan$plan_sha256, f$task$task_id)
+  expect_error(.campaign_task_evidence(f$directory, f$plan, f$task), "foreign or incomplete")
+  f <- campaign_bundle_fixture()
+  .campaign_compact_task(f$directory, f$plan, f$task)
+  unlink(file.path(f$directory, "terminal.json"))
+  evidence <- .campaign_task_evidence(f$directory, f$plan, f$task)
+  expect_false(evidence$complete); expect_length(evidence$records, 0L)
+  expect_error(.campaign_resume_task_compaction(f$directory, f$plan, f$task), "is missing")
+})
+
+test_that("posterior conditioning and unreported null probabilities survive without partial matching", {
+  additional <- list(posterior_conditioning = "at_least_one_modeled_causal_variant",
+      null_model_in_support = FALSE, null_probability_not_provided = TRUE, configuration_count = 78)
+  fit <- list(method = "paintor", pip = c(.1, .9), credible_sets = list(2L), additional = additional)
+  input <- list(task_id = "example", variant_id = c("a", "b"))
+  pred <- .campaign_fit_to_prediction(fit, input)
+  expect_true("null_probability" %in% names(pred))
+  expect_null(pred[["null_probability"]])
+  expect_identical(pred$posterior_conditioning, additional$posterior_conditioning)
+  expect_false(pred$probability_target_aligned)
+  expect_equal(pred$configuration_count, 78)
+  expect_match(pred$probability_score_interpretation, "conditional_model")
+  metadata <- .campaign_event_metadata("paintor", pred)
+  expect_true(is.na(metadata$null_probability)); expect_false(metadata$null_probability_reported)
+  finemap <- .campaign_event_metadata("finemap", list(native_null_support = "prior_includes_null",
+      posterior_conditioning = "null_including_model_space", null_probability = .23))
+  expect_true(finemap$null_model_in_support); expect_true(finemap$null_probability_reported)
+  expect_equal(finemap$null_probability, .23)
+  expect_true(finemap$probability_target_aligned)
+  expect_true(is.na(.campaign_event_metadata("finemap",list())$probability_target_aligned))
+  expect_true(is.na(.campaign_event_metadata("paintor",list())$probability_target_aligned))
+})
+
+test_that("BEATRICE credible-set contract bytes are part of source and runtime commitments", {
+  repo <- tempfile(); dir.create(file.path(repo,"BEATRICE_annot_sparse/scripts"),recursive=TRUE)
+  path <- file.path(repo,"BEATRICE_annot_sparse/scripts/credible_set_contract.json")
+  writeLines('{"schema":1,"semantics":"conditional_union"}',path)
+  snapshot <- .campaign_snapshot(repo)
+  expect_true("BEATRICE_annot_sparse/scripts/credible_set_contract.json" %in% snapshot$path)
+  args <- list(beatrice=list(beatrice_dir=file.path(repo,"BEATRICE_annot_sparse")))
+  runtime <- .campaign_runtime_fingerprint(args)
+  expect_true("scripts/credible_set_contract.json" %in% runtime$artifacts[[args$beatrice$beatrice_dir]]$path)
+  writeLines('{"schema":1,"semantics":"unknown"}',path)
+  expect_error(.campaign_assert_snapshot(repo,snapshot),"source changed")
+  expect_false(identical(runtime,.campaign_runtime_fingerprint(args)))
+})
+
+test_that("narrow integration plans still report unconfigured optional tools", {
+  x <- .campaign_dependency_inventory(list(abf=list()))
+  expect_true(all(!x$available[x$kind=="external_path"]))
+  expect_true(all(x$version[x$kind=="external_path"]=="unconfigured"))
 })

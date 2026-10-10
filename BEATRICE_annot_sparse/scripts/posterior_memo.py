@@ -97,6 +97,80 @@ def add_configuration(memo, context, key, log_bf):
     return memo[key]
 
 
+class _ConfigurationBatch:
+    """One complete search round with no intervening probability queries.
+
+    Working likelihoods are private until a successful exit. Existing context
+    validation/copying is done once per round; each new key and likelihood is
+    checked immediately. Commit normalizes the complete support under the same
+    final prior. Aborted rounds do not publish a partially explored posterior.
+    """
+    def __init__(self, memo, context):
+        self._memo = memo
+        self._context = context
+        self._checked = validate_context(context)
+        self._prior = tuple(self._checked["final_prior"])
+        self._source_likelihoods = dict(context["log_bf"])
+        self._source_memo = dict(memo)
+        self._closed = False
+        self._entered = False
+        self._dirty = False
+
+    def __enter__(self):
+        if self._closed or self._entered:
+            raise RuntimeError("A configuration batch cannot be reused")
+        self._entered = True
+        return self
+
+    def _key(self, key):
+        if self._closed or not self._entered:
+            raise RuntimeError("Configuration additions require an active batch")
+        return _configuration(tuple(key), len(self._prior))
+
+    def contains(self, key):
+        """Check explored likelihood support; this is not a probability query."""
+        return self._key(key) in self._checked["log_bf"]
+
+    def add(self, key, log_bf):
+        """Buffer a validated pure log BF; no posterior probability is returned."""
+        key = self._key(key)
+        log_bf = float(log_bf)
+        if not math.isfinite(log_bf):
+            raise ValueError("New log Bayes factor must be finite")
+        if key == () and log_bf != 0:
+            raise ValueError("The null configuration must have log Bayes factor zero")
+        self._checked["log_bf"][key] = log_bf
+        self._dirty = True
+
+    def __exit__(self, exception_type, exception, traceback):
+        self._closed = True
+        if exception_type is not None:
+            return False
+        # Reject concurrent/reentrant changes instead of silently overwriting a
+        # different prior, likelihood cache or publicly observable posterior.
+        if (self._context.get("format") != MEMO_FORMAT or
+                tuple(self._context.get("final_prior", ())) != self._prior or
+                self._context.get("log_bf") != self._source_likelihoods or
+                self._memo != self._source_memo):
+            raise ValueError("Frozen posterior context changed during a configuration batch")
+        if self._dirty:
+            weights = posterior_weights(self._checked)
+            self._context.clear()
+            self._context.update(self._checked)
+            self._memo.clear()
+            self._memo.update(weights)
+        return False
+
+
+def configuration_batch(memo, context):
+    """Explicitly batch a complete candidate round, then publish probabilities.
+
+    Only use when no selection/credible-set decision reads ``memo`` inside the
+    round. The existing ``add_configuration`` API retains eager normalization.
+    """
+    return _ConfigurationBatch(memo, context)
+
+
 def load_context(result):
     """Reject old mixed-prior archives: they cannot be scientifically converted."""
     if not isinstance(result, dict) or result.get("memo_format") != MEMO_FORMAT:

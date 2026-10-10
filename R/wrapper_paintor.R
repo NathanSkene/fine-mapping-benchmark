@@ -142,6 +142,14 @@ setup_paintor <- function(paintor_path = "PAINTOR") {
 #'         (0 if none).}
 #'       \item{log_bayes_factor}{Numeric vector (length p) or NULL. Log Bayes
 #'         factor per variant if present in PAINTOR output, otherwise NULL.}
+#'       \item{posterior_conditioning}{Enumeration excludes the null
+#'         configuration, so PIPs are conditional on at least one modeled
+#'         causal variant. The MCMC search includes the null configuration.}
+#'       \item{null_probability_not_provided}{TRUE. Neither native output
+#'         reports a locus-null posterior; none is inferred from the PIPs.}
+#'       \item{configuration_count}{Number of nonempty configurations in
+#'         enumeration support, or NA for MCMC. With two effects this is
+#'         \code{p + choose(p, 2)}.}
 #'     }
 #'   }
 #'   \item{error}{Character or NULL. Error message if PAINTOR failed.}
@@ -339,12 +347,12 @@ run_paintor <- function(z,
     input_type      = "summary",
     params          = params,
     runtime_seconds = elapsed,
-    additional      = list(
+    additional      = c(list(
       pip_mass_set = as.integer(cs_indices),
       credible_set_semantics = "not_provided",
       annotations_used  = n_annots,
       log_bayes_factor  = log_bayes_factor
-    )
+    ), .paintor_probability_contract(p, max_causal, mcmc))
   )
 }
 
@@ -517,14 +525,15 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
       params = list(max_causal = max_causal, mcmc = mcmc, coverage = coverage,
                     paintor_path = paintor_path, n_annotations = n_ann),
       runtime_seconds = elapsed / n_regions,
-      additional = list(annotations_used = n_ann,
+      additional = c(list(annotations_used = n_ann,
                         pip_mass_set = as.integer(sort(op[seq_len(n_cs)])),
                         credible_set_semantics = "not_provided",
                         log_bayes_factor = if ("log_BF" %in% names(df))
                           as.numeric(df$log_BF[ord]) else NULL,
                         pooled_across_loci = TRUE,
                         pooled_runtime_seconds = elapsed,
-                        n_loci_pooled = n_regions))
+                        n_loci_pooled = n_regions),
+                     .paintor_probability_contract(s$p, max_causal, mcmc)))
   }
   if (length(cache) != n_regions)
     stop("PAINTOR pooled output is incomplete or invalid; no fallback is permitted.", call. = FALSE)
@@ -535,6 +544,20 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
 # =============================================================================
 # Internal helpers
 # =============================================================================
+
+.paintor_probability_contract <- function(p, max_causal, mcmc) {
+  # Audited upstream PAINTOR_V3.0 enumeration advances next_combo before
+  # evaluating the all-zero initial state. Its support excludes the null;
+  # the separate MCMC path initializes and samples the null configuration.
+  # This records search conditioning, not a fabricated locus-null posterior.
+  list(posterior_conditioning = if (mcmc) "null_including_model_space" else
+         "at_least_one_modeled_causal_variant",
+       null_model_in_support = isTRUE(mcmc),
+       null_probability = NULL,
+       null_probability_not_provided = TRUE,
+       configuration_count = if (mcmc) NA_real_ else
+         sum(choose(p, seq_len(min(p, max_causal)))))
+}
 
 .paintor_parse_probabilities <- function(data, ids) {
   if (!all(c("rsid", "Posterior_Prob") %in% names(data)) ||

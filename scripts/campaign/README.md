@@ -95,6 +95,28 @@ predictions and evaluations. Resume requires identical plan, task and source
 hashes. Data hashes are checked before loading. A lock protects live tasks;
 after a scheduler confirms a terminal killed process, an operator can remove
 that task's stale lock before resuming. A timeout is not successful completion.
+New plans compact each completed task into one `completed.rds` bundle and its
+byte-hash receipt. The bundle retains every ordered dataset prediction,
+evaluation, session record, and started-attempt record. Per-dataset fingerprints
+and the exact cleanup ledger are retained inside it. A task contains at most
+five datasets; partial tasks keep their loose checkpoints for resume. Cleanup
+starts only after the bundle and receipt are sealed and all remaining loose
+files match their recorded hashes. A changed loose file remains available for
+investigation. Interruptions between bundle, receipt and cleanup writes are
+explicitly resumable. Collectors accept both the earlier loose layout and this
+sealed bundle layout and never count both copies.
+
+The default full plan has 649,220 task units and 2,701,220 dataset-method-stage
+records. Keeping one attempt RDS, prediction RDS and inner receipt for every
+record plus two outer files would create 9,402,100 regular files before caches
+or scheduler logs. The former broad fit cache could add millions more. The new
+terminal layout uses 1,298,440 bundle/receipt files and 649,220 task directories;
+inputs, temporary partial-task files, scheduler scripts/logs and analysis
+artifacts must still fit the quota. Exact fit reuse reads the immutable paired
+original record after verifying source/input/settings/RNG/runtime equality;
+there is no duplicate persistent fit cache for new plans. Old layouts are not
+silently rewritten under their frozen plan IDs: changed scientific workers
+require new plans.
 
 The stress family covers all 22 tracks at p=40,200,1,000 and N=1,000,10,000,
 100 independent draws per cell. Pooled methods see mixed-mechanism panels of
@@ -116,6 +138,25 @@ These unsupported events are retained; the legacy OLS experiments execute both.
 dataset denominators. Interrupted workers preserve started-attempt records and
 scheduler outcomes, rather than turning absent outputs into successful fits.
 Interim scientific summaries are incomplete until this census is complete.
+The default collector streams one task bundle at a time, then aggregates one
+stage/design stratum at a time. `--max-stratum-rows` sets an explicit bound
+(100,000 by default); exceeding it fails collection and leaves a failed analysis
+manifest rather than changing the denominator. The full profile rejects the
+all-memory backend. The `--backend memory` path remains available for small
+integration regression tests against the streamed summaries and paired intervals.
+
+`task-metrics.csv` retains every metric column with 17 significant decimal
+digits, logical values, infinities and an unambiguous plan-specific missing
+marker. Read its column types and marker from `task-metrics-schema.rds` or JSON.
+The exact typed values also remain in `task-metrics.blocks`: a bounded stream
+of length-prefixed R-serialized data frames. In the streamed layout,
+`task-metrics.rds` is a sealed index for that stream, not a materialized data
+frame. `.campaign_each_metric_block()` iterates it without loading the census.
+The analysis manifest commits to both files. Temporary stratum partitions use
+hexadecimal doubles so R's decimal parser cannot perturb very small numbers;
+they are deleted after aggregation. Correctly rounded decimal readers recover
+the CSV's doubles; use the binary stream when exact R values matter.
+
 `scoring-attribution.csv`
 compares old and corrected scoring on identical predictions;
 `regime-summary.csv` and `paired-comparisons.csv` report settings separately.
@@ -142,10 +183,18 @@ CAVIAR's native causal superset is evaluated by all-causal containment, support
 size and causal-variant recall. Its per-signal distinct-set recovery is undefined,
 since one superset does not assert one signal. A native containment event is
 reported separately from generic any-causal-hit diagnostics.
+Posterior conditioning, native null-model support, reported null probabilities
+and configuration counts are also retained. PAINTOR enumeration excludes the
+null configuration; FINEMAP support is taken from the native logged prior.
+Conditional nonnull model scores remain operational diagnostics against planted
+sparse membership, not unconditional calibration claims. An unreported null
+probability remains missing; a similarly named flag cannot fabricate one.
 
 After real full-size canaries finish, `cost_report.R --canary-plan PATH
---full-plan PATH --workers 64 --out PATH` measures runtimes and compressed
-checkpoint/cache bytes. A `resource_probe` plan also supplies stress costs from
+--full-plan PATH --workers 48 --out PATH` measures runtimes and compressed
+retention bytes, including bundle headers, attempt ledgers and terminal receipts.
+It reports adapter and end-to-end worker-hour extrapolations separately, and a
+file-count census alongside byte estimates. A `resource_probe` plan also supplies stress costs from
 the full 220-task batch. Largest-panel estimates extrapolated to smaller stress
 dimensions are planning anchors, not measured runtimes at every dimension.
 Its estimates disclose unresolved methods and exclude input archives, queue
@@ -153,6 +202,18 @@ delay and exact-fit reuse savings. The runner
 currently retains complete adapter results, including available posterior means,
 convergence and component diagnostics; plan storage from measured bytes before
 dispatching the full campaign.
+The worker timer spans the first R script expression through completed bundle
+compaction; it excludes R process startup, the final timing-receipt write and
+lock removal. Dataset processing, input IO, prelude and compaction are retained
+separately in the existing terminal receipt. The estimate scales dataset work
+by loci and startup/input/compaction overhead by planned worker tasks, so a
+one-scenario canary does not multiply startup five times for a packed worker.
+Interrupted timing writes and partial-resume timings remain unknown for this
+extrapolation. PBS `resources_used` in the scheduler ledger measures the full
+process/batch separately, including failed or timed-out attempts. Input archive,
+temporary partition, retained metric-stream/CSV and prior-analysis archive bytes
+are outside the primary-checkpoint storage estimate and need their own budget.
+The cost input manifest records the exact sampled checkpoint/receipt bytes.
 
 ## Bounded PBS orchestration
 
@@ -171,15 +232,53 @@ python3 scripts/campaign/dispatch.py \
 ```
 
 Remove `--dry-run` for a real dispatch cycle; remove `--once` for a persistent
-controller. Each submitted job ID and exact task assignment is recorded before
-observation. The dispatch manifest commits to the plan RDS bytes and the task,
+controller. The schema-2 `dispatch/ledger.sqlite3` stores the frozen plan
+projection, per-unit assignments and attempts, every job and its exact script
+hash, and the append-only observation/retry history. The controller streams the
+CSV projection into SQLite once and queries indexed ready work; it does not
+load all tasks or historical jobs into Python on each poll. The small
+`dispatch/state.json` contains the configuration hashes, counts and currently
+active jobs. It is a status view rather than submission or completion authority.
+Terminal job history remains in SQLite. The dispatch manifest commits to the
+plan RDS bytes and the task,
 dataset and generation CSV projections; editing a CSV cannot silently change
-the controller's interpretation of the plan. Terminal receipts commit to the R
-checkpoint bytes and plan ID.
+the controller's interpretation of the plan. An immutable-projection digest
+also detects changed fixed rows in the ledger on resume. Terminal receipts
+commit to the R checkpoint bytes and plan ID.
+
+The controller holds one exclusive `flock` and uses SQLite rollback journaling
+(`journal_mode=DELETE`, `synchronous=FULL`). Submission intent and all reserved
+unit assignments commit in one transaction **before** calling `qsub`. A returned
+handle and the attempt counters commit together; a timeout, malformed handle or
+interrupted confirmation leaves a reserved unknown/pending submission and stops
+the controller. Inspect its recorded unique PBS job name before reconciling it;
+deleting the ledger or clearing reservations to obtain a retry can launch the
+same computation twice. A temporary `qstat` failure retains the assignment and
+counts toward concurrency. A newly issued missing handle has a 120-second
+propagation grace period. An authoritative terminal/missing observation commits
+the released assignments and a cleanup obligation before deleting abandoned
+worker locks. Resume finishes that cleanup before a fresh attempt and preserves
+the earlier scripts and observations.
+
+The controller requires a filesystem with reliable process locks and SQLite
+locking/sync semantics; validate those on the deployment storage. Workers never
+open this database. WAL is deliberately avoided because SQLite documents its
+[network-filesystem restriction](https://www.sqlite.org/wal.html). For a live
+database backup, use SQLite's backup API. For a plain file copy, first stop the
+controller cleanly and close database readers, then preserve the entire
+`dispatch/` directory, including the ledger and job scripts. Do not remove a hot
+rollback journal left by an interrupted process. Legacy schema-1 JSON state is
+explicitly rejected rather than silently migrated; a schema-2 status file with
+a missing ledger is also an error. Preserve and inspect any existing history
+before deliberately starting a new campaign ledger.
+
 The controller revalidates all terminal receipts once at startup, including
-previously cached completed IDs. Dataset predictions and reusable fit caches
-have their own byte-hash receipts; a completed method task additionally seals
-its full dataset/receipt ledger. A missing receipt is pending work. An invalid
+previously cached completed IDs, rebuilds its status counters from those
+verified hints and checks live assignment consistency before submitting work.
+Loose dataset predictions and earlier cache
+layouts have their own byte-hash receipts; a completed method task additionally seals
+its full dataset/receipt ledger (or embeds its records and ledger in a sealed
+bundle). A missing receipt is pending work. An invalid
 receipt or changed sealed artifact is an integrity error. Unsealed dataset RDS
 files are preserved outside the collection namespace and recomputed on resume.
 Collection holds its own lock, archives the previous derived analysis, and
@@ -188,7 +287,8 @@ completion status and derived-file hashes. An empty or failed collection cannot
 leave previous scientific tables in the current analysis directory.
 
 Runtime guards include installed package versions, external Python repository
-source hashes, configured executable/interpreter bytes and threading settings.
+source hashes, the exact BEATRICE credible-set contract JSON, configured
+executable/interpreter bytes and threading settings.
 They do not hash installed R libraries or installed Python package bytes.
 Same-version reinstalls can evade that version guard: keep the installed
 environment immutable for the campaign and retain its installation manifests.
@@ -199,3 +299,72 @@ stops dispatch with its unique job name recorded, preventing duplicate launch.
 The controller caps automatic attempts at three while preserving every prior
 job outcome. Runtime/timeout failures still require inspection; exhausting
 retries is incomplete work, not a finished benchmark.
+
+## Prespecified priority order and planning limits
+
+`build_priority_schedule.R` creates an external scheduling prefix from the
+frozen design. It reads no predictions. The full Gaussian family runs first,
+followed by a paired legacy audit: all 45 Iteration-004 rows, all five S levels,
+phi .05/.2/.6 and iterations 1/2. The control audit retains sparse and
+sparse-inf fractions .5/.9, no annotations and binary/continuous enrichment
+5.4, all three LD references, all five S levels, phi .0075/.1/.4 and iterations
+1/2. Every selected scenario retains all ten loci. Any overlapping packed task
+is included whole, and boundary extras appear in the accompanying audit CSV.
+
+For the default full plan this prefix contains 60 Gaussian generation units
+and 72 legacy units, 32,324 method task units, 268,400 Gaussian method attempts
+and 1,296,000 paired legacy locus fits. The remaining 616,896 method tasks and
+108 generation units remain in the plan and are scheduled afterward. This
+order gives earlier evidence across mechanisms and methods without changing
+the full campaign's intended denominator or selecting tasks by performance.
+
+```sh
+Rscript --vanilla /absolute/new-controller/scripts/campaign/build_priority_schedule.R \
+  --plan /absolute/frozen-full/plan.rds \
+  --worker-repo /absolute/unchanged-scientific-source \
+  --out /absolute/external-schedules/full-priority.json
+python3 /absolute/new-controller/scripts/campaign/dispatch.py \
+  --plan /absolute/frozen-full/plan.rds \
+  --repo /absolute/unchanged-scientific-source \
+  --bootstrap /absolute/frozen-environment.sh \
+  --priority-manifest /absolute/external-schedules/full-priority.json \
+  --max-workers 48 --max-generation 16 --once --dry-run
+```
+
+The builder validates the frozen workers' source and runtime, and the plan RDS
+and CSV commitments, even when the scheduling code is newer. Its manifest binds
+the exact plan ID and the ordered unique method/generation indices. The
+controller records the manifest's byte hash and checks it before submissions;
+editing, removing or replacing a schedule on resume is rejected. Ready priority
+tasks precede ordinary tasks; blocked preflights, generation and paired-refit
+prerequisites still apply. Ordinary ready work can fill otherwise unused slots.
+Omitting the manifest preserves the original scheduling order. A newer external
+controller cannot authorize a changed scientific worker against an old plan.
+
+Twenty phenotype outcomes per exact legacy p/S/phi setting consist of ten
+phenotype draws on each of **two genotype/LD loci**, or **one shared ten-locus
+panel** for pooled methods. The draws measure conditional phenotype/effect
+variability; they are not twenty independent empirical loci. Two-cluster
+bootstrap intervals provide weak evidence for locus generalization, and one
+pooled panel cannot identify between-panel uncertainty. Gaussian results have
+ten independently generated pooled panels per p/N cell. Template provenance
+and held-out empirical loci remain separate generalization questions.
+
+The 27-million-fit legacy workload includes 6.75 million original-grid fits and
+20.25 million control fits. It is a reproducibility and sensitivity audit, not
+27 million independent replicates. A subsequent confirmatory campaign should
+prespecify more independent panels, withheld locus templates, paired LD
+references and fewer within-panel phenotype repetitions. Precision stopping
+would require independent panel batches, fixed minimum/maximum sample sizes
+and sequentially valid intervals; ordinary repeated confidence intervals do
+not justify stopping when a favored ranking appears.
+
+Canary estimates are resource anchors. The four large-p legacy arms do not
+measure every S/phi/reference/annotation cell; extrapolating their cost to the
+smaller controls is not a runtime bound. Adapter runtime omits orchestration,
+loading, validation, evaluation and serialization; end-to-end checkpoint times
+and file counts should also be inspected. The 220-task p1000 probe measures the
+largest Gaussian pooled batch, while small-p exact references have their own
+costs. Use the actual regional cap (48 in the shared 60-worker allocation),
+retain unresolved methods, and measure tail cells before predicting a finish
+date. Completion remains determined by sealed outputs for the full plan.

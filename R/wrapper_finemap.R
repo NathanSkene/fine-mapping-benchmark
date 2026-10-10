@@ -214,21 +214,48 @@ download_finemap <- function() {
 # Run FINEMAP on a single region
 # =============================================================================
 
-.finemap_model_size_probabilities <- function(path) {
+.finemap_model_size_probabilities <- function(path, max_causal = NULL,
+    header_label = "Post-Pr(# of causal SNPs is k)") {
   if (!file.exists(path)) return(NULL)
   lines <- readLines(path, warn = FALSE)
-  header <- grep("Post-Pr(# of causal SNPs is k)", lines, fixed = TRUE)
+  header <- grep(header_label, lines, fixed = TRUE)
   if (!length(header) || tail(header, 1L) >= length(lines)) return(NULL)
-  values <- lines[seq.int(tail(header, 1L) + 1L, length(lines))]
-  values <- values[grepl("^[[:space:]]*[(]?[0-9]+[[:space:]]*->[[:space:]]*[0-9.eE+-]+[)]?[[:space:]]*$", values)]
+  tail_lines <- lines[seq.int(tail(header, 1L) + 1L, length(lines))]
+  pattern <- "^[[:space:]]*[(]?[0-9]+[[:space:]]*->[[:space:]]*[0-9.eE+-]+[)]?[[:space:]]*$"
+  values <- character()
+  for (line in tail_lines) {
+    if (!nzchar(trimws(line)) && !length(values)) next
+    if (!grepl(pattern, line)) break
+    values <- c(values, line)
+  }
   if (!length(values)) return(NULL)
   values <- gsub("[()]", "", values)
   pieces <- strsplit(trimws(values), "[[:space:]]*->[[:space:]]*")
   sizes <- vapply(pieces, function(x) x[1L], "")
   prob <- suppressWarnings(as.numeric(vapply(pieces, function(x) x[2L], "")))
   if (anyDuplicated(sizes) || any(!is.finite(prob)) || any(prob < 0 | prob > 1) ||
-      abs(sum(prob) - 1) > 1e-4) return(NULL)
-  stats::setNames(prob, sizes)
+      !identical(as.integer(sizes), seq.int(0L, if (is.null(max_causal)) max(as.integer(sizes)) else max_causal)))
+    return(NULL)
+  # The tested 1.4.2 release reports log probabilities at three
+  # significant digits, suppressing trailing zeros: .548+.404+.0476=.9996.
+  # Validate the rounding interval, never replace the complete posterior by
+  # sums of a truncated .config table or silently renormalize reported values.
+  tokens <- vapply(pieces, function(x) x[2L], "")
+  significant_digits <- vapply(tokens, function(token) {
+    mantissa <- sub("[eE].*$", "", token)
+    digits <- sub("^0+", "", gsub("[^0-9]", "", mantissa))
+    max(3L, nchar(digits))
+  }, 1L)
+  half_unit <- ifelse(prob == 0, 0, .5 * 10^(floor(log10(pmax(prob, .Machine$double.xmin))) - significant_digits + 1L))
+  lower <- pmax(0, prob - half_unit); upper <- pmin(1, prob + half_unit)
+  if (sum(lower) > 1 + 1e-12 || sum(upper) < 1 - 1e-12) return(NULL)
+  result <- stats::setNames(prob, sizes)
+  attr(result, "reported_rounding") <- list(
+    minimum_significant_digits = 3L, reported_sum = sum(prob),
+    sum_interval = c(lower = sum(lower), upper = sum(upper)),
+    probability_lower = stats::setNames(lower, sizes),
+    probability_upper = stats::setNames(upper, sizes), renormalized = FALSE)
+  result
 }
 
 .finemap_component_sets <- function(path, ids, k) {
@@ -494,10 +521,15 @@ run_finemap <- function(z,
   # model-size probabilities. --log writes the complete native posterior.
   log_candidates <- c(paste0(log_file, "_sss"), log_file)
   actual_log <- log_candidates[file.exists(log_candidates)][1L]
-  k_posterior <- if (!is.na(actual_log)) .finemap_model_size_probabilities(actual_log) else NULL
+  k_posterior <- if (!is.na(actual_log)) .finemap_model_size_probabilities(actual_log, n_causal) else NULL
   if (is.null(k_posterior)) return(.finemap_error_result(p, params, elapsed,
     "FINEMAP produced no valid complete model-size posterior in its log."))
   best_k <- as.integer(names(which.max(k_posterior)))
+  rounding <- attr(k_posterior, "reported_rounding")
+  k_posterior <- stats::setNames(as.numeric(k_posterior), names(k_posterior))
+  prior <- .finemap_model_size_probabilities(actual_log, n_causal,
+    header_label = "Prior-Pr(# of causal SNPs is k)")
+  k_prior <- if (is.null(prior)) NULL else stats::setNames(as.numeric(prior), names(prior))
 
   # --- Parse .cred<k*> file for credible sets ---------------------------------
 
@@ -528,11 +560,21 @@ run_finemap <- function(z,
       posterior_mean = posterior_mean,
       posterior_sd   = posterior_sd,
       k_posterior    = k_posterior,
+      k_posterior_rounding = rounding,
+      k_prior = k_prior,
       best_k         = best_k,
       configs        = config_df,
       cs_pip         = cs_pip,
       credible_set_semantics = "native_configuration_conditional_component_sets",
       k_posterior_source = "complete_native_log",
+      best_k_selection = "maximum_reported_native_posterior",
+      native_null_support = if (is.null(k_prior)) "not_established_from_log" else
+        if (k_prior["0"] == 0) "excluded_by_prior" else "prior_includes_null",
+      posterior_conditioning = if (is.null(k_prior)) "not_established_from_log" else
+        if (k_prior["0"] == 0) "at_least_one_modeled_cause" else "null_including_model_space",
+      null_probability = unname(k_posterior["0"]),
+      native_seed = NULL,
+      native_rng_reproducibility = "not_established",
       variant_ids = original_variant_ids,
       native_variant_ids = variant_ids
     )

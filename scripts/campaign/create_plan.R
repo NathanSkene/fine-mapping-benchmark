@@ -114,7 +114,7 @@ datasets <- do.call(rbind, datasets)
 generation <- if (length(generation)) do.call(rbind, generation) else data.frame()
 tasks <- list(); ti <- 0L
 chunk <- as.integer(opt$`legacy-chunk`)
-if (is.na(chunk) || chunk < 1L) stop("Invalid legacy chunk")
+if (is.na(chunk) || chunk < 1L || chunk > 5L) stop("Legacy task chunks must contain one to five datasets for bounded compaction")
 add_task <- function(ids, stage, method, packed = FALSE) {
   values <- if (packed) ids else paste(ids, collapse = "|")
   indices <- ti + seq_along(values)
@@ -152,6 +152,11 @@ manifest <- list(specification = "fmbenchmark-full-campaign-v1", profile = opt$p
   input_file_manifest = .campaign_input_manifest(opt$`inputs-manifest`,
        c(opt$`vcf-dir`, opt$`genetic-map-dir`)),
   runtime_fingerprint = .campaign_runtime_fingerprint(method_args),
+  retention = list(task_checkpoint_schema = 2L,
+      task_records = "all predictions/evaluations/session and complete started-attempt ledger in one sealed task bundle",
+      partial_tasks = "loose sealed dataset checkpoints until terminal bundle seal",
+      fit_reuse = "sealed paired original record only after exact identity; no persistent duplicate cache",
+      max_dataset_records_per_task = 5L),
   interpretation = if (nzchar(opt$`legacy-root`)) "frozen archived input attribution" else
       "original-generator reconstruction; unavailable historical predictions cannot be rescored",
   challenge = list(variants = cp, n = cn, replicates_per_cell = replicates,

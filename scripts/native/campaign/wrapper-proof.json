@@ -1,0 +1,21 @@
+{
+  "role": "Actual Linux R wrapper import and retention equivalence; no accuracy or convergence claim",
+  "proof_pbs_job": "4310522.pbs-7",
+  "source_wrapper": "R/wrapper_sbayesrc_native.R",
+  "source_wrapper_sha256": "202f795decec1ea2b876a6c75aeecee848faf2bb8eb1aad23ead5b119c8f456a",
+  "actual_version": "2.5.5",
+  "executable_sha256": "649123c2fefacc23aa71c6537c9226b5a69f06f6045863672118009cbe680346",
+  "n_variants": 256,
+  "n_iter": 150,
+  "burn_in": 50,
+  "thin": 5,
+  "seed": 9923,
+  "comparison": ["all", "core"],
+  "pip_identical": true,
+  "effect_mean_identical": true,
+  "effect_sd_identical": true,
+  "n_sinks": 7,
+  "sinks_target": "/dev/null",
+  "result_md5": "155024014eb7e6cd214a31374d69be11",
+  "full_size_cost_claim": false
+}

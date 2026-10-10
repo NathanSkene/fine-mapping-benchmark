@@ -3,6 +3,7 @@ source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE)
 opt <- .native_options(list(out = "results/native-campaign", profile = "full", seed = "20261012",
   `vcf-dir` = "data/gwfm_vcf", `genetic-map-dir` = "data/genetic_maps",
   `regions-file` = file.path(.native_repo, "inst/extdata/gwfm_regions.csv"),
+  `trace-contract` = file.path(.native_repo, "scripts/native/campaign/trace-contract.json"),
   `gctb-path` = "gctb", methods = paste(names(.FM_REGISTRY), collapse = ",")))
 if (dir.exists(opt$out)) stop("Use a new output directory for an immutable native plan")
 if (!requireNamespace("posterior", quietly = TRUE)) stop("Install posterior before freezing a native campaign")
@@ -30,6 +31,8 @@ regional <- expand.grid(input_id = design$inputs$input_id, method = methods, str
 regional$regional_id <- sprintf("regional_%06d", seq_len(nrow(regional)))
 binary <- if (file.exists(opt$`gctb-path`)) normalizePath(opt$`gctb-path`) else unname(Sys.which(opt$`gctb-path`))
 if (!nzchar(binary)) stop("Pin an existing official GCTB executable")
+trace_contract <- jsonlite::fromJSON(opt$`trace-contract`)
+.native_validate_trace_contract(trace_contract, .challenge_sha256(binary), opt$profile)
 method_args <- .campaign_default_args(.native_repo)[methods]
 plan <- c(list(specification = "native-sbayesrc-comparison-v1", profile = opt$profile, seed = seed,
   source = .native_source_snapshot(.native_repo), regions = regions, regions_file = region_file,
@@ -37,6 +40,7 @@ plan <- c(list(specification = "native-sbayesrc-comparison-v1", profile = opt$pr
   data_snapshot = data.frame(path = unname(files), sha256 = unname(vapply(files, .challenge_sha256, "")),
                              row.names = NULL, stringsAsFactors = FALSE),
   executable = binary, executable_sha256 = .challenge_sha256(binary), expected_version = "2.5.5",
+  trace_contract = trace_contract,
   regional = regional, method_args = method_args,
   runtime_fingerprint = .campaign_runtime_fingerprint(method_args),
   posterior_version = as.character(utils::packageVersion("posterior")),

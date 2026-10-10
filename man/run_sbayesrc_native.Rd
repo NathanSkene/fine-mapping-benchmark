@@ -20,7 +20,8 @@ run_sbayesrc_native(
   threads = 1L,
   dry_run = FALSE,
   save_mcmc = FALSE,
-  thin = 10L
+  thin = 10L,
+  mcmc_scope = c("all", "core")
 )
 }
 \arguments{
@@ -61,7 +62,14 @@ without launching the native program. Default FALSE.}
 \item{save_mcmc}{Save upstream text parameter draws for convergence diagnostics.
 Default FALSE. SNP-effect binary draws are not requested by this option.}
 
-\item{thin}{Positive integer sampling interval for saved draws. Default 10.}
+\item{thin}{Positive integer native posterior sampling interval. Default 10.
+Always passed to GCTB, including when text output is disabled.}
+
+\item{mcmc_scope}{Text retention policy, \code{all} (default) or \code{core}.
+With \code{save_mcmc = TRUE}, \code{core} retains core, annotation and block
+text traces while redirecting seven full-panel text arrays to \code{/dev/null}.
+This Linux-only policy leaves the native executable and inference unchanged;
+formatting costs remain. Per-variant draws cannot be recovered from this run.}
 }
 \value{
 On execution, standard PIP output and aligned posterior mean effects,

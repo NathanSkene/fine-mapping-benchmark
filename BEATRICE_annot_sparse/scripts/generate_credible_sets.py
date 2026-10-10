@@ -1,5 +1,7 @@
 import torch
-from scripts.posterior_memo import add_configuration, load_context, posterior_weights
+from scripts.posterior_memo import (
+    add_configuration, configuration_batch, load_context, posterior_weights,
+)
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
@@ -10,6 +12,9 @@ from scripts.convert_to_gpu_and_tensor import gpu_t
 from scripts.convert_to_gpu_scalar import gpu_ts
 from scripts.convert_to_cpu import cpu
 import os
+import json
+import math
+import numbers
 
 matplotlib.use('Agg')
 
@@ -40,6 +45,11 @@ def cond_prob(M, K, bp):
     return pip
 
 def find_cond_prob_constrained_causal_no_dup(given, n_caus, M, bp, cred_set):
+    """Masked P(j is causal | given are causal); excluded mass is not renormalized.
+
+    ``n_caus`` is a retained legacy argument. The outer stepwise loop controls
+    the maximum selected signal count; this function has no cardinality filter.
+    """
     
     cred = []
     for c in cred_set:
@@ -47,7 +57,9 @@ def find_cond_prob_constrained_causal_no_dup(given, n_caus, M, bp, cred_set):
     cred = set(cred)    
     total = 0
     ss = given[:]
-    p = np.array([0]*bp)
+    # Fractional posterior mass must accumulate in floating point. Integer
+    # arrays silently truncated every model contribution to zero.
+    p = np.zeros(bp, dtype=float)
     
     for k in M:
         tag = True
@@ -62,6 +74,8 @@ def find_cond_prob_constrained_causal_no_dup(given, n_caus, M, bp, cred_set):
                         p[kk] += M[k]
         
    
+    if not np.isfinite(total) or total <= 0:
+        raise ValueError("Conditional probabilities require positive finite posterior mass")
     p = p/total
     
     p = p.squeeze()
@@ -70,10 +84,11 @@ def find_cond_prob_constrained_causal_no_dup(given, n_caus, M, bp, cred_set):
     return index_max, p[index_max],p 
 
 def find_cond_prob_constrained_causal(given, n_caus, M, bp):
+    """P(j is causal | given are causal), with given members masked to zero."""
     
     total = 0
     ss = given[:]
-    p = np.array([0]*bp)
+    p = np.zeros(bp, dtype=float)
     
     for k in M:
             if all([s in k for s in ss]):
@@ -83,6 +98,8 @@ def find_cond_prob_constrained_causal(given, n_caus, M, bp):
                         p[kk] += M[k]
         
    
+    if not np.isfinite(total) or total <= 0:
+        raise ValueError("Conditional probabilities require positive finite posterior mass")
     p = p/total
     
     p = p.squeeze()
@@ -123,16 +140,68 @@ def cond_stepwise_causal(M, mean_memo, pip, prior_causal, threshold, Z, LD,\
     
 
                 
-def find_credible_set(LD, M, start_set, bp, ths, prob_ths, allow_dup, options):
+def _validated_variant_indices(indices, bp):
+    values = tuple(indices)
+    if (any(not isinstance(j, numbers.Integral) or isinstance(j, bool) for j in values)
+            or len(set(values)) != len(values) or any(j < 0 or j >= bp for j in values)):
+        raise ValueError("Conditional event indices must be unique integers in range")
+    return tuple(int(j) for j in values)
+
+
+def _conditioned_models(M, given, bp):
+    given = _validated_variant_indices(given, bp)
+    required = set(given)
+    records = []
+    for key, weight in M.items():
+        key = _validated_variant_indices(key, bp)
+        weight = float(weight)
+        if not math.isfinite(weight) or weight < 0:
+            raise ValueError("Conditional events require finite nonnegative model probabilities")
+        if required.issubset(key):
+            records.append((frozenset(key), weight))
+    denominator = math.fsum(weight for _, weight in records)
+    if not math.isfinite(denominator) or denominator <= 0:
+        raise ValueError("Conditional probabilities require positive finite posterior mass")
+    return given, records, denominator
+
+
+def _union_probability(records, denominator, members):
+    members = set(members)
+    return math.fsum(weight for key, weight in records if members.intersection(key)) / denominator
+
+
+def conditional_union_probability(M, given, members, bp):
+    """P(C intersects members | given subset C) within explored posterior support."""
+    members = _validated_variant_indices(members, bp)
+    _, records, denominator = _conditioned_models(M, given, bp)
+    return _union_probability(records, denominator, members)
+
+
+def find_credible_set(LD, M, start_set, bp, ths, prob_ths, allow_dup, options,
+                      return_diagnostics=False):
+    """Greedy conditional union-event sets; membership-sum stopping is an ablation.
+
+    Conditioning on the other selected variants and normalization over explored
+    configurations do not imply unconditional or full-model-space coverage.
+    """
     cred_prob = []
     cred_set =  []
-    start_set = list(start_set)
+    diagnostics = []
+    start_set = list(_validated_variant_indices(start_set, bp))
+    rule = options.get('credible_set_rule', 'conditional_union')
+    if rule not in ('conditional_union', 'legacy_membership_sum'):
+        raise ValueError("Unknown credible-set stopping rule")
+    if (not math.isfinite(float(ths)) or not 0 < ths <= 1 or
+            not math.isfinite(float(prob_ths)) or not 0 <= prob_ths <= 1 or
+            not math.isfinite(float(options['purity'])) or not 0 <= options['purity'] <= 1):
+        raise ValueError("Credible-set targets and constraints must be finite probabilities")
     # cred = []
     
     for i, s1 in enumerate(start_set)  :         
 
         ss = start_set[:]
         ss.pop(i)
+        given, records, denominator = _conditioned_models(M, ss, bp)
        
         
         # local cred sets
@@ -150,12 +219,15 @@ def find_credible_set(LD, M, start_set, bp, ths, prob_ths, allow_dup, options):
         
         p_set.append(np.round(p[s1], decimals=3))
         
-        # threshold tracker.
-        prob = p[s1]
+        # Membership marginals may overlap. Actual event coverage counts each
+        # configuration once, even if it contains several candidate members.
+        membership_sum = float(p[s1])
+        coverage = _union_probability(records, denominator, cr_set)
         
         for it in ind_cred:
                 
-            if prob > ths:
+            if ((rule == 'conditional_union' and coverage >= ths) or
+                    (rule == 'legacy_membership_sum' and membership_sum > ths)):
                 break
             else:                
                 if it != s1 and p[it]>prob_ths:
@@ -163,7 +235,8 @@ def find_credible_set(LD, M, start_set, bp, ths, prob_ths, allow_dup, options):
                     if np.min(np.abs(cpu(LD[cr_set, it]).data.numpy()))> options['purity']:
                         cr_set.append(it)
                         p_set.append(np.round(p[it], decimals=3))
-                        prob += p[it]
+                        membership_sum += float(p[it])
+                        coverage = _union_probability(records, denominator, cr_set)
         
         LLD  = LD[:,cr_set]
         LLD = LLD[cr_set,:]
@@ -173,10 +246,23 @@ def find_credible_set(LD, M, start_set, bp, ths, prob_ths, allow_dup, options):
         
         cred_set.append(cr_set)
         cred_prob.append(p_set)
-    return cred_set, cred_prob
+        diagnostics.append({
+            'set_indices_zero_based': [int(j) for j in cr_set],
+            'condition_indices_zero_based': list(given),
+            'event': 'at_least_one_set_member_is_causal',
+            'posterior_conditioning': 'given_variants_are_causal_within_explored_support',
+            'conditional_union_probability': float(coverage),
+            'target_probability': float(ths),
+            'target_met': bool(coverage >= ths),
+            'legacy_membership_sum': float(membership_sum),
+            'stopping_rule': rule,
+            'selection_probability_threshold': float(prob_ths),
+            'purity_threshold': float(options['purity']),
+        })
+    return (cred_set, cred_prob, diagnostics) if return_diagnostics else (cred_set, cred_prob)
 
 
-def abf( z, ld, memo, mean_memo, n_sub, sigma_sq, p0, ind, S):
+def abf( z, ld, memo, mean_memo, n_sub, sigma_sq, p0, ind, S, batch=None):
     '''
     Aproximate bayes factor calculation.
 
@@ -197,7 +283,9 @@ def abf( z, ld, memo, mean_memo, n_sub, sigma_sq, p0, ind, S):
     ind_m  = tuple(sorted(ind[:]))
     cc = gpu(torch.ones(len(z)))
     if len(ind)>0:
-        if ind_m in memo:
+        if batch is not None and batch.contains(ind_m):
+            return None  # a buffered likelihood exists; no probability query
+        if batch is None and ind_m in memo:
             return memo[ind_m]
     
         U =  n_sub*torch.diag(sigma_sq*cc)[:,ind]
@@ -214,28 +302,29 @@ def abf( z, ld, memo, mean_memo, n_sub, sigma_sq, p0, ind, S):
         # Cache a pure likelihood and reweight the complete search space under
         # the persisted final annotation prior; no uniform-prior fallback.
         log_bf = -torch.logdet(sigma)/2 + sigma2
+        if batch is not None:
+            batch.add(ind_m, float(log_bf.detach().cpu().numpy().squeeze()))
+            return None
         return add_configuration(memo, mean_memo, ind_m,
                                  float(log_bf.detach().cpu().numpy().squeeze()))
     else:
-        return memo[()]
+        return None if batch is not None else memo[()]
 
 def delete(memo, mean_memo, z, ld, n_sub, sigma_sq, p0, S, st_Set, search_Set):
-    
-        abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, st_Set, S)
-    
+    # No selection reads occur inside a complete candidate round. Exit commits
+    # all probabilities before the caller makes its next conditional decision.
+    with configuration_batch(memo, mean_memo) as batch:
+        abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, st_Set, S, batch=batch)
         K = list(st_Set)
-
         for i in range(len(K)):
             kk = K[:]
             kk.pop(i)
             kk = sorted(kk)
-            abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, kk,S)
-        return
+            abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, kk, S, batch=batch)
 
 def add(memo, mean_memo, z, ld, n_sub, sigma_sq, p0, S, st_Set, search_set):
-    
-        abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, st_Set, S)
-    
+    with configuration_batch(memo, mean_memo) as batch:
+        abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, st_Set, S, batch=batch)
         K = list(st_Set)
         for i in search_set:
             kk = K[:]
@@ -243,13 +332,11 @@ def add(memo, mean_memo, z, ld, n_sub, sigma_sq, p0, S, st_Set, search_set):
                 kk.append(i)
             kk = sorted(kk)
             
-            abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, kk, S)
-        return
+            abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, kk, S, batch=batch)
     
 def change(memo, mean_memo, z, ld, n_sub, sigma_sq, p0, S, st_Set,search_set):
-    
-        abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, st_Set, S)
-    
+    with configuration_batch(memo, mean_memo) as batch:
+        abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, st_Set, S, batch=batch)
         K = list(st_Set)
         
         for j, k_con in enumerate(K):
@@ -265,8 +352,7 @@ def change(memo, mean_memo, z, ld, n_sub, sigma_sq, p0, S, st_Set,search_set):
                     kk.pop(rem_id)
                 kk = sorted(kk)
             
-                abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, kk, S)
-        return          
+                abf(z, ld, memo, mean_memo, n_sub, sigma_sq, p0, kk, S, batch=batch)
     
 def calculate_pip(memo,bp):
 
@@ -295,10 +381,11 @@ def regularize_ld(LD):
     return LD
 
 
-def unique_sets(cred_set, cred_prob):
+def unique_sets(cred_set, cred_prob, diagnostics=None):
     D = []
     P = []
     C = []
+    E = []
     for i, xx in enumerate(cred_set):
         ids = np.argsort(xx)[::-1]
         x = np.array(xx)[ids]
@@ -306,7 +393,9 @@ def unique_sets(cred_set, cred_prob):
             D += [list(x)]
             C += [xx]
             P += [cred_prob[i]]
-    return C, P
+            if diagnostics is not None:
+                E.append(diagnostics[i])
+    return (C, P, E) if diagnostics is not None else (C, P)
     
     
     x = D
@@ -315,7 +404,9 @@ def main(options):
     print('GENERATING CREDIBLE SETS\n')
     ###############################################################################################################################################
     
-    Z  = gpu_t(pd.read_table(options['z'],  sep=' ', header=None).to_numpy()[:,1].astype(float))
+    z_data = pd.read_table(options['z'], sep=' ', header=None).to_numpy()
+    z_variant_names = [str(name) for name in z_data[:, 0]]
+    Z = gpu_t(z_data[:, 1].astype(float))
     LD = gpu_t(pd.read_table(options['LD'], sep=' ', header=None).to_numpy())
     LD = regularize_ld(LD)
     
@@ -347,7 +438,8 @@ def main(options):
     #########################################################################################################################################################
     ths = options['coverage_ths']
     prob_ths = options['selection_prob']
-    cred_set, cred_prob = find_credible_set(LD, m, start_set, bp, ths, prob_ths, allow_dup, options)
+    cred_set, cred_prob, diagnostics = find_credible_set(
+        LD, m, start_set, bp, ths, prob_ths, allow_dup, options, return_diagnostics=True)
     
     pip = calculate_pip(m, bp)
     # Expansion changes the explored posterior support. Persist exactly the
@@ -362,7 +454,26 @@ def main(options):
     df = pd.DataFrame(df)
     df.to_csv(os.path.join(options['target'],'pip.csv'), index=False)
     
-    cred_set, cred_prob = unique_sets(cred_set, cred_prob)
+    cred_set, cred_prob, diagnostics = unique_sets(cred_set, cred_prob, diagnostics)
+    names = options['names']
+    if (len(names) != bp or any(not isinstance(name, str) or not name for name in names)
+            or len(set(names)) != bp or list(names) != z_variant_names):
+        raise ValueError("Credible-set diagnostic names must identify every variant uniquely")
+    diagnostic_output = {
+        'format': 'beatrice-conditional-credible-set-diagnostics-v1',
+        'index_base': 0,
+        'variant_count': bp,
+        'variant_names': list(names),
+        'posterior_memo_format': mean_memo['format'],
+        'posterior_support_size': len(m),
+        'null_probability': float(m[()]),
+        'null_probability_conditioning': 'explored_support_under_frozen_final_prior',
+        'stopping_rule': options.get('credible_set_rule', 'conditional_union'),
+        'sets': diagnostics,
+    }
+    with open(os.path.join(options['target'], 'credible_set_diagnostics.json'), 'w') as output:
+        json.dump(diagnostic_output, output, allow_nan=False, indent=2)
+        output.write('\n')
     cred_str = []
     for item in cred_set:
         s = ''

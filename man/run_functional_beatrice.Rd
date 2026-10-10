@@ -79,6 +79,10 @@ A list with the standardised fine-mapping output:
 \describe{
 \item{cs_pip}{List of numeric vectors. Conditional inclusion
 probabilities within each credible set. NULL if not produced.}
+\item{credible_set_diagnostics}{Declared fork's conditional union-event
+probabilities, conditioning indices and target-attainment flags.}
+\item{null_probability}{Empty candidate-configuration probability
+within the explored posterior support, when declared.}
 \item{feature_importance}{Data frame (annotation_index, importance)
 from the magnitude of the causal-versus-null skip-logit contrast,
 sorted descending. NULL if no annotations or
@@ -96,6 +100,9 @@ directory is deleted on exit.
 Nonzero process exits and malformed, incomplete, or unaligned native
 probabilities or credible sets return a failed fit; evidence is never clipped
 or repaired. Synthetic tokens serialize variants without changing their IDs.
+The declared bundled fork uses conditional union-event stopping within its
+explored configuration support. Per-set event probabilities and target
+attainment are retained; they do not guarantee unconditional coverage.
 }
 \details{
 When \code{annotations} is \code{NULL} the method runs without a functional

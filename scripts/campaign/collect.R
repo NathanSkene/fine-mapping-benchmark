@@ -1,7 +1,8 @@
 #!/usr/bin/env Rscript
 source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])), "common.R"))
 main <- function() {
-opt <- .campaign_options(list(plan = "results/full-campaign/plan.rds", `bootstrap-draws` = "1000"))
+opt <- .campaign_options(list(plan = "results/full-campaign/plan.rds", `bootstrap-draws` = "1000",
+                              backend = "auto", `max-stratum-rows` = "100000"))
 plan <- readRDS(opt$plan); .campaign_assert_plan(plan, .campaign_repo)
 root <- dirname(normalizePath(opt$plan))
 .campaign_claim(file.path(root, "analysis.lock"))
@@ -17,27 +18,25 @@ collection_finished <- FALSE
 .campaign_analysis_manifest(analysis, plan, "collecting")
 on.exit(if (!collection_finished)
   .campaign_analysis_manifest(analysis, plan, "failed_or_interrupted"), add = TRUE, after = FALSE)
+backend <- if (opt$backend == "auto") "streamed" else opt$backend
+if (!backend %in% c("streamed", "memory")) stop("Unknown collector backend")
+if (plan$profile == "full" && backend == "memory") stop("Full campaigns require bounded streamed collection")
+if (backend == "streamed") {
+  source(file.path(.campaign_repo, "scripts/campaign/collect_streamed.R"))
+  census <- .campaign_collect_streamed(plan, root, analysis, as.integer(opt$`bootstrap-draws`),
+                                       as.integer(opt$`max-stratum-rows`))
+  collection_finished <- TRUE
+  cat(sprintf("%d/%d tasks complete; %d attempted locus fits collected with bounded strata\n",
+              census$complete, nrow(plan$tasks), census$rows))
+  return(invisible(NULL))
+}
 tables <- old_scores <- status <- list(); j <- 0L
 for (i in seq_len(nrow(plan$tasks))) {
   task <- plan$tasks[i, ]; directory <- file.path(root, "tasks", task$task_id)
-  checkpoint <- file.path(directory, "completed.rds")
-  receipted <- .campaign_check_receipt(directory, checkpoint, plan$plan_sha256, task$task_id)
-  complete <- .campaign_validate_checkpoint(checkpoint, plan, task) && receipted
-  if (file.exists(checkpoint) && is.null(readRDS(checkpoint)$artifacts))
-    stop("Completed task lacks sealed dataset artifacts: ", checkpoint)
-  ids <- strsplit(task$dataset_ids, "|", fixed = TRUE)[[1L]]
-  files <- list.files(directory, "\\.rds$", full.names = TRUE)
-  files <- files[basename(files) != "completed.rds"]
-  if (any(!basename(files) %in% paste0(ids, ".rds"))) stop("Unplanned dataset checkpoint in ", directory)
+  evidence <- .campaign_task_evidence(directory, plan, task)
+  complete <- evidence$complete
   n_read <- 0L
-  for (file in files) {
-    id <- sub("\\.rds$", "", basename(file))
-    d <- plan$datasets[match(id, plan$datasets$dataset_id), ]
-    if (anyNA(d$dataset_id)) stop("Unplanned dataset checkpoint: ", file)
-    if (!.campaign_check_receipt(directory, file, plan$plan_sha256,
-          paste(task$task_id, id, sep = "."), paste0(id, ".terminal.json"))) next
-    .campaign_validate_checkpoint(file, plan, list(task = task, dataset = d))
-    z <- readRDS(file)
+  for (z in evidence$records) {
     j <- j + 1L; tables[[j]] <- z$table
     n_read <- n_read + 1L
     if (!is.null(z$original_evaluation) && is.null(z$original_evaluation$error)) {
@@ -57,7 +56,8 @@ for (i in seq_len(nrow(plan$tasks))) {
   status[[i]] <- data.frame(task_id = task$task_id, stage = task$stage, method = task$method,
        complete = complete, datasets_checkpointed = n_read,
        datasets_expected = length(strsplit(task$dataset_ids, "|", fixed = TRUE)[[1L]]),
-       started_attempts = length(list.files(file.path(directory, "attempts"), "\\.rds$")),
+       started_attempts = evidence$started_attempts,
+       storage = if (evidence$bundled) "sealed_task_bundle" else "loose_dataset_checkpoints",
        evidence_scope = if (complete) "checkpointed_terminal" else "incomplete; missing units excluded from scientific summaries")
 }
 status <- do.call(rbind, status)
@@ -106,9 +106,15 @@ summary <- do.call(rbind, lapply(groups, function(indices) {
       brier_successful = mean_na(x$brier), recall_all_attempts = mean_na(x$recall),
       log_loss_successful = mean_na(x$log_loss),
       pip_event = paste(unique(x$pip_event), collapse = ";"),
+      posterior_conditioning = paste(unique(x$posterior_conditioning), collapse = ";"),
+      native_null_support = paste(unique(x$native_null_support), collapse = ";"),
+      n_successful_null_model_in_support = sum(x$success & x$null_model_in_support, na.rm = TRUE),
+      n_successful_null_model_excluded = sum(x$success & !x$null_model_in_support, na.rm = TRUE),
+      n_native_null_probabilities_reported = sum(x$success & x$null_probability_reported),
       score_target = paste(unique(x$score_target), collapse = ";"),
       n_probability_target_aligned_successful = sum(x$success & x$probability_target_aligned, na.rm = TRUE),
       n_probability_target_misaligned_successful = sum(x$success & !x$probability_target_aligned, na.rm = TRUE),
+      n_probability_target_unknown_successful = sum(x$success & is.na(x$probability_target_aligned)),
       probability_score_interpretation = paste(unique(x$probability_score_interpretation), collapse = ";"),
       brier_any_nonzero_total_effect_successful = mean_na(x$brier_any_nonzero_total_effect),
       log_loss_any_nonzero_total_effect_successful = mean_na(x$log_loss_any_nonzero_total_effect),
@@ -144,6 +150,8 @@ for (stage in unique(data$stage)) for (stratum in unique(data$stratum[data$stage
     keys <- keys[keys %in% names(a) & vapply(keys, function(k) any(!is.na(a[[k]])), TRUE)]
     pooled <- c("fb_pooled", "fb_xregion", "polyfun_est", "polyfun_ldsc", "sbayesrc", "paintor")
     cluster_field <- if (any(pair %in% pooled)) "panel_cluster_id" else "cluster_id"
+    alignment <- c(a$probability_target_aligned[a$success], b$probability_target_aligned[b$success])
+    aligned <- length(alignment) > 0L && all(alignment %in% TRUE)
     paired <- merge(a[c(keys, cluster_field, metric)], b[c(keys, metric)], by = keys,
                      suffixes = c("_a", "_b"))
     differences <- paired[[paste0(metric, "_a")]] - paired[[paste0(metric, "_b")]]
@@ -161,9 +169,9 @@ for (stage in unique(data$stage)) for (stratum in unique(data$stratum[data$stage
       method_b = pair[2L], metric = metric, difference = if (length(ds)) mean(ds) else NA_real_,
       lower = interval[1L], upper = interval[2L], n_pairs = sum(good),
       n_attempted_pairs = nrow(paired), n_clusters = length(clusters),
-      probability_targets_aligned = if (metric == "brier") !any(pair %in% c("sbayesrc", "marginal_z")) else NA,
-      interpretation = if (metric == "brier" && "sbayesrc" %in% pair)
-        "operational_sparse_membership_diagnostic_difference; mixture event mismatch; not calibration ranking" else
+      probability_targets_aligned = if (metric == "brier") aligned else NA,
+      interpretation = if (metric == "brier" && !aligned)
+        "operational_sparse_membership_diagnostic_difference; event or posterior-conditioning mismatch; not calibration ranking" else
         "prespecified operational metric difference")
   }
 }

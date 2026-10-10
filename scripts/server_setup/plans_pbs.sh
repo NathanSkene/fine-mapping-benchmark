@@ -41,4 +41,9 @@ for profile in integration canary full; do
     --gctb-path "$FMB_GCTB_PATH"
   Rscript --vanilla scripts/server_setup/validate_plan.R --plan "$out/plan.rds" --kind native
 done
+priority="$campaign/regional-full/priority-prefix.json"
+if [[ ! -f "$priority" ]]; then
+  Rscript --vanilla scripts/campaign/build_priority_schedule.R \
+    --plan "$campaign/regional-full/plan.rds" --worker-repo "$repo" --out "$priority"
+fi
 touch "$campaign/PLANS_COMPLETE"

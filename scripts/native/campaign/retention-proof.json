@@ -1,0 +1,222 @@
+{
+  "role": "same-seed installed-binary retention equivalence proof; no accuracy or convergence claim",
+  "executable": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/gctb_2.5.5_Linux/gctb",
+  "executable_sha256": "649123c2fefacc23aa71c6537c9226b5a69f06f6045863672118009cbe680346",
+  "n_iter": 150,
+  "burn_in": 50,
+  "thin": 5,
+  "seed": 9923,
+  "final_outputs": {
+    "snpRes": {
+      "hashes": {
+        "all": "e7aded27f5031a88f7fd5ea766bd2c9c4e51858acaf7a3691adfcff8dcdee282",
+        "core": "e7aded27f5031a88f7fd5ea766bd2c9c4e51858acaf7a3691adfcff8dcdee282",
+        "no_text": "e7aded27f5031a88f7fd5ea766bd2c9c4e51858acaf7a3691adfcff8dcdee282"
+      },
+      "identical": true
+    },
+    "parRes": {
+      "hashes": {
+        "all": "f454d6c7083fcf954e6f905efc07ee55a98de478b16b21473d73b658597aa6ca",
+        "core": "f454d6c7083fcf954e6f905efc07ee55a98de478b16b21473d73b658597aa6ca",
+        "no_text": "f454d6c7083fcf954e6f905efc07ee55a98de478b16b21473d73b658597aa6ca"
+      },
+      "identical": true
+    },
+    "parSetRes": {
+      "hashes": {
+        "all": "a41615134a271e56ec3703d4412ad5a10e300341e0d764aeb5ff35eda9e1b5c0",
+        "core": "a41615134a271e56ec3703d4412ad5a10e300341e0d764aeb5ff35eda9e1b5c0",
+        "no_text": "a41615134a271e56ec3703d4412ad5a10e300341e0d764aeb5ff35eda9e1b5c0"
+      },
+      "identical": true
+    },
+    "enrich": {
+      "hashes": {
+        "all": "afadd27bfd1fb23338da5fbde6bb6582a26c2199ab661509b4e1bd449d7edb03",
+        "core": "afadd27bfd1fb23338da5fbde6bb6582a26c2199ab661509b4e1bd449d7edb03",
+        "no_text": "afadd27bfd1fb23338da5fbde6bb6582a26c2199ab661509b4e1bd449d7edb03"
+      },
+      "identical": true
+    }
+  },
+  "core": {
+    "all": {
+      "raw_rows": 150,
+      "header": [
+        "NnzSnp",
+        "SigmaSq",
+        "hsq",
+        "ResVar",
+        "NumSnp1",
+        "NumSnp2",
+        "NumSnp3",
+        "NumSnp4",
+        "NumSnp5",
+        "Vg1",
+        "Vg2",
+        "Vg3",
+        "Vg4",
+        "Vg5"
+      ],
+      "retained_iterations": [
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100,
+        105,
+        110,
+        115,
+        120,
+        125,
+        130,
+        135,
+        140,
+        145,
+        150
+      ],
+      "retained_sha256": "c5f4053d5d94a84a815ba3fc4fdf66e5f4fbd402b0da20389714524dd1e5c6fe"
+    },
+    "core": {
+      "raw_rows": 150,
+      "header": [
+        "NnzSnp",
+        "SigmaSq",
+        "hsq",
+        "ResVar",
+        "NumSnp1",
+        "NumSnp2",
+        "NumSnp3",
+        "NumSnp4",
+        "NumSnp5",
+        "Vg1",
+        "Vg2",
+        "Vg3",
+        "Vg4",
+        "Vg5"
+      ],
+      "retained_iterations": [
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100,
+        105,
+        110,
+        115,
+        120,
+        125,
+        130,
+        135,
+        140,
+        145,
+        150
+      ],
+      "retained_sha256": "c5f4053d5d94a84a815ba3fc4fdf66e5f4fbd402b0da20389714524dd1e5c6fe"
+    }
+  },
+  "retained_core_identical": true,
+  "sinks": [
+    {
+      "path": "/rds/general/user/nskene/ephemeral/fmbenchmark-campaign-20261010/native-retention-proof-20261010-v2/core.mcmcsamples/DeltaPi1.mcmcsamples.txt",
+      "target": "/dev/null"
+    },
+    {
+      "path": "/rds/general/user/nskene/ephemeral/fmbenchmark-campaign-20261010/native-retention-proof-20261010-v2/core.mcmcsamples/DeltaPi2.mcmcsamples.txt",
+      "target": "/dev/null"
+    },
+    {
+      "path": "/rds/general/user/nskene/ephemeral/fmbenchmark-campaign-20261010/native-retention-proof-20261010-v2/core.mcmcsamples/DeltaPi3.mcmcsamples.txt",
+      "target": "/dev/null"
+    },
+    {
+      "path": "/rds/general/user/nskene/ephemeral/fmbenchmark-campaign-20261010/native-retention-proof-20261010-v2/core.mcmcsamples/DeltaPi4.mcmcsamples.txt",
+      "target": "/dev/null"
+    },
+    {
+      "path": "/rds/general/user/nskene/ephemeral/fmbenchmark-campaign-20261010/native-retention-proof-20261010-v2/core.mcmcsamples/DeltaPi5.mcmcsamples.txt",
+      "target": "/dev/null"
+    },
+    {
+      "path": "/rds/general/user/nskene/ephemeral/fmbenchmark-campaign-20261010/native-retention-proof-20261010-v2/core.mcmcsamples/PEP.mcmcsamples.txt",
+      "target": "/dev/null"
+    },
+    {
+      "path": "/rds/general/user/nskene/ephemeral/fmbenchmark-campaign-20261010/native-retention-proof-20261010-v2/core.mcmcsamples/PIP.mcmcsamples.txt",
+      "target": "/dev/null"
+    }
+  ],
+  "timings": {
+    "all": {
+      "wall_seconds": 0.81,
+      "user_seconds": 0.54,
+      "system_seconds": 0.03,
+      "max_rss_kib": 3000.0
+    },
+    "core": {
+      "wall_seconds": 0.6,
+      "user_seconds": 0.55,
+      "system_seconds": 0.01,
+      "max_rss_kib": 3000.0
+    },
+    "no_text": {
+      "wall_seconds": 0.15,
+      "user_seconds": 0.13,
+      "system_seconds": 0.0,
+      "max_rss_kib": 2820.0
+    }
+  },
+  "output_bytes": {
+    "all": 1912819,
+    "core": 162130,
+    "no_text": 64501
+  },
+  "inputs": [
+    {
+      "path": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/smoke-output/annotations.txt",
+      "sha256": "715588d3013210d7d157acbce9efb9f56dfcab762f429c355053cf106338ba4c"
+    },
+    {
+      "path": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/smoke-output/gwas.ma",
+      "sha256": "f3fa76f9075757b6cd221ef45f94cc1997677beb4bb127ce1f8b5757474953c7"
+    },
+    {
+      "path": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/smoke-output/ld/block1.eigen.bin",
+      "sha256": "3d27cff28290a7a3b49f06a11ab30e1b9d91c577b0e2d1cfcf77ef077d214ca3"
+    },
+    {
+      "path": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/smoke-output/ld/block2.eigen.bin",
+      "sha256": "3d27cff28290a7a3b49f06a11ab30e1b9d91c577b0e2d1cfcf77ef077d214ca3"
+    },
+    {
+      "path": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/smoke-output/ld/block3.eigen.bin",
+      "sha256": "3d27cff28290a7a3b49f06a11ab30e1b9d91c577b0e2d1cfcf77ef077d214ca3"
+    },
+    {
+      "path": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/smoke-output/ld/block4.eigen.bin",
+      "sha256": "3d27cff28290a7a3b49f06a11ab30e1b9d91c577b0e2d1cfcf77ef077d214ca3"
+    },
+    {
+      "path": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/smoke-output/ld/ldm.info",
+      "sha256": "3c88a96374f9440e2d13f6fe4a3ae642f1a8633d2fc9415f5b31039e139f650c"
+    },
+    {
+      "path": "/rds/general/user/nskene/home/fine-mapping-benchmark-review-20261010/native-smoke-isolated/smoke-output/ld/snp.info",
+      "sha256": "199b498dbe8b06269cf10c99ffd052ba39ed0e29374e8eb50fa6a5a474ac3c19"
+    }
+  ],
+  "complete_proof_sha256": "e6752163e185845edab13912c47c56410a80212167ac90e7b4996b3518be456e",
+  "proof_pbs_job": "4310472.pbs-7",
+  "full_size_cost_claim": false
+}

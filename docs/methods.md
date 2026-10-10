@@ -269,6 +269,14 @@ variants k*.
 
 The adapter reads model-size probabilities from the complete native log,
 because the configuration table contains only the top retained configurations.
+The tested 1.4.2 binary prints these probabilities at three significant digits.
+Reported sums such as 0.9996 or 1.0011 can therefore be valid. The parser checks
+whether the rounding intervals permit a sum of one, requires every model size
+from zero through the requested maximum, and retains the printed probabilities
+without renormalising them. Its default native prior excludes the null model;
+the adapter records that conditioning instead of treating its zero null
+probability as evidence that a locus must contain a cause. See the
+[native parser contract and execution proof](finemap-native-contract.md).
 It reads only the `cred1`, `cred2`, … identifier columns as sets, retaining their
 paired conditional probabilities separately. Invalid IDs, probabilities or
 nonzero native exit status are explicit failures.
@@ -472,6 +480,17 @@ indexing to R's 1-based indexing automatically.
 
 ### PAINTOR
 
+The audited upstream enumeration excludes the all-zero configuration: at a
+two-effect limit it visits `p + choose(p, 2)` nonempty configurations, so its
+PIPs condition on at least one modeled causal variant and cannot express a
+locus-null posterior. The separate MCMC search includes the null configuration,
+but its native output still does not report a null probability. Successful
+single-locus and pooled fits record `posterior_conditioning`,
+`null_model_in_support`, `null_probability_not_provided`, and
+`configuration_count`; the wrapper does not manufacture a null probability
+from PIP mass. See the [source audit](paintor-native-contract.md) for the pinned
+implementation, independently checked configuration counts and resource limits.
+
 Probabilistic Annotation INTegraTOR. Uses an EM algorithm to jointly estimate
 annotation enrichment weights and posterior inclusion probabilities. Supports
 multiple causal variants and optionally leverages functional annotations.
@@ -567,6 +586,15 @@ multiple-causal model is not a posterior probability for a causal event.
 
 ### BEATRICE
 
+The bundled fork repairs fractional conditional-probability truncation and
+stops set expansion using an actual conditional union event. Its strict native
+sidecar records the explored-support conditioning, requested and attained
+probability, and whether each target was reached. Purity constraints or missing
+posterior support can leave a target unmet. These are conditional sets, with no
+unconditional nominal-coverage guarantee. The reported null probability is the
+empty candidate configuration under the frozen explored posterior. See the
+[mathematical examples and validation](beatrice-batched-reweighting.md).
+
 Bayesian fine-mapping using variational inference with a neural network.
 BEATRICE trains a 3-layer network to infer posterior inclusion probabilities
 via binary concrete (Gumbel-Softmax) sampling, with ABF-based likelihoods
@@ -621,13 +649,20 @@ run_methods(sim, methods = "beatrice",
 | `gamma_coverage` | `0.95` | Coverage threshold for credible sets |
 | `sparse_concrete` | `50` | Sparsity parameter (top-K variants sampled per iteration) |
 
-> **Note on runtime:** With `max_iter = 500`, BEATRICE takes ~10 s per region on a laptop CPU. At the default `max_iter = 2000` expect ~30–40 s per region. For large benchmarks consider reducing `max_iter` or running on a machine with a GPU.
+> **Runtime:** Two local N=100, p=8 contract runs at 500 training iterations took
+> about 22 s and 15 s. They do not predict full-size runtime. Locus size,
+> explored support, pooling and hardware affect cost; measure the frozen
+> full-size resource probes before choosing a compute budget. Changing training
+> iterations changes the benchmark protocol and needs a separately recorded arm.
 
 **Additional outputs (`$additional`):**
 
 | Field | Description |
 |---|---|
 | `cs_pip` | List of numeric vectors. Conditional inclusion probability of each variant within its credible set, as output by BEATRICE. NULL if the file was not produced. |
+| `credible_set_diagnostics` | Per-set conditional union probability, conditioning indices and target-attainment flags from the declared bundled fork |
+| `null_probability` | Empty candidate-configuration probability within explored support, when declared |
+| `credible_set_semantics` | Declared conditional union event, explicit legacy sum diagnostic, or unverified external semantics |
 
 ---
 
@@ -759,7 +794,7 @@ run_methods(
 # Notes:
 # - Funmap requires sim to have been run with annotations = "binary" or "continuous"
 # - PAINTOR uses annotations automatically if present; falls back to uniform prior if not
-# - BEATRICE requires PyTorch; ~10 s/region at max_iter = 500, ~35 s at max_iter = 2000
+# - BEATRICE requires PyTorch; measure runtime at the intended locus and pool sizes
 # - CARMA preserves its separate LD-clustered PIP-mass sets
 ```
 

@@ -94,11 +94,41 @@ test_that("native adapter rejects stale outputs and invalid MCMC controls", {
   expect_true("--write-mcmc-txt" %in% trace$args)
   expect_equal(trace$args[match("--thin", trace$args) + 1L], "5")
   expect_true(trace$manifest$params$save_mcmc)
+  no_text <- do.call(run_sbayesrc_native, c(args, list(scale = "subset", thin = 5L,
+                                                     dry_run = TRUE)))
+  expect_equal(no_text$args[match("--thin", no_text$args) + 1L], "5")
+  expect_false("--write-mcmc-txt" %in% no_text$args)
+  core <- do.call(run_sbayesrc_native, c(args, list(scale = "subset", save_mcmc = TRUE,
+                                                  mcmc_scope = "core", dry_run = TRUE)))
+  expect_equal(core$manifest$text_retention$discarded_arrays,
+               paste0(c("PIP", "PEP", paste0("DeltaPi", 1:5)), ".mcmcsamples.txt"))
+  expect_equal(core$manifest$text_retention$sink_target, "/dev/null")
+  expect_false(core$manifest$text_retention$formatting_cpu_avoided)
+  expect_false(dir.exists(f$output_dir))
+  expect_error(do.call(run_sbayesrc_native, c(args, list(scale = "subset", mcmc_scope = "core",
+                                                        dry_run = TRUE))), "requires save_mcmc")
+  expect_error(do.call(run_sbayesrc_native, c(args, list(scale = "subset", save_mcmc = TRUE,
+    mcmc_scope = "core", expected_version = "9.9.9", dry_run = TRUE))), "audited only")
   expect_error(do.call(run_sbayesrc_native, c(args, list(scale = "subset", thin = 0,
                                                         dry_run = TRUE))), "thin")
   dir.create(f$output_dir)
   writeLines("stale", file.path(f$output_dir, ".old-fit"))
   expect_error(do.call(run_sbayesrc_native, c(args, list(scale = "subset", dry_run = TRUE))), "new or empty")
+})
+
+test_that("native core retention uses only the audited sinks in a fresh directory", {
+  prefix <- file.path(tempdir(), paste0("native-retention-", sample.int(1e8, 1)))
+  if (!identical(unname(Sys.info()["sysname"]), "Linux")) {
+    expect_error(.sbayesrc_native_prepare_text_sinks(prefix), "requires Linux")
+    expect_false(dir.exists(paste0(prefix, ".mcmcsamples")))
+    return(invisible(NULL))
+  }
+  sinks <- .sbayesrc_native_prepare_text_sinks(prefix)
+  on.exit(unlink(paste0(prefix, ".mcmcsamples"), recursive = TRUE), add = TRUE)
+  expect_equal(basename(sinks$path), .sbayesrc_native_text_sinks())
+  expect_true(all(Sys.readlink(sinks$path) == "/dev/null"))
+  expect_false(file.exists(file.path(paste0(prefix, ".mcmcsamples"), "CoreParameters.mcmcsamples.txt")))
+  expect_error(.sbayesrc_native_prepare_text_sinks(prefix), "must be new")
 })
 
 test_that("native GWAS and annotations must cover the exact native panel", {

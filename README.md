@@ -125,6 +125,12 @@ must be regenerated. Its posterior remains conditional on explored models,
 and its selected-index training KL is approximate. Dependency-free tests run
 with `python -m unittest discover -s tests/python`; opt-in actual neural tests
 use `FMB_NEURAL_SMOKE=1` in an environment with the documented Python packages.
+The bundled set builder also repairs integer truncation of conditional
+probabilities and stops using conditional union-event probability instead of
+summed marginals. Each set reports its conditioning, attained probability and
+whether the target was reached; these do not establish unconditional coverage.
+Exact candidate-round batching improves expansion cost while preserving the
+corrected eager results. See the [analytical examples and validation](docs/beatrice-batched-reweighting.md).
 
 ## What the scores mean
 

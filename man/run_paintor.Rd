@@ -58,6 +58,14 @@ provided by this upstream output.}
 (0 if none).}
 \item{log_bayes_factor}{Numeric vector (length p) or NULL. Log Bayes
 factor per variant if present in PAINTOR output, otherwise NULL.}
+\item{posterior_conditioning}{Enumeration excludes the null
+configuration, so PIPs are conditional on at least one modeled
+causal variant. The MCMC search includes the null configuration.}
+\item{null_probability_not_provided}{TRUE. Neither native output
+reports a locus-null posterior; none is inferred from the PIPs.}
+\item{configuration_count}{Number of nonempty configurations in
+enumeration support, or NA for MCMC. With two effects this is
+\code{p + choose(p, 2)}.}
 }
 }
 \item{error}{Character or NULL. Error message if PAINTOR failed.}

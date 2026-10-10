@@ -8,9 +8,15 @@ source "$repo/scripts/server_setup/environment.sh"
 cd "$repo"
 case "$kind" in
   regional)
+    priority_args=()
+    priority=$(dirname "$plan")/priority-prefix.json
+    if [[ -f "$priority" ]]; then
+      priority_args=(--priority-manifest "$priority")
+    fi
     exec "$FMB_PYTHON" scripts/campaign/dispatch.py --repo "$repo" --plan "$plan" \
       --bootstrap "$repo/scripts/server_setup/environment.sh" \
-      --max-workers 48 --max-generation 8 --batch-tasks 4 --poll-seconds 60
+      --max-workers 48 --max-generation 8 --batch-tasks 4 --poll-seconds 60 \
+      "${priority_args[@]}"
     ;;
   native)
     preflight=${4:?Frozen regional preflight plan required}

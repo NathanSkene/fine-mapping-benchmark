@@ -149,6 +149,9 @@ setup_functional_beatrice <- function(beatrice_dir, python = "python") {
 #' Nonzero process exits and malformed, incomplete, or unaligned native
 #' probabilities or credible sets return a failed fit; evidence is never clipped
 #' or repaired. Synthetic tokens serialize variants without changing their IDs.
+#' The declared bundled fork uses conditional union-event stopping within its
+#' explored configuration support. Per-set event probabilities and target
+#' attainment are retained; they do not guarantee unconditional coverage.
 #'
 #' When \code{annotations} is \code{NULL} the method runs without a functional
 #' prior (equivalent to standard BEATRICE with a uniform prior). When
@@ -197,6 +200,10 @@ setup_functional_beatrice <- function(beatrice_dir, python = "python") {
 #'     \describe{
 #'       \item{cs_pip}{List of numeric vectors. Conditional inclusion
 #'         probabilities within each credible set. NULL if not produced.}
+#'       \item{credible_set_diagnostics}{Declared fork's conditional union-event
+#'         probabilities, conditioning indices and target-attainment flags.}
+#'       \item{null_probability}{Empty candidate-configuration probability
+#'         within the explored posterior support, when declared.}
 #'       \item{feature_importance}{Data frame (annotation_index, importance)
 #'         from the magnitude of the causal-versus-null skip-logit contrast,
 #'         sorted descending. NULL if no annotations or
@@ -359,7 +366,8 @@ run_functional_beatrice <- function(z,
   }
 
   # The joint and single-region implementations share one strict native contract.
-  parsed <- tryCatch(.fb_joint_parse_output(out_dir, variant_ids, p),
+  parsed <- tryCatch(.fb_joint_parse_output(out_dir, variant_ids, p,
+                     .fb_joint_requires_cs_diagnostics(beatrice_dir)),
                      error = function(e) NULL)
   if (is.null(parsed)) {
     return(.fb_error_result(p, params, elapsed,
@@ -403,12 +411,12 @@ run_functional_beatrice <- function(z,
     input_type      = "summary",
     params          = params,
     runtime_seconds = elapsed,
-    additional      = list(
+    additional      = c(list(
       variant_ids = identity$original_ids,
       variant_alignment = identity$alignment,
       cs_pip             = cs_pip,
       feature_importance = feature_importance
-    )
+    ), .beatrice_posterior_metadata(parsed))
   )
 }
 

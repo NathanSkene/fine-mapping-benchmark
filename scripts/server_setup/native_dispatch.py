@@ -85,7 +85,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bootstrap", type=Path, required=True)
     p.add_argument("--preflight-plan", type=Path, required=True,
                    help="Regional campaign plan with successful actual-method preflight receipts")
-    p.add_argument("--queue", default="v1_small72a")
+    p.add_argument("--queue", default=None,
+                   help="Explicit PBS queue; omit to use the site's permitted default")
     p.add_argument("--max-workers", type=int, default=12)
     p.add_argument("--max-prepare", type=int, default=2)
     p.add_argument("--max-chains", type=int, default=6)
@@ -187,7 +188,8 @@ def run_controller(args, root, repo, bootstrap, helpers, plan_sha,
                    "--plan", str(args.plan.resolve())]
         command += ["--input-id", identity] if kind == "regional" else ["--index", str(unit["index"])]
         script.write_text("\n".join([
-            "#!/bin/bash", f"#PBS -N {name}", f"#PBS -q {args.queue}",
+            "#!/bin/bash", f"#PBS -N {name}",
+            *([f"#PBS -q {args.queue}"] if args.queue else []),
             f"#PBS -l select={resources[kind]}", f"#PBS -l walltime={args.walltime}",
             f"#PBS -o {control}/", f"#PBS -e {control}/", "set -euo pipefail",
             f"source {shlex.quote(str(bootstrap))}", f"cd {shlex.quote(str(repo))}",

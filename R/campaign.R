@@ -18,10 +18,12 @@
 }
 
 .campaign_snapshot <- function(repo) {
+  contract <- file.path(repo, "BEATRICE_annot_sparse/scripts/credible_set_contract.json")
   paths <- c(list.files(file.path(repo, "R"), "\\.R$", full.names = TRUE),
              list.files(file.path(repo, "inst/extdata"), full.names = TRUE),
              list.files(file.path(repo, "BEATRICE_annot_sparse"), "\\.py$",
                         full.names = TRUE, recursive = TRUE),
+             contract[file.exists(contract)],
              list.files(file.path(repo, "scripts/campaign"), "\\.(R|py|sh)$", full.names = TRUE,
                         recursive = TRUE))
   paths <- sort(paths[!dir.exists(paths)], method = "radix")
@@ -69,7 +71,9 @@
     resolved <- if (file.exists(path)) normalizePath(path) else unname(Sys.which(path))
     if (!nzchar(resolved)) { artifacts[[path]] <- "missing"; next }
     if (dir.exists(resolved)) {
-      files <- sort(list.files(resolved, "\\.py$", full.names = TRUE, recursive = TRUE), method = "radix")
+      contract <- file.path(resolved, "scripts/credible_set_contract.json")
+      files <- sort(c(list.files(resolved, "\\.py$", full.names = TRUE, recursive = TRUE),
+                         contract[file.exists(contract)]), method = "radix")
       artifacts[[path]] <- data.frame(path = substring(files, nchar(resolved) + 2L),
                                     sha256 = unname(vapply(files, .challenge_sha256, "")), row.names = NULL)
     } else artifacts[[path]] <- .challenge_sha256(resolved)
@@ -101,7 +105,7 @@
     if (any(found$functions %in% c("get", "eval", "evalq", "parse", "source", "sys.source", "load")) ||
         (method != "polyfun_oracle" && grepl("truth", body, fixed = TRUE)))
       return(list(eligible = FALSE, reason = "dynamic lookup or private-truth reader"))
-    functions[[nm]] <- body
+    functions[[nm]] <- list(formals = formals(fun), body = body)
     for (variable in found$variables) if (exists(variable, envir = env, inherits = FALSE)) {
       value <- get(variable, envir = env, inherits = FALSE)
       if (is.environment(value) || is.function(value) || typeof(value) == "externalptr")
@@ -252,28 +256,53 @@
 
 .campaign_fit_to_prediction <- function(fit, input) {
   event <- .campaign_event_metadata(fit$method %||% "unknown", fit$additional %||% list())
-  if (!is.null(fit$error)) return(list(task_id = input$task_id, status = "failed",
+  event$null_probability <- NULL
+  # Exact indexing is essential: $null_probability partially matches the
+  # null_probability_not_provided flag when the actual probability is absent.
+  null_probability <- (fit$additional %||% list())[["null_probability"]]
+  if (!is.null(fit$error)) return(c(list(task_id = input$task_id, status = "failed",
       error = fit$error, runtime_seconds = fit$runtime_seconds,
-      pip_event = event$pip_event, probability_target_aligned = event$probability_target_aligned,
-      credible_set_semantics = fit$additional$credible_set_semantics %||% "unspecified_method_native_sets"))
-  list(task_id = input$task_id, variant_id = input$variant_id, pip = fit$pip,
+      null_probability = null_probability,
+      credible_set_semantics = fit$additional$credible_set_semantics %||% "unspecified_method_native_sets"), event))
+  c(list(task_id = input$task_id, variant_id = input$variant_id, pip = fit$pip,
        status = "ok", credible_sets = lapply(fit$credible_sets, function(s) input$variant_id[s]),
        converged = fit$additional$converged %||% NA,
        runtime_seconds = fit$runtime_seconds,
-       pip_event = event$pip_event, probability_target_aligned = event$probability_target_aligned,
+       null_probability = null_probability,
        credible_set_semantics = fit$additional$credible_set_semantics %||% "unspecified_method_native_sets",
-       implementation = fit$additional$implementation %||% fit$method)
+       implementation = fit$additional$implementation %||% fit$method), event)
 }
 
 .campaign_event_metadata <- function(method, additional = list()) {
-  event <- additional$pip_event %||% if (method == "sbayesrc") "any_nonzero_mixture_component" else
-    if (method == "marginal_z") "normalized_ranking_score" else "method_model_sparse_inclusion"
-  aligned <- if (method == "marginal_z") NA else if (method == "sbayesrc") FALSE else TRUE
+  conditioning <- additional[["posterior_conditioning"]] %||%
+    if (method == "forced_one") "exactly_one_modeled_cause" else
+      if (method == "exact") "null_including_model_space" else "unspecified"
+  conditional <- startsWith(conditioning, "at_least_one") || conditioning == "exactly_one_modeled_cause"
+  unknown_conditioning <- method %in% c("finemap", "paintor") &&
+    conditioning %in% c("unspecified", "not_established_from_log")
+  event <- additional[["pip_event"]] %||% if (method == "sbayesrc") "any_nonzero_mixture_component" else
+    if (method == "marginal_z") "normalized_ranking_score" else
+      if (conditional) "method_model_sparse_inclusion_given_nonnull_support" else "method_model_sparse_inclusion"
+  aligned <- if (method == "marginal_z" || unknown_conditioning) NA else
+      if (method == "sbayesrc" || conditional) FALSE else TRUE
+  null <- additional[["null_probability"]]
+  native_support <- additional[["native_null_support"]] %||% "unspecified"
+  support <- additional[["null_model_in_support"]] %||%
+      if (conditional || native_support == "excluded_by_prior") FALSE else
+        if (native_support == "prior_includes_null" || method == "exact") TRUE else NA
   list(score_target = "sparse_component_membership", pip_event = event,
        probability_target_aligned = aligned,
+       posterior_conditioning = conditioning, native_null_support = native_support,
+       null_model_in_support = support,
+       null_probability = null %||% NA_real_, null_probability_reported = !is.null(null),
+       null_probability_not_provided = additional[["null_probability_not_provided"]] %||% is.null(null),
+       configuration_count = additional[["configuration_count"]] %||% NA_real_,
        probability_score_interpretation = if (method == "sbayesrc")
          "operational_sparse_membership_diagnostic; event mismatch" else
-         if (method == "marginal_z") "not_a_probability_score" else "operational_sparse_membership_score")
+         if (method == "marginal_z") "not_a_probability_score" else
+           if (conditional) "conditional_model_operational_score; nonnull support; not unconditional calibration" else
+             if (unknown_conditioning) "posterior_conditioning_unknown; operational score; calibration not established" else
+             "operational_sparse_membership_score")
 }
 
 .campaign_exact_log_loss <- function(y, score) {
@@ -457,8 +486,168 @@
   if (!identical(z$plan_sha256, plan$plan_sha256) ||
       !identical(z$task, task) || !isTRUE(z$terminal))
     stop("Checkpoint is incompatible or incomplete: ", path)
+  if (!is.null(z[["storage_schema"]]) && !identical(z[["storage_schema"]], 2L))
+    stop("Unknown checkpoint storage schema: ", path)
+  if (identical(z[["storage_schema"]], 2L)) .campaign_validate_bundle(z, plan, task)
   if (isTRUE(validate_artifacts) && !is.null(z$artifacts)) .campaign_validate_artifacts(z$artifacts)
   TRUE
+}
+
+.campaign_validate_dataset_record <- function(z, plan, task, dataset) {
+  if (!isTRUE(z$terminal) || !identical(z$plan_sha256, plan$plan_sha256) ||
+      !identical(z$task, list(task = task, dataset = dataset)) ||
+      !identical(z$method_task, task)) stop("Bundled dataset record is foreign or incomplete")
+  invisible(TRUE)
+}
+
+.campaign_validate_bundle <- function(z, plan, task, verify_record_hashes = FALSE) {
+  ids <- strsplit(task$dataset_ids, "|", fixed = TRUE)[[1L]]
+  if (!identical(z[["storage_schema"]], 2L) || !isTRUE(z$terminal) ||
+      !identical(z$plan_sha256, plan$plan_sha256) || !identical(z$task, task) ||
+      !is.list(z$dataset_records) || !identical(names(z$dataset_records), ids) ||
+      !is.character(z$dataset_record_sha256) || !identical(names(z$dataset_record_sha256), ids) ||
+      any(!grepl("^[a-f0-9]{64}$", z$dataset_record_sha256)) ||
+      !is.list(z$attempt_records) || anyDuplicated(names(z$attempt_records)) ||
+      (length(z$attempt_records) && (is.null(names(z$attempt_records)) ||
+          any(!grepl("^[A-Za-z0-9_.-]+[.]rds$", names(z$attempt_records))))) ||
+      !identical(z$n_datasets, length(ids)) ||
+      !identical(z$n_started_attempts, length(z$attempt_records))) stop("Malformed or foreign task bundle")
+  for (id in ids) {
+    dataset <- plan$datasets[match(id, plan$datasets$dataset_id), , drop = FALSE]
+    if (anyNA(dataset$dataset_id)) stop("Bundled dataset is absent from the frozen plan")
+    .campaign_validate_dataset_record(z$dataset_records[[id]], plan, task, dataset)
+    if (verify_record_hashes && !identical(.campaign_object_sha(z$dataset_records[[id]]),
+                                           unname(z$dataset_record_sha256[id])))
+      stop("Unsealed bundled dataset hash changed")
+  }
+  for (a in z$attempt_records) if (!identical(a$plan_sha256, plan$plan_sha256) ||
+      !identical(a$task, task) || !a$dataset$dataset_id %in% ids ||
+      !identical(a$dataset, plan$datasets[match(a$dataset$dataset_id, plan$datasets$dataset_id), , drop = FALSE]))
+    stop("Bundled attempt ledger is foreign")
+  invisible(TRUE)
+}
+
+.campaign_cleanup_bundle <- function(directory, plan, task, bundle = NULL) {
+  directory <- normalizePath(directory, mustWork = TRUE)
+  checkpoint <- file.path(directory, "completed.rds")
+  if (!.campaign_check_receipt(directory, checkpoint, plan$plan_sha256, task$task_id))
+    stop("Cannot clean loose evidence before the task bundle receipt is sealed")
+  if (is.null(bundle)) bundle <- readRDS(checkpoint)
+  .campaign_validate_bundle(bundle, plan, task)
+  ledger <- bundle$compaction_ledger
+  # The seal makes the ledger trustworthy, but deletion is restricted to this
+  # task's exact inner checkpoints, receipts and serialized attempt records.
+  ids <- names(bundle$dataset_records)
+  allowed <- c(file.path(directory, paste0(ids, ".rds")),
+               file.path(directory, paste0(ids, ".terminal.json")),
+               file.path(directory, "attempts", names(bundle$attempt_records)))
+  if (!is.data.frame(ledger) || !setequal(names(ledger), c("path", "sha256")) ||
+      !is.character(ledger$path) || !is.character(ledger$sha256) || anyNA(ledger) ||
+      anyDuplicated(ledger$path) || !setequal(ledger$path, allowed) ||
+      any(!grepl("^[a-f0-9]{64}$", ledger$sha256))) stop("Malformed or foreign bundle cleanup ledger")
+  remaining <- ledger[file.exists(ledger$path), , drop = FALSE]
+  # Validate ALL remaining files before deleting any. A crash during cleanup is
+  # resumable; a changed file is an integrity error, not permission to delete it.
+  .campaign_validate_artifacts(remaining)
+  for (path in remaining$path) if (unlink(path) != 0L || file.exists(path))
+    stop("Cannot remove verified loose evidence after sealing: ", path)
+  attempts <- file.path(directory, "attempts")
+  if (dir.exists(attempts) && !length(list.files(attempts, all.files = TRUE, no.. = TRUE)))
+    unlink(attempts, recursive = TRUE)
+  invisible(TRUE)
+}
+
+.campaign_compact_task <- function(directory, plan, task, extra = list(),
+                                   interrupt = function(stage) invisible(NULL)) {
+  directory <- normalizePath(directory, mustWork = TRUE)
+  ids <- strsplit(task$dataset_ids, "|", fixed = TRUE)[[1L]]
+  records <- stats::setNames(vector("list", length(ids)), ids)
+  files <- file.path(directory, paste0(ids, ".rds"))
+  for (i in seq_along(ids)) {
+    if (!.campaign_check_receipt(directory, files[i], plan$plan_sha256,
+          paste(task$task_id, ids[i], sep = "."), paste0(ids[i], ".terminal.json")))
+      stop("Cannot compact an unsealed or missing dataset: ", ids[i])
+    dataset <- plan$datasets[match(ids[i], plan$datasets$dataset_id), , drop = FALSE]
+    records[[i]] <- readRDS(files[i])
+    .campaign_validate_dataset_record(records[[i]], plan, task, dataset)
+  }
+  attempt_files <- sort(list.files(file.path(directory, "attempts"), "[.]rds$", full.names = TRUE),
+                         method = "radix")
+  attempts <- stats::setNames(lapply(attempt_files, readRDS), basename(attempt_files))
+  bundle <- list(storage_schema = 2L, terminal = TRUE, plan_sha256 = plan$plan_sha256,
+    task = task, n_datasets = length(ids), dataset_records = records,
+    dataset_record_sha256 = stats::setNames(unname(vapply(files, .challenge_sha256, "")), ids),
+    attempt_records = attempts, n_started_attempts = length(attempts),
+    compaction_ledger = .campaign_artifact_manifest(c(files,
+          file.path(directory, paste0(ids, ".terminal.json")), attempt_files)),
+    artifacts = data.frame(path = character(), sha256 = character(), stringsAsFactors = FALSE))
+  if (length(intersect(names(extra), names(bundle)))) stop("Compaction metadata cannot replace sealed identities")
+  bundle <- c(bundle, extra)
+  .campaign_validate_bundle(bundle, plan, task, verify_record_hashes = TRUE)
+  checkpoint <- file.path(directory, "completed.rds")
+  if (file.exists(checkpoint)) stop("Do not overwrite an existing terminal bundle or checkpoint")
+  .campaign_atomic_rds(bundle, checkpoint)
+  interrupt("after_bundle")
+  .campaign_receipt(directory, checkpoint, plan$plan_sha256, task$task_id)
+  interrupt("after_receipt")
+  .campaign_cleanup_bundle(directory, plan, task, bundle)
+  interrupt("after_cleanup")
+  invisible(bundle)
+}
+
+.campaign_resume_task_compaction <- function(directory, plan, task) {
+  checkpoint <- file.path(directory, "completed.rds")
+  if (!.campaign_validate_checkpoint(checkpoint, plan, task)) return(FALSE)
+  z <- readRDS(checkpoint)
+  sealed <- .campaign_check_receipt(directory, checkpoint, plan$plan_sha256, task$task_id)
+  if (identical(z[["storage_schema"]], 2L)) {
+    if (!sealed) {
+      # Only a complete bundle whose original loose evidence still matches can
+      # repair the narrow crash window between atomic bundle and receipt writes.
+      .campaign_validate_bundle(z, plan, task, verify_record_hashes = TRUE)
+      .campaign_validate_artifacts(z$compaction_ledger)
+      .campaign_receipt(directory, checkpoint, plan$plan_sha256, task$task_id)
+    }
+    .campaign_cleanup_bundle(directory, plan, task, z)
+  } else {
+    if (is.null(z$artifacts)) stop("Completed task lacks sealed dataset artifacts")
+    if (!sealed) .campaign_receipt(directory, checkpoint, plan$plan_sha256, task$task_id)
+  }
+  TRUE
+}
+
+.campaign_task_evidence <- function(directory, plan, task) {
+  checkpoint <- file.path(directory, "completed.rds")
+  complete <- .campaign_validate_checkpoint(checkpoint, plan, task) &&
+    .campaign_check_receipt(directory, checkpoint, plan$plan_sha256, task$task_id)
+  if (file.exists(checkpoint)) {
+    z <- readRDS(checkpoint)
+    if (identical(z[["storage_schema"]], 2L)) {
+      # No collector may bless an orphan bundle; loose records remain available
+      # in this interruption window and can be independently verified below.
+      if (complete) return(list(complete = TRUE, records = z$dataset_records,
+           started_attempts = z$n_started_attempts, bundled = TRUE,
+           checkpoint = checkpoint, checkpoint_sha256 = .challenge_sha256(checkpoint)))
+    } else if (is.null(z$artifacts)) stop("Completed task lacks sealed dataset artifacts")
+  }
+  ids <- strsplit(task$dataset_ids, "|", fixed = TRUE)[[1L]]
+  files <- list.files(directory, "[.]rds$", full.names = TRUE)
+  files <- files[basename(files) != "completed.rds"]
+  if (any(!basename(files) %in% paste0(ids, ".rds"))) stop("Unplanned dataset checkpoint in ", directory)
+  records <- list()
+  for (id in ids) {
+    file <- file.path(directory, paste0(id, ".rds"))
+    if (!.campaign_check_receipt(directory, file, plan$plan_sha256,
+          paste(task$task_id, id, sep = "."), paste0(id, ".terminal.json"))) next
+    dataset <- plan$datasets[match(id, plan$datasets$dataset_id), , drop = FALSE]
+    .campaign_validate_checkpoint(file, plan, list(task = task, dataset = dataset))
+    records[[id]] <- readRDS(file)
+    .campaign_validate_dataset_record(records[[id]], plan, task, dataset)
+  }
+  list(complete = complete, records = records,
+       started_attempts = length(list.files(file.path(directory, "attempts"), "[.]rds$")),
+       bundled = FALSE, checkpoint = checkpoint,
+       checkpoint_sha256 = if (complete) .challenge_sha256(checkpoint) else NA_character_)
 }
 
 .campaign_check_receipt <- function(directory, checkpoint, plan_sha256, id,
@@ -553,10 +742,10 @@
   fields <- list(finemap = "finemap_path", paintor = "paintor_path", caviar = "caviar_path",
       sparsepro = "sparsepro_dir", finemap_inf = "finemap_inf_dir", beatrice = "beatrice_dir")
   z <- do.call(rbind, lapply(names(fields), function(m) {
-    path <- method_args[[m]][[fields[[m]]]]
+    path <- method_args[[m]][[fields[[m]]]] %||% ""
     resolved <- if (file.exists(path)) normalizePath(path) else unname(Sys.which(path))
     data.frame(dependency = m, kind = "external_path", available = nzchar(resolved),
-               version = if (nzchar(resolved)) resolved else path)
+               version = if (nzchar(resolved)) resolved else if (nzchar(path)) path else "unconfigured")
   }))
   rbind(r, z)
 }

@@ -50,6 +50,8 @@ all bundled Python training code or every external binary.
 | Null loci receive zero false positives by construction of the evaluator | P1 | Null discoveries counted; conditional false-call rates exposed |
 | Marginal regression omits centering/intercept | P1 | Centered regression and independently checked OLS standard errors |
 | Learned-prior Python cache mixes different training steps | P1 | Pure likelihood cache; one final prior applied to all explored configurations |
+| Conditional BEATRICE probabilities accumulated as integers | P1 | Floating-point accumulation and analytical conditional-probability tests |
+| BEATRICE set stopping double-counts configurations | P1 | Conditional union-event stopping, attained-probability metadata and an explicit legacy diagnostic |
 | Tuning objective, sampling design and study reuse change the experiment | P1 | Balanced panel, attempted macro AP, failure checks and fingerprinted seeded studies |
 | Historical README and iteration claims outlive their scope | P3 | Revised explanations distinguish historical runs from repaired code |
 
@@ -412,6 +414,53 @@ aligned metadata, attempted macro AP and explicit partial-failure rejection;
 seeded sampler settings and dataset/code fingerprints guard study reuse.
 Multi-objective campaigns must retain their declared tradeoffs. This is a
 repair to the study design, not a rerun of the historical 962-trial campaign.
+
+### 19. P1 — integer conditional accumulators suppress additional BEATRICE signals
+
+**Original source:** [`generate_credible_sets.py:41–85`](https://github.com/lucassiu14/fine-mapping-benchmark/blob/f053fdf318a3abe2c44eeb0ac3f3c99a03979b81/BEATRICE_annot_sparse/scripts/generate_credible_sets.py#L41-L85).
+
+Both constrained conditional-probability helpers initialise their membership
+accumulator with `np.array([0]*bp)`. Scalar additions of fractional model
+probabilities truncate to integers. With posterior probabilities 0.1 on the
+empty model, 0.4 on `{0}`, 0.2 on `{1}` and 0.3 on `{0,1}`, the conditional
+probability of variant 1 given variant 0 is 0.3/0.7. The original helpers
+instead return zero. Stepwise signal selection then rejects an additional
+signal even when its actual conditional probability clears the threshold.
+
+**Repair:** floating-point accumulation, explicit failure for a zero-mass
+conditioning event, and independently calculated conditional examples. A
+real two-signal expansion tests selection across multiple candidate rounds.
+Actual vanilla and functional CLI runs pass the strict R importer with two
+sets and fractional conditional probabilities. These are execution checks,
+not evidence of population-wide accuracy or a historical ranking reversal.
+
+### 20. P1 — BEATRICE's summed conditional marginals do not measure set coverage
+
+**Original source:** [`generate_credible_sets.py:125–175`](https://github.com/lucassiu14/fine-mapping-benchmark/blob/f053fdf318a3abe2c44eeb0ac3f3c99a03979b81/BEATRICE_annot_sparse/scripts/generate_credible_sets.py#L125-L175).
+
+After repairing the accumulator, the set builder still stops using a sum of
+conditional membership marginals. A configuration containing two members
+contributes twice. For model probabilities 0.4 on `{0,1}`, 0.3 on `{0}`, 0.2 on
+`{1}` and 0.1 on `{2}`, set `{0,1}` has marginal sum 1.3 but union probability
+0.9. Stopping at a requested 0.95 on the sum can therefore stop below the
+intended event probability. This is the same mathematical distinction as
+finding 4, inside the method's own conditional set calculation.
+
+**Repair:** stop on `P(C intersects A | G is a subset of C, explored support)`
+using the final frozen posterior, with unchanged candidate order and purity
+constraints. Record the actual conditional probability, conditioning indices
+and target-attainment flag, including when constraints leave the target
+unmet. The R importer checks identity and necessary probability bounds without
+claiming those checks prove the complete joint posterior. The old sum rule is
+available as an explicit diagnostic ablation with corrected accumulators;
+the original source replay retains the full original algorithm.
+
+**Remaining limit:** conditioning on other selected variants and restricting
+to explored configurations does not guarantee unconditional nominal coverage.
+Missing causes and unexplored configurations can still matter. The reported
+null is the empty candidate configuration in this working posterior; comparing
+it to a generating sparse-null label is an operational stress assessment when
+those events differ. See the [mathematics and batch validation](beatrice-batched-reweighting.md).
 
 ## Conclusions the repaired suite can support
 

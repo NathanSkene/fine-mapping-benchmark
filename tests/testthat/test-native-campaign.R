@@ -119,30 +119,130 @@ test_that("native event scoring distinguishes sparse membership from nonzero eff
   expect_equal(ap$n_planned, 2L)
 })
 
-test_that("CoreParameters contains post-burn draws and rejects truncated traces", {
+test_that("native trace contract retains actual iterations and rejects unexpected layouts", {
   skip_if_not(length(helpers) > 0L)
+  contract <- jsonlite::fromJSON(file.path(dirname(helpers[1L]), "trace-contract.json"))
+  config <- list(n_iter = 150L, burn_in = 50L, thin = 5L)
+  make_trace <- function(n = 150L, burn_in = 50L, thin = 5L) {
+    x <- matrix(NaN, n, length(contract$columns), dimnames = list(NULL, contract$columns))
+    for (iteration in seq_len(n)) if (iteration > burn_in && iteration %% thin == 0L)
+      x[iteration:n, ] <- rep(rnorm(ncol(x)), each = n - iteration + 1L)
+    x[, "Vg1"] <- 0
+    as.data.frame(x)
+  }
   path <- tempfile()
-  write.table(data.frame(Vg = rnorm(40), Ve = rexp(40)), path, row.names = FALSE, quote = FALSE)
-  expect_equal(nrow(.native_read_core(path, 40L)), 40L)
-  expect_error(.native_read_core(path, 20L), "draw count")
+  write.table(make_trace(), path, row.names = FALSE, quote = FALSE)
+  retained <- .native_read_core(path, config, contract)
+  expect_equal(retained$Iter, seq(55L, 150L, 5L))
+  expect_equal(nrow(retained), 20L)
+  expect_equal(attr(retained, "extraction")$raw_rows, 150L)
+  expect_identical(attr(retained, "extraction")$raw_core_sha256, .challenge_sha256(path))
+  expect_true(all(is.finite(as.matrix(retained))))
+  expect_error(.native_read_core(path, modifyList(config, list(n_iter = 149L)), contract), "raw iteration row count")
+  bad <- make_trace(); bad$Iter <- seq_len(nrow(bad))
+  write.table(bad, path, row.names = FALSE, quote = FALSE)
+  expect_error(.native_read_core(path, config, contract), "unexpected schema")
+  bad <- make_trace(); bad$Vg1[55L] <- Inf
+  write.table(bad, path, row.names = FALSE, quote = FALSE)
+  expect_error(.native_read_core(path, config, contract), "retained draws")
+  bad <- make_trace(); bad$Vg1[55L] <- .1
+  write.table(bad, path, row.names = FALSE, quote = FALSE)
+  expect_error(.native_read_core(path, config, contract), "declared fixed constant Vg1")
+  # An extra unnamed field must not be silently interpreted as row names.
+  lines <- readLines(path); lines[-1L] <- paste("1", lines[-1L])
+  writeLines(lines, path)
+  expect_error(.native_read_core(path, config, contract), "unexpected schema")
+  # Nonmultiple burn-in retains 55,60,...,150, never burn_in+thin=57.
+  write.table(make_trace(burn_in = 52L), path, row.names = FALSE, quote = FALSE)
+  expect_equal(.native_read_core(path, modifyList(config, list(burn_in = 52L)), contract)$Iter,
+               seq(55L, 150L, 5L))
+  expect_error(.native_validate_trace_contract(contract, paste(rep("0", 64), collapse = ""), "full"), "pinned executable")
+  fixture_contract <- contract; fixture_contract$role <- "software_fixture"
+  expect_error(.native_validate_trace_contract(fixture_contract, contract$executable_sha256, "full"), "integration profile")
+  expect_silent(.native_validate_trace_contract(fixture_contract, contract$executable_sha256, "integration"))
+  log_dir <- tempfile(); dir.create(log_dir)
+  writeLines(c("MCMC sampling disrupted at iteration 25", "Restarting MCMC with a more robust parameterisation"),
+             file.path(log_dir, "native_process.log"))
+  expect_equal(nrow(.native_trace_restart_markers(log_dir)), 2L)
   skip_if_not_installed("posterior")
   set.seed(52)
+  config <- list(n_iter = 2100L, burn_in = 100L, thin = 1L)
   paths <- vapply(1:4, function(i) {
-    p <- tempfile(); write.table(data.frame(Vg = rnorm(2000), Ve = rexp(2000)), p,
+    p <- tempfile(); write.table(make_trace(2100L, 100L, 1L), p,
                                   row.names = FALSE, quote = FALSE); p
   }, "")
-  d <- .native_diagnostics(paths, 2000L)
-  expect_true(all(d$assessed_pass))
-  bad <- read.table(paths[4L], header = TRUE); bad$Vg <- bad$Vg + 4
+  d <- .native_diagnostics(paths, config, contract)
+  expect_true(.native_diagnostics_pass(d))
+  fixed <- d[d$parameter == "Vg1", ]
+  expect_equal(fixed$diagnostic_status, "declared_fixed_constant")
+  expect_true(all(is.na(fixed[c("rhat", "bulk_ess", "tail_ess", "assessed_pass")])))
+  expect_false("Iter" %in% d$parameter)
+  expect_true(all(d$n_draws_per_chain == 2000L))
+  bad <- read.table(paths[4L], header = TRUE); bad$Vg2 <- bad$Vg2 + 4
   write.table(bad, paths[4L], row.names = FALSE, quote = FALSE)
-  d <- .native_diagnostics(paths, 2000L)
-  expect_false(d$assessed_pass[d$parameter == "Vg"])
-  expect_error(.native_diagnostics(paths[1:3], 2000L), "Four")
-  bad$Vg <- 0; write.table(bad, paths[4L], row.names = FALSE, quote = FALSE)
-  d <- .native_diagnostics(paths, 2000L)
-  expect_identical(d$diagnostic_status[d$parameter == "Vg"], "constant_unassessable")
-  expect_equal(d$minimum_within_chain_variance[d$parameter == "Vg"], 0)
-  expect_false(d$assessed_pass[d$parameter == "Vg"])
+  d <- .native_diagnostics(paths, config, contract)
+  expect_false(d$assessed_pass[d$parameter == "Vg2"])
+  expect_false(.native_diagnostics_pass(d))
+  expect_equal(.native_core_assessment(d), "thresholds_failed")
+  expect_error(.native_diagnostics(paths[1:3], config, contract), "Four")
+  bad$Vg2 <- 0; write.table(bad, paths[4L], row.names = FALSE, quote = FALSE)
+  d <- .native_diagnostics(paths, config, contract)
+  expect_identical(d$diagnostic_status[d$parameter == "Vg2"], "constant_unassessable")
+  expect_equal(d$minimum_within_chain_variance[d$parameter == "Vg2"], 0)
+  expect_false(d$assessed_pass[d$parameter == "Vg2"])
+  expect_false(.native_diagnostics_pass(d))
+  expect_true(grepl("unassessable", .native_core_assessment(d)))
+})
+
+test_that("PIP chain stability is truth-free and exposes interchangeable variant modes", {
+  skip_if_not(length(helpers) > 0L)
+  p <- rbind(c(.99, .01, .99, .01), c(.01, .99, .01, .99), rep(.4, 4L))
+  d <- .native_pip_stability(p, c(1L, 1L, 2L))
+  expect_equal(d$summary$maximum_pip_chain_range, .98)
+  expect_equal(d$summary$median_pip_chain_range, .98)
+  expect_equal(d$summary$p95_pip_chain_range, .98)
+  expect_equal(d$summary$fraction_call_095_disagreement, 2/3)
+  # Identical block sums can hide chains localising different LD-equivalent SNPs.
+  expect_equal(d$blocks$chain_sum_pip_range, c(0, 0))
+  expect_equal(d$blocks$minimum_chain_sum_pip, c(1, .4))
+  expect_error(.native_pip_stability(p[, 1:3], c(1, 1, 2)), "four-chain")
+})
+
+test_that("native raw imported outcomes cannot become qualified accuracy without chain assessment", {
+  skip_if_not(length(helpers) > 0L)
+  sim <- .native_fixture(); input <- .native_design("integration", 1L)$inputs[1L, ]
+  rows <- .native_metric_rows(sim, input, "sbayesrc_native", pip = rep(.8, 24L),
+    success = TRUE, attempted = TRUE, complete = TRUE, pip_event = "any_nonzero_effect")
+  rows$core_diagnostics_pass <- FALSE; rows$native_accuracy_eligible <- FALSE
+  rows$native_trace_coherence <- "verified_ordinary_iteration_layout"
+  raw <- .native_aggregate_draw(rows)
+  expect_true(all(is.finite(raw$ap_imported)))
+  expect_true(all(is.finite(raw$brier_imported)))
+  expect_true(all(is.na(raw$ap_successful)))
+  expect_true(all(is.na(raw$recall_all_completed)))
+  expect_true(all(raw$n_successful == raw$n_planned))
+  expect_false(any(raw$all_native_accuracy_eligible))
+  rows$core_diagnostics_pass <- TRUE; rows$native_accuracy_eligible <- TRUE
+  qualified <- .native_aggregate_draw(rows)
+  expect_true(all(qualified$all_native_accuracy_eligible))
+  expect_equal(qualified$ap_successful, qualified$ap_imported)
+  # A partially qualified setting cannot rank against a competitor's full set.
+  mixed <- rows; mixed$native_accuracy_eligible[1L] <- FALSE
+  partial <- .native_aggregate_draw(mixed)
+  expect_true(all(is.na(partial$ap_successful[partial$event == mixed$event[1L]])))
+  regional <- .native_metric_rows(sim, input, "abf", pip = rep(.8, 24L),
+    success = TRUE, attempted = TRUE, complete = TRUE)
+  expect_true(all(is.na(regional$core_diagnostics_pass)))
+  expect_true(all(is.na(regional$native_accuracy_eligible)))
+  expect_true(all(is.finite(.native_aggregate_draw(regional)$ap_successful)))
+  # Missing output metadata must not split failures away from their denominator.
+  regional$posterior_conditioning <- "exactly_one_modeled_causal_variant"
+  failed <- .native_metric_rows(sim, input, "abf", attempted = TRUE, complete = TRUE)
+  combined <- rbind(regional[regional$region_id == 1L, ], failed[failed$region_id == 2L, ])
+  census <- .native_aggregate_draw(combined)
+  expect_true(all(census$n_planned == 2L))
+  expect_true(all(census$n_successful == 1L))
+  expect_true(all(grepl("not_declared", census$posterior_conditioning, fixed = TRUE)))
 })
 
 test_that("native uncertainty uses paired complete genotype draws", {
@@ -180,20 +280,32 @@ test_that("native CLI retains partial coverage and does not claim short-chain co
     "args=[x for x in sys.argv[1:] if x!='--write-mcmc-txt']",
     "a=dict(zip(args[::2],args[1::2]))", "r=random.Random(int(a['--seed']))",
     "prefix=a['--out']", "os.makedirs(os.path.dirname(prefix),exist_ok=True)",
+    "if int(a['--seed'])==1000328:",
+    " open(prefix+'.log','w').write('MCMC sampling disrupted at iteration 25\\nRestarting MCMC with a more robust parameterisation\\n')",
     "rows=list(csv.DictReader(open(a['--gwas-summary']),delimiter=' '))",
     "with open(prefix+'.snpRes','w') as f:",
     " f.write('Name A1 A2 A1Effect SE PIP\\n')",
     " for x in rows: f.write(f\"{x['SNP']} {x['A1']} {x['A2']} 0 0.01 {0.2+r.random()*0.01}\\n\")",
     "os.makedirs(prefix+'.mcmcsamples',exist_ok=True)",
-    "count=int(a['--chain-length'])//int(a['--thin'])-int(a['--burn-in'])//int(a['--thin'])",
+    "count=int(a['--chain-length']); burn=int(a['--burn-in']); thin=int(a['--thin'])",
     "with open(prefix+'.mcmcsamples/CoreParameters.mcmcsamples.txt','w') as f:",
-    " f.write('Vg Ve\\n')",
-    " for i in range(count): f.write(f'{r.gauss(0,1)} {r.expovariate(1)}\\n')"), binary)
+    " f.write('NnzSnp SigmaSq hsq ResVar NumSnp1 NumSnp2 NumSnp3 NumSnp4 NumSnp5 Vg1 Vg2 Vg3 Vg4 Vg5\\n')",
+    " values=['nan']*14",
+    " for i in range(1,count+1):",
+    "  if i>burn and i%thin==0: values=[str(r.expovariate(1)) if j!=9 else '0' for j in range(14)]",
+    "  f.write(' '.join(values)+'\\n')"), binary)
   Sys.chmod(binary, "0755")
   # Only this source-frozen test checkout overrides biological simulation.
   writeLines(c(paste0(".native_cli_fixture <- ", paste(deparse(.native_fixture), collapse = "\n")),
-    "simulate_gwfm_data <- function(...) .native_cli_fixture(24L, 'sparse')"),
+    "simulate_gwfm_data <- function(...) .native_cli_fixture(24L, 'sparse')",
+    ".sbayesrc_native_prepare_text_sinks <- function(prefix) { d <- paste0(prefix, '.mcmcsamples'); stopifnot(dir.create(d)); p <- file.path(d, .sbayesrc_native_text_sinks()); stopifnot(all(file.symlink('/dev/null', p))); data.frame(path=p, target='/dev/null') }"),
     file.path(repo, "R/zzz_native_cli_fixture.R"))
+  fixture_contract <- jsonlite::fromJSON(file.path(repo, "scripts/native/campaign/trace-contract.json"))
+  fixture_contract$role <- "software_fixture"
+  fixture_contract$executable_sha256 <- .challenge_sha256(binary)
+  fixture_contract$evidence <- list(purpose = "private synthetic orchestration fixture; no native scientific evidence")
+  fixture_contract_file <- file.path(root, "fixture-trace-contract.json")
+  jsonlite::write_json(fixture_contract, fixture_contract_file, auto_unbox = TRUE, pretty = TRUE)
   vcf <- file.path(root, "vcf"); maps <- file.path(root, "maps")
   dir.create(vcf); dir.create(maps)
   regions <- data.frame(region_id = paste0("fixture", 1:2), chrom = 1:2, start = 10000L, end = 20000L)
@@ -210,7 +322,8 @@ test_that("native CLI retains partial coverage and does not claim short-chain co
   }
   run("create_plan.R", c("--out", shQuote(output_root), "--profile", "integration", "--seed", "143",
     "--vcf-dir", shQuote(vcf), "--genetic-map-dir", shQuote(maps), "--regions-file", shQuote(region_file),
-    "--gctb-path", shQuote(binary), "--methods", "abf"), include_plan = FALSE)
+    "--gctb-path", shQuote(binary), "--trace-contract", shQuote(fixture_contract_file),
+    "--methods", "abf"), include_plan = FALSE)
   commitment <- jsonlite::fromJSON(file.path(output_root, "dispatch-manifest.json"))
   expect_equal(commitment$schema, 1L)
   expect_identical(commitment$plan_rds_sha256, .challenge_sha256(plan_path))
@@ -220,6 +333,41 @@ test_that("native CLI retains partial coverage and does not claim short-chain co
   run("prepare.R", c("--index", "1"))
   root <- output_root
   for (index in 1:4) run("run_chain.R", c("--index", index))
+  first_chain <- readRDS(file.path(output_root, "chains/chain_000001/completed.rds"))
+  expect_null(first_chain$trace_error)
+  expect_equal(first_chain$trace_extraction$retained_count, 20L)
+  expect_equal(read.table(first_chain$retained_core_trace, header = TRUE)$Iter, seq(55L, 150L, 5L))
+  expect_equal(first_chain$text_retention$scope, "core")
+  expect_equal(nrow(first_chain$discarded_array_links), 7L)
+  expect_false(any(basename(first_chain$artifacts$path) %in% .sbayesrc_native_text_sinks()))
+  # Model an interruption after native output was written but before the
+  # terminal checkpoint. A concurrent outer owner must prevent archiving;
+  # after the controller releases that lock, the old output survives intact.
+  interrupted <- file.path(output_root, "chains/chain_000002")
+  old_output <- file.path(interrupted, "native-output")
+  old_result <- .challenge_sha256(file.path(old_output, "sbayesrc_native.snpRes"))
+  writeLines("interrupted native attempt", file.path(old_output, "interruption-marker.txt"))
+  dir.create(file.path(old_output, ".native_run_lock"))
+  unlink(file.path(interrupted, c("completed.rds", "terminal.json")))
+  outer_lock <- paste0(interrupted, ".lock"); dir.create(outer_lock)
+  rejected <- suppressWarnings(system2(file.path(R.home("bin"), "Rscript"), c("--vanilla",
+    shQuote(file.path(repo, "scripts/native/campaign/run_chain.R")), "--plan", shQuote(plan_path), "--index", "2"),
+    stdout = TRUE, stderr = TRUE))
+  expect_equal(attr(rejected, "status"), 1L)
+  expect_true(any(grepl("existing lock", rejected, fixed = TRUE)))
+  expect_true(file.exists(file.path(old_output, "interruption-marker.txt")))
+  expect_false(dir.exists(file.path(interrupted, "native-attempts")))
+  unlink(outer_lock, recursive = TRUE)
+  run("run_chain.R", c("--index", "2"))
+  archives <- list.dirs(file.path(interrupted, "native-attempts"), recursive = FALSE)
+  expect_length(archives, 1L)
+  archived_output <- file.path(archives, "native-output")
+  expect_true(file.exists(file.path(archived_output, "interruption-marker.txt")))
+  expect_true(dir.exists(file.path(archived_output, ".native_run_lock")))
+  expect_identical(.challenge_sha256(file.path(archived_output, "sbayesrc_native.snpRes")), old_result)
+  expect_false(file.exists(file.path(old_output, "interruption-marker.txt")))
+  expect_true(file.exists(file.path(interrupted, "completed.rds")))
+  expect_true(file.exists(file.path(interrupted, "terminal.json")))
   run("run_regional.R", c("--input-id", "input_00001"))
   run("collect.R", c("--bootstrap-draws", "100"))
   coverage <- read.csv(file.path(root, "analysis/planned-chain-coverage.csv"))
@@ -228,9 +376,26 @@ test_that("native CLI retains partial coverage and does not claim short-chain co
   diagnostic <- read.csv(file.path(root, "analysis/input-diagnostics.csv"))
   expect_false(any(diagnostic$core_diagnostics_pass))
   expect_true(all(diagnostic$extension_eligible))
+  expect_equal(diagnostic$fraction_call_095_disagreement[diagnostic$input_id == "input_00001"], 0)
+  expect_true(diagnostic$maximum_pip_chain_range[diagnostic$input_id == "input_00001"] > 0)
+  block_stability <- read.csv(file.path(root, "analysis/pip-stability-by-block.csv"))
+  expect_equal(nrow(block_stability), 2L)
+  expect_true(all(block_stability$chain_sum_pip_range >= 0))
   outcomes <- read.csv(file.path(root, "analysis/task-metrics.csv"))
   expect_true(all(outcomes$success[outcomes$input_id == "input_00001"]))
   expect_true(all(!outcomes$complete[outcomes$input_id != "input_00001"]))
+  native <- outcomes[outcomes$method == "sbayesrc_native", ]
+  expect_false(any(native$core_diagnostics_pass))
+  expect_false(any(native$native_accuracy_eligible))
+  expect_equal(unique(native$native_trace_coherence[native$input_id == "input_00001"]),
+               "verified_ordinary_iteration_layout")
+  expect_true(all(native$native_trace_coherence[native$input_id != "input_00001"] == "incomplete"))
+  expect_true(all(is.na(outcomes$core_diagnostics_pass[outcomes$method == "abf"])))
+  expect_true(all(outcomes$posterior_conditioning[outcomes$method == "abf" & outcomes$success] == "exactly_one_modeled_causal_variant"))
+  expect_true(all(!outcomes$native_null_model_in_support[outcomes$method == "abf" & outcomes$success]))
+  grouped <- read.csv(file.path(root, "analysis/draw-metrics.csv"))
+  expect_true(all(is.na(grouped$ap_successful[grouped$method == "sbayesrc_native"])))
+  expect_true(all(is.finite(grouped$ap_imported[grouped$method == "sbayesrc_native" & grouped$exposure == "none"])))
   consensus <- readRDS(file.path(root, "analysis/consensus/input_00001.rds"))
   expect_equal(ncol(consensus$pip_chains), 4L)
   expect_false(consensus$core_diagnostics_pass)
@@ -318,6 +483,21 @@ test_that("native CLI retains partial coverage and does not claim short-chain co
   run("collect.R", c("--bootstrap-draws", "100"))
   expect_equal(sum(read.csv(file.path(root, "analysis/planned-chain-coverage.csv"))$checkpointed), 4L)
   expect_true(file.exists(file.path(root, "analysis/consensus/input_00001.rds")))
+  # A release-style restart marker must preserve imported output but prevent
+  # ordinary trace diagnostics and qualified accuracy, even at full row count.
+  for (index in 5:8) run("run_chain.R", c("--index", index))
+  disrupted <- readRDS(file.path(root, "chains/chain_000005/completed.rds"))
+  expect_true(disrupted$success)
+  expect_true(grepl("coherence is unverified", disrupted$trace_error, fixed = TRUE))
+  expect_null(disrupted$retained_core_trace)
+  expect_equal(nrow(disrupted$restart_markers), 2L)
+  run("collect.R", c("--bootstrap-draws", "100"))
+  outcomes <- read.csv(file.path(root, "analysis/task-metrics.csv"))
+  disrupted_rows <- outcomes[outcomes$input_id == "input_00002" & outcomes$method == "sbayesrc_native", ]
+  expect_true(all(disrupted_rows$success))
+  expect_true(all(disrupted_rows$native_trace_coherence == "unverified_restart_or_trace_error"))
+  expect_false(any(disrupted_rows$native_accuracy_eligible))
+  expect_true(all(is.finite(disrupted_rows$ap)))
   # Preparation validates the original source data; worker/collector compact
   # checks validate the prepared bytes that they actually use.
   writeLines("tampered fixture", file.path(vcf, "fixture1.vcf.gz"))

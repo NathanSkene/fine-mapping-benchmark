@@ -81,6 +81,36 @@ class NativeDispatchTests(unittest.TestCase):
         self.assertEqual([x["would_submit"] for x in submissions], ["chains", "chains", "regional"])
         self.assertIn("--input-id input_00001", Path(submissions[-1]["script"]).read_text())
 
+    def test_generated_jobs_use_default_or_explicit_queue(self):
+        base = self.argv.copy()
+        for arguments, queue in (([], None), (["--queue", ""], None),
+                                 (["--queue", "approved_queue"], "approved_queue")):
+            with self.subTest(queue=queue, arguments=arguments):
+                self.argv = base + arguments
+                submissions = [x for x in self.dry_run() if "would_submit" in x]
+                self.assertEqual(len(submissions), 1)
+                script = Path(submissions[0]["script"]).read_text()
+                lines = [line for line in script.splitlines() if line.startswith("#PBS -q")]
+                self.assertEqual(lines, [] if queue is None else [f"#PBS -q {queue}"])
+
+    def test_new_controller_can_target_an_unchanged_worker_snapshot(self):
+        worker_repo = self.root / "unchanged-workers"
+        helper = worker_repo / "scripts/campaign/dispatch.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_text((REPO / "scripts/campaign/dispatch.py").read_text())
+        worker = worker_repo / "scripts/native/campaign/prepare.R"
+        worker.parent.mkdir(parents=True); worker.write_text("# frozen scientific worker\n")
+        self.argv[self.argv.index("--repo") + 1] = str(worker_repo)
+        submissions = [x for x in self.dry_run() if "would_submit" in x]
+        self.assertEqual(len(submissions), 1)
+        script = Path(submissions[0]["script"]).read_text()
+        self.assertIn(str(worker.resolve()), script)
+        self.assertIn(f"cd {worker_repo.resolve()}", script)
+        state = json.loads((self.plan / "dispatch/state.json").read_text())
+        self.assertEqual(state["fingerprint"]["controller_sha256"], HELPERS.sha256(Path(NATIVE.__file__)))
+        self.assertEqual(state["fingerprint"]["observation_helpers_sha256"], HELPERS.sha256(helper))
+        self.assertEqual(worker.read_text(), "# frozen scientific worker\n")
+
     def test_partial_regional_panel_does_not_become_complete(self):
         unit = NATIVE.make_units(self.plan)["regional"]["input_00001"]
         self.receipt(self.plan, "regional", "regional_000001")

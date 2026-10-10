@@ -1,12 +1,42 @@
 # Validation record — 10 October 2026
 
 This records executed checks, not a universal method ranking. Original upstream
-source was `f053fdf318a3abe2c44eeb0ac3f3c99a03979b81`. Validated implementation
-is [`3ac28638a8e4249c2dec2b76eb131c6ff6bf27aa`](https://github.com/NathanSkene/fine-mapping-benchmark/tree/3ac28638a8e4249c2dec2b76eb131c6ff6bf27aa).
+source was `f053fdf318a3abe2c44eeb0ac3f3c99a03979b81`. The earlier development
+implementation is [`3ac28638a8e4249c2dec2b76eb131c6ff6bf27aa`](https://github.com/NathanSkene/fine-mapping-benchmark/tree/3ac28638a8e4249c2dec2b76eb131c6ff6bf27aa).
 The implementation and
 development artifacts are frozen separately; run provenance records source
 commit and individual R file hashes. The [review](REVIEW.md) and
 [scientific contract](challenge-science.md) define interpretation limits.
+
+## Campaign hardening checks
+
+The subsequent complete R package check passed **Status: OK**, with **1,559
+passing expectations, zero failures and zero warnings**. Its 24 explicit skips
+comprise seven CARMA, one configured legacy BEATRICE, two FINEMAP, one Funmap,
+two PAINTOR, two SparsePro and nine repository-only native orchestration tests.
+Those nine require helpers deliberately excluded from the R package; they have
+separate repository checks. Optional native execution is a separate server gate.
+The [package proof](validation-artifacts/campaign-hardening-20261010/R-package-check.json)
+records the exact archive, all 157 archived file hashes, check-log hashes and
+skip reasons. All 155 frozen package-source files matched the working source
+when that check completed. Controller and collector scripts are checked
+separately and are outside this archive.
+
+Actual GCTB execution established the [raw trace layout and all/core/no-text
+output equivalence](../scripts/native/campaign/retention-proof.json). A separate
+[R wrapper check](../scripts/native/campaign/wrapper-proof.json) imported
+identical PIPs, effect means and effect SDs with all versus core output and
+verified all seven exact text sinks. The [FINEMAP parser proof](../scripts/campaign/finemap-parser-proof.json)
+preserves native rounded model-size probabilities without renormalising them.
+These small execution fixtures establish interfaces and retention semantics;
+they cannot establish full-size costs, accuracy or convergence.
+
+The [BEATRICE event-import proof](validation-artifacts/campaign-hardening-20261010/beatrice-events-proof.json)
+records actual 500-iteration vanilla and functional training on a tiny synthetic
+locus, expansion, native output and strict R import of conditional joint events.
+It binds all six production R/Python/contract files by SHA-256. These complete
+interfaces supplement the analytical probability examples and real neural
+tests; the tiny fixture cannot estimate comparative accuracy or campaign cost.
 
 ## Executed correctness checks
 

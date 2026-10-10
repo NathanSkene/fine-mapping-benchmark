@@ -36,6 +36,20 @@ snapshot. Regional preflight jobs use `preflight_pbs.sh` and one method index,
 requiring an actual successful fit on both annotated loci. A failed preflight
 is retained; repair the cause and use a new plan.
 
+For the standard server plans with all 20 methods, `submit_preflights.sh SOURCE
+PLAN PREFIX` submits one job per method and records intent before each `qsub`.
+Use a unique PBS name prefix. It refuses an existing submission ledger; an
+interrupted or ambiguous submission requires inspecting the ledger and scheduler
+before any further action. This preserves actual failed runs and prevents an
+automatic rerun from duplicating jobs. Custom method subsets require their own
+explicit indices.
+
+Plan creation also freezes `regional-full/priority-prefix.json` from design
+identities alone. The full regional controller uses this prefix to run the
+Gaussian stress family and the paired audit earlier; every remaining task
+stays in the full plan. No predictions enter scheduling selection. Small
+integration and resource-probe controllers omit this full-plan-only prefix.
+
 Run the controllers through `nohup controller.sh ...` only after the relevant
 gates pass. Regional and native controllers are capped at48 and12 jobs,
 respectively: at most60 campaign jobs together, one CPU each. Native
@@ -44,6 +58,34 @@ preflight and planning jobs finish before the full controllers start. Canary
 measurements determine resource changes before the final launch; keep the
 combined bound moderate if changing any limit. These are limits on submitted
 and running assignments, not a request to occupy a fixed number of nodes.
+
+Controllers omit a PBS queue directive by default, letting the scheduler choose
+the account's permitted default queue. Pass `--queue QUEUE` to a Python
+controller only after verifying access; a named queue can exist while the
+account is denied access to it. Preflight and planning submissions likewise use
+the scheduler default unless an accessible queue is deliberately selected.
+
+A reviewed controller may run from a newer source directory with `--repo`
+pointing to the unchanged worker snapshot used by an existing plan. Generated
+jobs source that snapshot's bootstrap and execute its R workers; the controller
+records its own file hash separately. The native controller also records the
+hash of scheduler helpers loaded from the worker snapshot. This allows a
+scheduler-only repair without rewriting the scientific plan or worker source.
+For this handoff, invoke the newer Python controller by its absolute path;
+`controller.sh` changes directory into its worker repository and chooses that
+repository's controller. For example:
+
+```sh
+"$FMB_PYTHON" /absolute/new-controller/scripts/campaign/dispatch.py \
+  --repo /absolute/unchanged-worker-source --plan /absolute/regional-plan/plan.rds \
+  --bootstrap /absolute/unchanged-worker-source/scripts/server_setup/environment.sh \
+  --max-workers 48 --max-generation 8 --batch-tasks 4
+```
+
+An existing controller state from a different controller hash requires an
+explicitly audited handoff; do not delete live scheduler assignments to force a
+resume. Resource reports for the regional wrapper should pass `--workers 48`,
+matching its actual cap; the combined regional/native cap is 60.
 
 ```sh
 bash scripts/server_setup/controller.sh /absolute/source regional /absolute/regional-full/plan.rds

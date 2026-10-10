@@ -60,11 +60,101 @@
 
 
 # --- parse one region's joint output (same contract as the FB wrapper) --------
-.fb_joint_parse_output <- function(out_dir, variant_ids, p) {
+.fb_joint_requires_cs_diagnostics <- function(beatrice_dir) {
+  marker <- file.path(beatrice_dir, "scripts", "credible_set_contract.json")
+  if (!file.exists(marker)) return(FALSE)
+  value <- jsonlite::fromJSON(marker, simplifyVector = FALSE)
+  if (!identical(value$format, "beatrice-conditional-credible-set-diagnostics-v1") ||
+      !is.numeric(value$index_base) || length(value$index_base) != 1L ||
+      !is.finite(value$index_base) || value$index_base != 0 ||
+      !identical(value$default_stopping_rule, "conditional_union"))
+    stop("Invalid declared BEATRICE credible-set contract")
+  TRUE
+}
+
+.fb_joint_read_cs_diagnostics <- function(path, variant_ids, native_sets, pip) {
+  value <- jsonlite::fromJSON(path, simplifyVector = FALSE)
+  scalar <- function(x) is.numeric(x) && length(x) == 1L && is.finite(x)
+  probability <- function(x) scalar(x) && x >= 0 && x <= 1
+  indices <- function(x, empty = FALSE) {
+    if (!is.list(x) || !is.null(names(x)) || (!empty && !length(x)) ||
+        !all(vapply(x, scalar, TRUE))) stop("Invalid BEATRICE diagnostic indices")
+    if (!length(x)) return(integer())
+    result <- unlist(x, use.names = FALSE)
+    if (any(result != floor(result) | result < 0 | result >= length(variant_ids)) ||
+        anyDuplicated(result)) stop("Invalid BEATRICE diagnostic indices")
+    as.integer(result)
+  }
+  if (!is.list(value) ||
+      !identical(value$format, "beatrice-conditional-credible-set-diagnostics-v1") ||
+      !scalar(value$index_base) || value$index_base != 0 ||
+      !scalar(value$variant_count) || value$variant_count != length(variant_ids) ||
+      !is.list(value$variant_names) || !is.null(names(value$variant_names)) ||
+      !all(vapply(value$variant_names, function(x) is.character(x) && length(x) == 1L, TRUE)) ||
+      !identical(unlist(value$variant_names, use.names = FALSE), variant_ids) ||
+      !identical(value$posterior_memo_format, "beatrice-log-bf-final-prior-v1") ||
+      !scalar(value$posterior_support_size) || value$posterior_support_size < 1 ||
+      value$posterior_support_size != floor(value$posterior_support_size) ||
+      !identical(value$null_probability_conditioning, "explored_support_under_frozen_final_prior") ||
+      !probability(value$null_probability) || any(pip > 1 - value$null_probability + 1e-8) ||
+      1 - value$null_probability > sum(pip) + 1e-8 ||
+      !is.character(value$stopping_rule) || length(value$stopping_rule) != 1L ||
+      !value$stopping_rule %in% c("conditional_union", "legacy_membership_sum") ||
+      !is.list(value$sets) || !is.null(names(value$sets)) ||
+      length(value$sets) != length(native_sets)) stop("Invalid BEATRICE credible-set diagnostics")
+  for (i in seq_along(value$sets)) {
+    s <- value$sets[[i]]
+    set <- indices(s$set_indices_zero_based)
+    given <- indices(s$condition_indices_zero_based, empty = TRUE)
+    if (!identical(set, as.integer(native_sets[[i]])) || length(intersect(set, given)) ||
+        !identical(s$event, "at_least_one_set_member_is_causal") ||
+        !identical(s$posterior_conditioning, "given_variants_are_causal_within_explored_support") ||
+        !probability(s$conditional_union_probability) ||
+        !probability(s$target_probability) || s$target_probability <= 0 ||
+        !is.logical(s$target_met) || length(s$target_met) != 1L || is.na(s$target_met) ||
+        !identical(s$target_met, s$conditional_union_probability >= s$target_probability) ||
+        !scalar(s$legacy_membership_sum) || s$legacy_membership_sum < 0 ||
+        s$legacy_membership_sum > length(set) + 1e-8 ||
+        s$conditional_union_probability + 1e-8 < s$legacy_membership_sum / length(set) ||
+        s$conditional_union_probability > s$legacy_membership_sum + 1e-8 ||
+        !probability(s$selection_probability_threshold) ||
+        !probability(s$purity_threshold)) stop("Invalid BEATRICE credible-set event evidence")
+    if (!is.null(s$stopping_rule) && !identical(s$stopping_rule, value$stopping_rule))
+      stop("Inconsistent BEATRICE credible-set stopping rule")
+    if (!length(given) &&
+        (s$conditional_union_probability + 1e-8 < max(pip[set + 1L]) ||
+         s$conditional_union_probability > 1 - value$null_probability + 1e-8 ||
+         abs(s$legacy_membership_sum - sum(pip[set + 1L])) > 1e-8))
+      stop("BEATRICE unconditional event disagrees with marginal probabilities")
+    if (length(given) && any(pip[given + 1L] <= 0))
+      stop("BEATRICE diagnostic conditions on an impossible variant event")
+    value$sets[[i]]$set_indices <- sort(set + 1L)
+    value$sets[[i]]$condition_indices <- given + 1L
+  }
+  value
+}
+
+.beatrice_posterior_metadata <- function(parsed) {
+  d <- parsed$cs_diagnostics
+  list(credible_set_semantics = if (is.null(d)) "native_semantics_not_verified" else
+      if (identical(d$stopping_rule, "conditional_union")) "conditional_union_within_explored_support" else
+        "legacy_conditional_membership_mass_candidates",
+    credible_set_diagnostics = d,
+    posterior_conditioning = if (is.null(d)) "not_declared" else "within_explored_configuration_support",
+    native_null_support = if (is.null(d)) "not_declared" else "included_in_explored_support",
+    null_model_in_support = if (is.null(d)) NA else TRUE,
+    null_probability_not_provided = is.null(d),
+    configuration_count = if (is.null(d)) NA_integer_ else d$posterior_support_size,
+    null_probability_conditioning = if (is.null(d)) "not_declared" else d$null_probability_conditioning,
+    null_probability = if (is.null(d)) NULL else d$null_probability)
+}
+
+.fb_joint_parse_output <- function(out_dir, variant_ids, p, require_diagnostics = FALSE) {
   pip_path  <- file.path(out_dir, "pip.csv")
   cred_path <- file.path(out_dir, "credible_set.txt")
   cond_path <- file.path(out_dir, "conditional_credible_variants_probability.txt")
   if (!file.exists(pip_path)) return(NULL)
+  if (require_diagnostics && (!file.exists(cred_path) || !file.exists(cond_path))) return(NULL)
 
   pip_df <- tryCatch(utils::read.csv(pip_path, stringsAsFactors = FALSE),
                      error = function(e) NULL)
@@ -78,6 +168,7 @@
   if (length(pip) != p || any(!is.finite(pip)) || any(pip < 0 | pip > 1)) return(NULL)
 
   credible_sets <- list()
+  native_sets <- list()
   set_orders <- list()
   if (file.exists(cred_path)) {
     cred_lines <- readLines(cred_path, warn = FALSE)
@@ -90,6 +181,7 @@
         if (any(!is.finite(native_idx)) || any(native_idx < 0 | native_idx >= p) ||
             anyDuplicated(native_idx)) return(NULL)
         idx <- as.integer(native_idx) + 1L  # native zero-based indices
+        native_sets[[length(native_sets) + 1L]] <- as.integer(native_idx)
         set_orders[[length(set_orders) + 1L]] <- order(idx)
         credible_sets[[length(credible_sets) + 1L]] <- sort(idx)
       }
@@ -110,7 +202,22 @@
     }
   }
 
-  list(pip = pip, credible_sets = credible_sets, cs_pip = cs_pip)
+  diagnostic_path <- file.path(out_dir, "credible_set_diagnostics.json")
+  diagnostics <- NULL
+  if (file.exists(diagnostic_path)) {
+    diagnostics <- tryCatch(.fb_joint_read_cs_diagnostics(diagnostic_path,
+      variant_ids, native_sets, pip), error = function(e) NULL)
+    if (is.null(diagnostics)) return(NULL)
+    # The human-readable conditional probabilities are rounded to three
+    # decimals. Check consistency using their documented half-unit allowance.
+    if (!is.null(cs_pip)) for (i in seq_along(cs_pip)) {
+      s <- diagnostics$sets[[i]]; q <- cs_pip[[i]]
+      if (abs(s$legacy_membership_sum - sum(q)) > .0005 * length(q) + 1e-8 ||
+          s$conditional_union_probability + .0005 + 1e-8 < max(q)) return(NULL)
+    }
+  } else if (require_diagnostics) return(NULL)
+  list(pip = pip, credible_sets = credible_sets, cs_pip = cs_pip,
+       cs_diagnostics = diagnostics)
 }
 
 
@@ -202,7 +309,8 @@
   cache <- list()
   for (i in seq_len(n_regions)) {
     parsed <- .fb_joint_parse_output(written[[i]]$target,
-                                     written[[i]]$variant_ids, written[[i]]$p)
+                                     written[[i]]$variant_ids, written[[i]]$p,
+                                     .fb_joint_requires_cs_diagnostics(beatrice_dir))
     if (!is.null(parsed)) {
       parsed$variant_ids <- written[[i]]$original_ids
       parsed$variant_alignment <- written[[i]]$variant_alignment
@@ -257,12 +365,12 @@ run_fb_xregion_scenario_setup <- function(genotypes, regions, user_args) {
       input_type      = "summary",
       params          = list(prior_head = .fb_joint_head, joint = TRUE),
       runtime_seconds = entry$runtime_seconds,
-      additional      = list(cs_pip = entry$cs_pip, joint_fallback = FALSE,
+      additional      = c(list(cs_pip = entry$cs_pip, joint_fallback = FALSE,
                              variant_ids = entry$variant_ids,
                              variant_alignment = entry$variant_alignment,
                              pooled_runtime_seconds = entry$pooled_runtime_seconds,
                              n_loci_pooled = entry$n_loci_pooled,
-                             pooled_across_loci = TRUE)
+                             pooled_across_loci = TRUE), .beatrice_posterior_metadata(entry))
     ))
   }
 

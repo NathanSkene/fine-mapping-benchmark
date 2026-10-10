@@ -47,6 +47,7 @@
 .native_assert_plan <- function(plan, repo, verify_source_data = FALSE) {
   x <- plan; x$plan_sha256 <- NULL
   if (!identical(plan$plan_sha256, .campaign_object_sha(x))) stop("Native plan changed")
+  .native_validate_trace_contract(plan$trace_contract, plan$executable_sha256, plan$profile)
   actual_source <- .native_source_snapshot(repo)
   if (!identical(plan$source, actual_source)) {
     changed <- merge(plan$source, actual_source, by = "path", all = TRUE,
@@ -223,6 +224,21 @@
   .campaign_validate_checkpoint(path, plan, task)
 }
 
+.native_archive_interrupted_output <- function(directory, plan, task) {
+  previous <- file.path(directory, "native-output")
+  if (!dir.exists(previous)) return(invisible(NULL))
+  archive <- file.path(directory, "native-attempts", paste0(
+    format(Sys.time(), "%Y%m%dT%H%M%OS6", tz = "UTC"), "-", Sys.getpid()))
+  dir.create(archive, recursive = TRUE, showWarnings = FALSE)
+  destination <- file.path(archive, "native-output")
+  if (!file.rename(previous, destination)) stop("Cannot archive interrupted native output")
+  .campaign_atomic_rds(list(schema = 1L, plan_sha256 = plan$plan_sha256,
+    task = task, archived = Sys.time(), original_path = previous,
+    disposition = "unreceipted native output preserved before a fresh locked attempt"),
+    file.path(archive, "attempt-archive.rds"))
+  invisible(destination)
+}
+
 .native_archive_analysis <- function(root) {
   analysis <- file.path(root, "analysis")
   if (!dir.exists(analysis)) return(invisible(NULL))
@@ -256,24 +272,88 @@
   invisible(manifest)
 }
 
-.native_read_core <- function(path, expected_draws) {
-  if (!file.exists(path)) stop("Missing upstream CoreParameters text trace")
-  x <- utils::read.table(path, header = TRUE, check.names = FALSE, comment.char = "", quote = "")
-  if (nrow(x) != expected_draws || !ncol(x) || anyDuplicated(names(x)) ||
-      any(vapply(x, function(y) !is.numeric(y) || any(!is.finite(y)), TRUE)))
-    stop("CoreParameters trace has unexpected schema, draw count, or nonfinite values")
-  # GCTB writes retained post-burn-in draws. Do not discard burn-in a second time.
-  x
+.native_validate_trace_contract <- function(contract, executable_sha256, profile) {
+  expected_columns <- c("NnzSnp", "SigmaSq", "hsq", "ResVar", paste0("NumSnp", 1:5), paste0("Vg", 1:5))
+  if (!is.list(contract) || !identical(as.integer(contract$schema), 1L) ||
+      !identical(contract$layout, "one_raw_row_per_iteration_without_iter") ||
+      !identical(contract$executable_sha256, executable_sha256) ||
+      !identical(contract$columns, expected_columns) ||
+      !identical(contract$model_mode, "RC") ||
+      !identical(as.numeric(contract$gamma), c(0, .001, .01, .1, 1)) ||
+      !identical(names(contract$declared_fixed_constants), "Vg1") ||
+      !identical(as.numeric(contract$declared_fixed_constants$Vg1), 0) ||
+      !contract$role %in% c("observed_release_binary", "software_fixture"))
+    stop("Native trace contract does not match the pinned executable or observed schema")
+  if (identical(contract$role, "software_fixture") && !identical(profile, "integration"))
+    stop("A software-fixture trace contract is restricted to the integration profile")
+  if (identical(contract$role, "observed_release_binary") &&
+      !identical(executable_sha256, "649123c2fefacc23aa71c6537c9226b5a69f06f6045863672118009cbe680346"))
+    stop("A new release executable requires an independently observed trace contract")
+  invisible(TRUE)
 }
 
-.native_diagnostics <- function(traces, expected_draws, thresholds = list(rhat = 1.01, ess = 400)) {
+.native_trace_restart_markers <- function(directory) {
+  paths <- list.files(directory, recursive = TRUE, full.names = TRUE)
+  paths <- paths[grepl("(log|stdout|stderr)", basename(paths), ignore.case = TRUE) & !dir.exists(paths)]
+  found <- lapply(paths, function(path) {
+    lines <- readLines(path, warn = FALSE)
+    keep <- grepl("Restarting MCMC|MCMC sampling disrupted|Residual variance is negative", lines, ignore.case = TRUE)
+    if (!any(keep)) return(NULL)
+    data.frame(path = path, line = which(keep), message = lines[keep], stringsAsFactors = FALSE)
+  })
+  do.call(rbind, found)
+}
+
+.native_read_core <- function(path, config, contract) {
+  if (!file.exists(path)) stop("Missing upstream CoreParameters text trace")
+  settings <- unlist(config[c("n_iter", "burn_in", "thin")], use.names = FALSE)
+  if (length(settings) != 3L || any(!is.finite(settings)) || any(settings != floor(settings)) ||
+      config$n_iter <= config$burn_in || config$burn_in < 0 || config$thin < 1)
+    stop("Invalid frozen native iteration settings")
+  # The observed release writes cached values on every iteration. Burn-in may
+  # contain uninitialised nonfinite data; validate only actual retained draws.
+  widths <- utils::count.fields(path, comment.char = "", quote = "", blank.lines.skip = FALSE)
+  if (length(widths) != config$n_iter + 1L || anyNA(widths) || any(widths != length(contract$columns)))
+    stop("CoreParameters trace has unexpected schema or raw iteration row count")
+  x <- utils::read.table(path, header = TRUE, check.names = FALSE, comment.char = "",
+                         quote = "", colClasses = "character", fill = FALSE, blank.lines.skip = FALSE)
+  if (!identical(names(x), contract$columns) || nrow(x) != config$n_iter)
+    stop("CoreParameters trace has unexpected schema or raw iteration row count")
+  iteration <- seq_len(nrow(x))
+  keep <- iteration > config$burn_in & iteration %% config$thin == 0L
+  expected <- config$n_iter %/% config$thin - config$burn_in %/% config$thin
+  if (!sum(keep) || sum(keep) != expected) stop("Unexpected retained native draw count")
+  retained <- as.data.frame(lapply(x[keep, , drop = FALSE], function(y) suppressWarnings(as.numeric(y))),
+                            check.names = FALSE)
+  if (any(vapply(retained, function(y) any(!is.finite(y)), TRUE)))
+    stop("CoreParameters retained draws contain nonnumeric or nonfinite values")
+  for (name in names(contract$declared_fixed_constants))
+    if (any(retained[[name]] != contract$declared_fixed_constants[[name]]))
+      stop("CoreParameters violated the declared fixed constant ", name)
+  retained <- data.frame(Iter = iteration[keep], retained, check.names = FALSE)
+  attr(retained, "extraction") <- list(schema = 1L, layout = contract$layout,
+    executable_sha256 = contract$executable_sha256, contract_role = contract$role,
+    raw_core_sha256 = .challenge_sha256(path), raw_rows = nrow(x),
+    n_iter = config$n_iter, burn_in = config$burn_in, thin = config$thin,
+    iteration_origin = contract$iteration_origin, retention_rule = contract$retention_rule,
+    retained_count = nrow(retained), first_retained_iter = retained$Iter[1L],
+    last_retained_iter = tail(retained$Iter, 1L), parameters = names(retained)[-1L])
+  attr(retained, "extraction")$declared_fixed_constants <- contract$declared_fixed_constants
+  retained
+}
+
+.native_diagnostics <- function(traces, config, contract, thresholds = list(rhat = 1.01, ess = 400)) {
   if (length(traces) != 4L) stop("Four independent native chains are required")
-  xs <- lapply(traces, .native_read_core, expected_draws = expected_draws)
+  xs <- lapply(traces, .native_read_core, config = config, contract = contract)
   if (!all(vapply(xs, function(x) identical(names(x), names(xs[[1L]])), TRUE)))
     stop("CoreParameters differ across chains")
   if (!requireNamespace("posterior", quietly = TRUE)) stop("Install official posterior package for diagnostics")
-  do.call(rbind, lapply(names(xs[[1L]]), function(name) {
+  do.call(rbind, lapply(setdiff(names(xs[[1L]]), "Iter"), function(name) {
     x <- do.call(cbind, lapply(xs, `[[`, name))
+    if (name %in% names(contract$declared_fixed_constants)) return(data.frame(
+      parameter = name, n_draws_per_chain = nrow(x), rhat = NA_real_, bulk_ess = NA_real_, tail_ess = NA_real_,
+      minimum_within_chain_variance = 0, maximum_within_chain_variance = 0,
+      constant_in_chain = TRUE, diagnostic_status = "declared_fixed_constant", assessed_pass = NA))
     rhat <- posterior::rhat(x); bulk <- posterior::ess_bulk(x); tail <- posterior::ess_tail(x)
     variances <- apply(x, 2L, stats::var)
     constant <- any(variances == 0)
@@ -288,6 +368,40 @@
         if (passed) "thresholds_passed" else "thresholds_failed",
       assessed_pass = passed)
   }))
+}
+
+.native_diagnostics_pass <- function(diagnostics) {
+  if (is.null(diagnostics)) return(FALSE)
+  sampled <- diagnostics$diagnostic_status != "declared_fixed_constant"
+  any(sampled) && all(!is.na(diagnostics$assessed_pass[sampled]) & diagnostics$assessed_pass[sampled])
+}
+
+.native_core_assessment <- function(diagnostics) {
+  if (is.null(diagnostics)) return("unavailable")
+  status <- diagnostics$diagnostic_status[diagnostics$diagnostic_status != "declared_fixed_constant"]
+  unassessable <- any(grepl("unassessable", status))
+  failed <- any(status == "thresholds_failed")
+  if (unassessable && failed) return("unassessable_and_thresholds_failed")
+  if (unassessable) return("unassessable")
+  if (failed) return("thresholds_failed")
+  if (.native_diagnostics_pass(diagnostics)) "thresholds_passed" else "unavailable"
+}
+
+.native_pip_stability <- function(pip_matrix, block) {
+  if (!is.matrix(pip_matrix) || ncol(pip_matrix) != 4L || nrow(pip_matrix) != length(block) ||
+      any(!is.finite(pip_matrix)) || any(pip_matrix < 0 | pip_matrix > 1) || anyNA(block))
+    stop("PIP stability requires aligned four-chain probabilities and block IDs")
+  ranges <- apply(pip_matrix, 1L, function(v) diff(range(v)))
+  calls <- rowSums(pip_matrix >= .95)
+  sums <- rowsum(pip_matrix, block, reorder = TRUE)
+  blocks <- data.frame(region_id = rownames(sums),
+    minimum_chain_sum_pip = apply(sums, 1L, min),
+    maximum_chain_sum_pip = apply(sums, 1L, max),
+    chain_sum_pip_range = apply(sums, 1L, function(v) diff(range(v))), row.names = NULL)
+  list(summary = data.frame(median_pip_chain_range = stats::median(ranges),
+    p95_pip_chain_range = unname(stats::quantile(ranges, .95)),
+    maximum_pip_chain_range = max(ranges), mean_pip_chain_range = mean(ranges),
+    fraction_call_095_disagreement = mean(calls > 0L & calls < 4L)), blocks = blocks)
 }
 
 .native_event_metrics <- function(pip, y) {
@@ -315,7 +429,17 @@
 
 .native_metric_rows <- function(sim, input, method, pip = NULL, success = FALSE,
                                 attempted = FALSE, complete = FALSE, error = "",
-                                runtime = NA_real_, pip_event = "modeled_sparse_effect_membership") {
+                                runtime = NA_real_, pip_event = "modeled_sparse_effect_membership",
+                                native_diagnostics = NULL, posterior_support = NULL) {
+  if (is.null(native_diagnostics)) native_diagnostics <- data.frame(
+    core_diagnostics_pass = NA, native_core_assessment_status = NA_character_,
+    native_trace_coherence = NA_character_, native_accuracy_eligible = NA,
+    native_median_pip_chain_range = NA_real_, native_p95_pip_chain_range = NA_real_,
+    native_maximum_pip_chain_range = NA_real_, native_mean_pip_chain_range = NA_real_,
+    native_fraction_call_095_disagreement = NA_real_)
+  if (is.null(posterior_support)) posterior_support <- data.frame(
+    posterior_conditioning = "not_declared", native_null_model_in_support = NA,
+    null_probability_not_provided = NA)
   if (success && (length(pip) != sum(vapply(sim$genotypes, `[[`, 1L, "p")) ||
       any(!is.finite(pip)) || any(pip < 0 | pip > 1))) stop("Invalid whole-panel PIPs")
   sizes <- vapply(sim$genotypes, `[[`, 1L, "p"); offsets <- c(0L, cumsum(sizes))
@@ -341,7 +465,8 @@
           event == "sparse_component_membership" else if (pip_event %in%
             c("any_nonzero_effect", "any_nonzero_mixture_component")) event == "any_nonzero_effect" else FALSE,
         success = success,
-        attempted = attempted, complete = complete, error = error, runtime_seconds = runtime), score)
+        attempted = attempted, complete = complete, error = error, runtime_seconds = runtime),
+        native_diagnostics, posterior_support, score)
     }
   }
   do.call(rbind, rows)
@@ -357,9 +482,15 @@
     f <- fits[[i]]
     event <- f$additional$pip_event %||% if (method == "sbayesrc") "any_nonzero_mixture_component" else
       "modeled_sparse_effect_membership"
+    support <- data.frame(posterior_conditioning = f$additional$posterior_conditioning %||%
+      if (method == "abf") "exactly_one_modeled_causal_variant" else "not_declared",
+      native_null_model_in_support = f$additional$null_model_in_support %||%
+        if (method == "abf") FALSE else NA,
+      null_probability_not_provided = f$additional$null_probability_not_provided %||%
+        if (method == "abf") TRUE else NA)
     x <- .native_metric_rows(mini, input, method, pip = f$pip, success = is.null(f$error),
       attempted = TRUE, complete = TRUE, error = f$error %||% "", runtime = f$runtime_seconds %||% NA_real_,
-      pip_event = event)
+      pip_event = event, posterior_support = support)
     x$region_id <- i
     if (method == "marginal_z") {
       x$brier <- x$log_loss <- x$log_loss_clipped <- NA_real_; x$pip_event <- "normalized_absolute_z_score"
@@ -376,19 +507,39 @@
   groups <- split(seq_len(nrow(rows)), do.call(paste, c(rows[keys], sep = "|")))
   do.call(rbind, lapply(groups, function(indices) {
     x <- rows[indices, ]
-    cbind(x[1L, keys], data.frame(n_planned = nrow(x), n_attempted = sum(x$attempted),
+    is_native <- identical(as.character(x$method[1L]), "sbayesrc_native")
+    # Native results remain auditable even when a posterior-quality check fails.
+    # Qualified comparisons require the same full setting support as competitors.
+    qualified <- !is_native || all(x$native_accuracy_eligible %in% TRUE)
+    ap_imported <- mean_or_na(x$ap[x$success])
+    brier_imported <- mean_or_na(x$brier[x$success])
+    log_loss_imported <- mean_or_na(x$log_loss[x$success])
+    recall_imported <- mean_or_na(x$recall[x$complete])
+    ap_failure_zero_imported <- mean_or_na(ifelse(x$success[x$complete & x$n_positive > 0],
+      x$ap[x$complete & x$n_positive > 0], 0))
+    null_support <- unique(x$native_null_model_in_support[!is.na(x$native_null_model_in_support)])
+    cbind(x[1L, keys], data.frame(
+      posterior_conditioning = paste(sort(unique(x$posterior_conditioning), method = "radix"), collapse = ";"),
+      native_null_model_in_support = if (length(null_support) == 1L) null_support else NA,
+      n_planned = nrow(x), n_attempted = sum(x$attempted),
       n_complete = sum(x$complete), n_successful = sum(x$success),
+      n_native_accuracy_eligible = if (is_native) sum(x$native_accuracy_eligible %in% TRUE) else NA_integer_,
+      all_native_accuracy_eligible = if (is_native) qualified else NA,
       completion_rate = mean(x$complete), success_rate_planned = mean(x$success),
       n_ap_eligible_completed = sum(x$complete & x$n_positive > 0),
       n_ap_eligible_successful = sum(x$success & x$n_positive > 0),
-      ap_successful = mean_or_na(x$ap[x$success]), brier_successful = mean_or_na(x$brier[x$success]),
-      log_loss_successful = mean_or_na(x$log_loss[x$success]),
+      ap_imported = ap_imported, brier_imported = brier_imported, log_loss_imported = log_loss_imported,
+      recall_imported_completed = recall_imported, ap_failure_zero_imported_completed = ap_failure_zero_imported,
+      ap_successful = if (qualified) ap_imported else NA_real_,
+      brier_successful = if (qualified) brier_imported else NA_real_,
+      log_loss_successful = if (qualified) log_loss_imported else NA_real_,
       n_infinite_log_loss = sum(is.infinite(x$log_loss)),
-      recall_all_completed = mean_or_na(x$recall[x$complete]),
-      recall_planned_to_date = mean_or_na(x$recall),
-      ap_failure_zero_completed = mean_or_na(ifelse(x$success[x$complete & x$n_positive > 0],
-        x$ap[x$complete & x$n_positive > 0], 0)),
-      tp = sum(x$tp), fp = sum(x$fp), n_successful_null = sum(x$success & x$n_positive == 0),
+      recall_all_completed = if (qualified) recall_imported else NA_real_,
+      recall_planned_to_date = if (qualified) mean_or_na(x$recall) else NA_real_,
+      ap_failure_zero_completed = if (qualified) ap_failure_zero_imported else NA_real_,
+      tp_imported = sum(x$tp), fp_imported = sum(x$fp),
+      tp = if (qualified) sum(x$tp) else NA_integer_, fp = if (qualified) sum(x$fp) else NA_integer_,
+      n_successful_null = sum(x$success & x$n_positive == 0),
       n_called_successful_null = sum(x$success & x$n_positive == 0 & x$any_call),
       sum_pip_successful = mean_or_na(x$sum_pip[x$success]),
       all_probability_targets_aligned = all(x$probability_target_aligned)))

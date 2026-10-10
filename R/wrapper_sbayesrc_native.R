@@ -1,5 +1,6 @@
 # Official GCTB SBayesRC: one external-file call for the complete supplied panel.
-# Verified against GCTB cc7fa7d765c83a89c6375946cf77fe50ba1a317e.
+# Source audited at GCTB cc7fa7d765c83a89c6375946cf77fe50ba1a317e;
+# the release executable is fingerprinted separately, not attributed to that commit.
 # This adapter deliberately does not convert per-locus simulated matrices into
 # purported genome-wide inputs or call the experimental R surrogate.
 
@@ -31,7 +32,13 @@
 #' @param threads Positive integer thread count. Default 1.
 #' @param save_mcmc Save upstream text parameter draws for convergence diagnostics.
 #'   Default FALSE. SNP-effect binary draws are not requested by this option.
-#' @param thin Positive integer sampling interval for saved draws. Default 10.
+#' @param thin Positive integer native posterior sampling interval. Default 10.
+#'   Always passed to GCTB, including when text output is disabled.
+#' @param mcmc_scope Text retention policy, \code{all} (default) or \code{core}.
+#'   With \code{save_mcmc = TRUE}, \code{core} retains core, annotation and block
+#'   text traces while redirecting seven full-panel text arrays to \code{/dev/null}.
+#'   This Linux-only policy leaves the native executable and inference unchanged;
+#'   formatting costs remain. Per-variant draws cannot be recovered from this run.
 #' @param dry_run Logical. Validate/fingerprint inputs and return a command plan
 #'   without launching the native program. Default FALSE.
 #'
@@ -45,8 +52,9 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
                                 expected_version = "2.5.5", variant_ids = NULL,
                                 n_iter = 3000L, burn_in = 1000L, seed = 22L,
                                 threads = 1L, dry_run = FALSE, save_mcmc = FALSE,
-                                thin = 10L) {
+                                thin = 10L, mcmc_scope = c("all", "core")) {
   scale <- match.arg(scale, c("genome_wide", "chromosome", "subset"))
+  mcmc_scope <- match.arg(mcmc_scope)
   .sbayesrc_native_integer(n_iter, "n_iter", 1L)
   .sbayesrc_native_integer(burn_in, "burn_in", 0L)
   .sbayesrc_native_integer(seed, "seed", 1L)
@@ -55,6 +63,9 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
   if (!is.logical(save_mcmc) || length(save_mcmc) != 1L || is.na(save_mcmc)) {
     stop("save_mcmc must be TRUE or FALSE.", call. = FALSE)
   }
+  if (mcmc_scope == "core" && !save_mcmc) {
+    stop("mcmc_scope = core requires save_mcmc = TRUE.", call. = FALSE)
+  }
   if (burn_in >= n_iter) stop("burn_in must leave retained MCMC iterations.", call. = FALSE)
   if (!is.logical(dry_run) || length(dry_run) != 1L || is.na(dry_run)) {
     stop("dry_run must be TRUE or FALSE.", call. = FALSE)
@@ -62,6 +73,9 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
   if (!is.character(expected_version) || length(expected_version) != 1L ||
       is.na(expected_version) || !nzchar(expected_version)) {
     stop("expected_version must identify a pinned GCTB version.", call. = FALSE)
+  }
+  if (mcmc_scope == "core" && expected_version != "2.5.5") {
+    stop("Core text retention has been audited only for GCTB 2.5.5.", call. = FALSE)
   }
   required_provenance <- c("gwas_source", "ld_source", "annotation_source",
                            "genome_build", "ancestry", "panel_id", "preprocessing")
@@ -90,19 +104,25 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
   args <- c("--ldm-eigen", prepared$ld_dir, "--gwas-summary", prepared$gwas_file,
             "--sbayes", "RC", "--annot", prepared$annotation_file,
             "--chain-length", as.character(n_iter), "--burn-in", as.character(burn_in),
-            "--seed", as.character(seed), "--thread", as.character(threads), "--out", prefix)
-  if (save_mcmc) args <- c(args, "--write-mcmc-txt", "--thin", as.character(thin))
+            "--seed", as.character(seed), "--thread", as.character(threads),
+            "--thin", as.character(thin), "--out", prefix)
+  if (save_mcmc) args <- c(args, "--write-mcmc-txt")
   manifest <- list(
     implementation = "official_gctb_sbayesrc", upstream_mode = "sbayes_RC",
     expected_version = expected_version,
     upstream_source = "https://github.com/jianzeng/GCTB/tree/cc7fa7d765c83a89c6375946cf77fe50ba1a317e",
+    upstream_source_role = "reference source audit; release compiled commit not established",
     scale = scale, effect_scale = "original_per_GWAS_A1_allele",
     modeled_variant_count = nrow(reference),
     requested_variant_count = length(variant_ids), chromosomes = prepared$chromosomes,
     ld_block_count = prepared$ld_block_count, provenance = provenance,
     input_checksums = .sbayesrc_native_snapshot(prepared$files), checksum_algorithm = "md5",
     params = list(n_iter = n_iter, burn_in = burn_in, seed = seed, threads = threads,
-                  save_mcmc = save_mcmc, thin = thin),
+                  save_mcmc = save_mcmc, thin = thin, mcmc_scope = mcmc_scope),
+    text_retention = list(scope = mcmc_scope,
+      discarded_arrays = if (mcmc_scope == "core") .sbayesrc_native_text_sinks() else character(),
+      sink_target = if (mcmc_scope == "core") "/dev/null" else NULL,
+      formatting_cpu_avoided = FALSE),
     native_executed = FALSE, args = args
   )
   if (dry_run) {
@@ -135,6 +155,9 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
   lock_dir <- file.path(output_dir, ".native_run_lock")
   if (!dir.create(lock_dir, showWarnings = FALSE)) stop("Another native run owns output_dir.", call. = FALSE)
   on.exit(unlink(lock_dir, recursive = TRUE), add = TRUE)
+  if (mcmc_scope == "core") {
+    manifest$text_retention$sinks <- .sbayesrc_native_prepare_text_sinks(prefix)
+  }
   saveRDS(manifest, file.path(output_dir, "native_input_manifest.rds"))
   log_path <- file.path(output_dir, "native_process.log")
   started <- Sys.time()
@@ -143,6 +166,10 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
   elapsed <- as.numeric(difftime(Sys.time(), started, units = "secs"))
   if (!identical(as.integer(status), 0L)) {
     stop("Native GCTB failed; inspect ", log_path, ". No result was imported.", call. = FALSE)
+  }
+  if (mcmc_scope == "core" &&
+      !all(Sys.readlink(manifest$text_retention$sinks$path) == "/dev/null")) {
+    stop("Native text retention sinks changed during execution; results are rejected.", call. = FALSE)
   }
   if (!identical(manifest$input_checksums, .sbayesrc_native_snapshot(prepared$files))) {
     stop("A frozen input changed during execution; results are rejected.", call. = FALSE)
@@ -173,6 +200,29 @@ run_sbayesrc_native <- function(gwas_file, ld_dir, annotation_file, output_dir,
       native_parameter_file = if (file.exists(paste0(prefix, ".parRes"))) paste0(prefix, ".parRes") else NULL
     )
   )
+}
+
+# These filenames are the seven full-width arrays in the audited five-mixture
+# RC implementation. CoreParameters and small annotation/block traces remain.
+.sbayesrc_native_text_sinks <- function() {
+  paste0(c("PIP", "PEP", paste0("DeltaPi", 1:5)), ".mcmcsamples.txt")
+}
+
+.sbayesrc_native_prepare_text_sinks <- function(prefix) {
+  if (!identical(unname(Sys.info()["sysname"]), "Linux") ||
+      !file.exists("/dev/null") || dir.exists("/dev/null")) {
+    stop("Core text retention requires Linux /dev/null.", call. = FALSE)
+  }
+  directory <- paste0(prefix, ".mcmcsamples")
+  if (!dir.create(directory, showWarnings = FALSE)) {
+    stop("Native text trace directory must be new when creating retention sinks.", call. = FALSE)
+  }
+  paths <- file.path(directory, .sbayesrc_native_text_sinks())
+  if (!all(file.symlink("/dev/null", paths)) ||
+      !all(Sys.readlink(paths) == "/dev/null")) {
+    stop("Could not create the exact audited native text retention sinks.", call. = FALSE)
+  }
+  data.frame(path = paths, target = "/dev/null", stringsAsFactors = FALSE)
 }
 
 .sbayesrc_native_integer <- function(x, name, lower) {
