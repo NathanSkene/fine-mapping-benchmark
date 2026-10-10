@@ -297,6 +297,7 @@ test_that("observed-data and oracle wrappers run on an annotated synthetic scena
 })
 
 test_that("SBayesRC surrogate pilots freeze the neutral prior before pooling labels", {
+  skip_if_not_installed("nnet")
   g <- simulation_validity_genotypes(p = 6L)
   for (i in seq_along(g)) g[[i]]$annotations_matrix <- matrix(rep(c(0, 1), 3), 6, 1)
   observed <- lapply(g, function(r) list(z = rep(1, r$p)))
@@ -330,4 +331,58 @@ test_that("orthogonal surrogate Gibbs PIPs agree with exact mixture Bayes factor
   fit <- run_sbayesrc(z, diag(2), n, sigma2_scale = sigma2,
                        n_iter = 12000L, burn_in = 1000L, seed = 418)
   expect_equal(fit$pip, exact_pip, tolerance = .015)
+})
+
+test_that("fixed-mixture SBayesRC runs when nnet is unavailable and learning fails explicitly", {
+  sandbox <- new.env(parent = environment(run_sbayesrc))
+  sandbox$requireNamespace <- function(package, ...) {
+    if (identical(package, "nnet")) FALSE else base::requireNamespace(package, ...)
+  }
+  full_setup <- setup_sbayesrc
+  environment(full_setup) <- sandbox
+  sandbox$setup_sbayesrc <- full_setup
+  runner <- run_sbayesrc
+  environment(runner) <- sandbox
+  expect_error(full_setup(), "nnet")
+
+  neutral <- runner(c(1, 3), diag(2), 80, n_iter = 100, burn_in = 40, seed = 6)
+  expect_true(all(is.finite(neutral$pip)))
+  expect_equal(neutral$additional$prior_source, "no_annotations")
+  annotation <- matrix(c(0, 1), 2, 1)
+  fixed <- list(alpha = rep(log((.03 / 4) / .97), 4), gamma = matrix(0, 1, 4))
+  annotated <- runner(c(1, 3), diag(2), 80, annotations = annotation,
+                       pooled_gamma = fixed, n_iter = 100, burn_in = 40, seed = 6)
+  expect_equal(annotated$pip, neutral$pip)
+  expect_equal(annotated$additional$prior_source, "pooled_scenario_gamma")
+  expect_error(runner(c(1, 3), diag(2), 80, annotations = annotation,
+                       n_iter = 100, burn_in = 40), "nnet")
+
+  setup <- run_sbayesrc_scenario_setup
+  environment(setup) <- sandbox
+  g <- simulation_validity_genotypes(p = 2L)
+  observed <- lapply(g, function(r) list(z = c(1, 3)))
+  expect_equal(setup(g, observed, list()), list())
+  sandbox$run_sbayesrc <- runner
+  sandbox$run_sbayesrc_scenario_setup <- setup
+  region_runner <- run_sbayesrc_region
+  environment(region_runner) <- sandbox
+  sandbox$run_sbayesrc_region <- region_runner
+  dispatch <- run_methods
+  environment(dispatch) <- sandbox
+  sim <- list(genotypes = g, params = list(model = "sparse", n = 80L),
+              scenarios = list(list(scenario_id = 1L, S = 1L, phi = .2,
+                                    iter = 1L, regions = observed)))
+  controls <- list(n_iter = 30, burn_in = 10, seed = 6)
+  neutral_dispatch <- dispatch(sim, "sbayesrc", list(sbayesrc = controls), verbose = FALSE)
+  expect_equal(neutral_dispatch$sbayesrc$n_failed, 0L)
+  for (i in seq_along(g)) g[[i]]$annotations_matrix <- annotation
+  expect_equal(setup(g, observed, list(pooled_gamma = fixed)), list(pooled_gamma = fixed))
+  expect_error(setup(g, observed, list()), "nnet")
+  sim$genotypes <- g
+  supplied_dispatch <- dispatch(sim, "sbayesrc", list(sbayesrc = c(controls, list(pooled_gamma = fixed))),
+                                  verbose = FALSE)
+  expect_equal(supplied_dispatch$sbayesrc$n_failed, 0L)
+  learned_dispatch <- dispatch(sim, "sbayesrc", list(sbayesrc = controls), verbose = FALSE)
+  expect_equal(learned_dispatch$sbayesrc$n_failed, 2L)
+  expect_match(learned_dispatch$sbayesrc$results[[1]]$error, "Scenario setup failed:.*nnet")
 })

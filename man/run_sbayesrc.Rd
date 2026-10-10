@@ -73,4 +73,6 @@ region alone.
 \details{
 When \code{annotations} is NULL, the prior collapses to region-common
 mixture proportions (fixed at their initial values), and the method runs.
+This fixed-prior path and supplied \code{pooled_gamma} need only base R;
+learning local or scenario-pooled annotation coefficients requires nnet.
 }

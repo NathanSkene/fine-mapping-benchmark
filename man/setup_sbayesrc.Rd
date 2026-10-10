@@ -2,7 +2,7 @@
 % Please edit documentation in R/wrapper_sbayesrc.R
 \name{setup_sbayesrc}
 \alias{setup_sbayesrc}
-\title{Check that dependencies for sbayesrc are available}
+\title{Check full annotation-learning support for the SBayesRC surrogate}
 \usage{
 setup_sbayesrc()
 }
@@ -10,5 +10,7 @@ setup_sbayesrc()
 Invisible TRUE.
 }
 \description{
-Check that dependencies for sbayesrc are available
+Checks \code{nnet}, required for local or pooled annotation regression.
+Fixed-mixture sampling without annotations, or with supplied
+\code{pooled_gamma}, uses base R and does not call this full-support check.
 }

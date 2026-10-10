@@ -51,7 +51,11 @@
 # setup_sbayesrc()
 # =============================================================================
 
-#' Check that dependencies for sbayesrc are available
+#' Check full annotation-learning support for the SBayesRC surrogate
+#'
+#' Checks \code{nnet}, required for local or pooled annotation regression.
+#' Fixed-mixture sampling without annotations, or with supplied
+#' \code{pooled_gamma}, uses base R and does not call this full-support check.
 #'
 #' @return Invisible TRUE.
 #' @export
@@ -82,6 +86,8 @@ setup_sbayesrc <- function() {
 #'
 #' When \code{annotations} is NULL, the prior collapses to region-common
 #' mixture proportions (fixed at their initial values), and the method runs.
+#' This fixed-prior path and supplied \code{pooled_gamma} need only base R;
+#' learning local or scenario-pooled annotation coefficients requires nnet.
 #'
 #' @param z Numeric vector. Marginal z-scores (length p).
 #' @param LD Matrix. LD correlation matrix (p x p).
@@ -120,7 +126,7 @@ run_sbayesrc <- function(z, LD, n,
                          statistic_type = c("marginal_ols_t", "normal_score"),
                          residual_variance = 1,
                          ...) {
-  setup_sbayesrc()
+  if (!is.null(annotations) && is.null(pooled_gamma)) setup_sbayesrc()
   t0 <- Sys.time()
   if (!is.null(seed)) set.seed(seed)
 
@@ -368,6 +374,11 @@ run_sbayesrc_scenario_setup <- function(genotypes, regions, user_args) {
   }
   ncols <- vapply(A_list, ncol, integer(1))
   if (length(unique(ncols)) != 1L) return(list())
+  # Learning the shared coefficients requires nnet. Do not let a missing
+  # optional dependency become a silently degenerate pooled prior through
+  # the numerical-fit fallback in .sbayesrc_fit_gamma(). Supplied coefficients
+  # return above, and unannotated scenarios return without this requirement.
+  setup_sbayesrc()
 
   # A pilot must not fit annotations repeatedly to its own sampled labels:
   # that empirical-Bayes feedback can inflate inclusion and contaminate the

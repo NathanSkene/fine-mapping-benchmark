@@ -13,13 +13,34 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       RENV_CONFIG_AUTOLOADER_ENABLED: false
+      # fs >= 2 defaults to system libuv; use its portable bundled build when
+      # Ubuntu runners lack libuv development headers.
+      USE_BUNDLED_LIBUV: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: r-lib/actions/setup-r@v2
         with:
           r-version: 'release'
       - name: Install evaluator test dependency
-        run: Rscript --vanilla -e 'install.packages("testthat", repos="https://cloud.r-project.org")'
+        run: |
+          Rscript --vanilla - <<'RSCRIPT'
+          options(timeout = max(300, getOption("timeout")))
+          # setup-r supplies Posit's Linux binary repository through RSPM.
+          # --vanilla skips R profiles, so select that repository explicitly.
+          repo <- Sys.getenv("RSPM", unset = "")
+          if (!nzchar(repo)) repo <- "https://cloud.r-project.org"
+          for (attempt in seq_len(3L)) {
+            if (requireNamespace("testthat", quietly = TRUE)) break
+            message("Installing testthat: attempt ", attempt, "/3 from ", repo)
+            tryCatch(install.packages("testthat", repos = repo),
+                     error = function(e) message(conditionMessage(e)))
+            if (requireNamespace("testthat", quietly = TRUE)) break
+            if (attempt < 3L) Sys.sleep(5L * attempt)
+          }
+          if (!requireNamespace("testthat", quietly = TRUE))
+            stop("testthat installation failed after three attempts")
+          message("Verified testthat ", packageVersion("testthat"))
+          RSCRIPT
       - name: Test scoring, generative invariants and blinded-input contracts
         run: Rscript --vanilla scripts/challenge/test_core.R
       - uses: actions/setup-python@v5
