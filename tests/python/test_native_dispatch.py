@@ -4,6 +4,7 @@ import csv
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -111,6 +112,105 @@ class NativeDispatchTests(unittest.TestCase):
         self.assertEqual(state["fingerprint"]["observation_helpers_sha256"], HELPERS.sha256(helper))
         self.assertEqual(worker.read_text(), "# frozen scientific worker\n")
 
+    def test_shared_directory_claim_precedes_controller_body_and_releases(self):
+        control = self.plan / "dispatch"
+        owner_path = control / "controller.owner" / "owner.json"
+        captured = []
+
+        def inspect_claim(*args):
+            owner = json.loads(owner_path.read_text())
+            captured.append(owner)
+            self.assertEqual(owner["schema"], 1)
+            self.assertEqual(owner["pid"], os.getpid())
+            self.assertTrue(owner["hostname"])
+            self.assertTrue(owner["nonce"])
+            self.assertGreater(owner["started_ns"], 0)
+            self.assertFalse((control / "state.json").exists())
+            with self.assertRaises(SystemExit):
+                NATIVE.main()
+            self.assertEqual(json.loads(owner_path.read_text()), owner)
+
+        with patch.object(sys, "argv", self.argv), patch.object(NATIVE, "run_controller", side_effect=inspect_claim) as body:
+            NATIVE.main()
+            self.assertEqual(body.call_count, 1)
+        self.assertEqual(len(captured), 1)
+        self.assertFalse(owner_path.parent.exists())
+
+    def test_existing_or_incomplete_controller_claim_is_never_cleared(self):
+        control = self.plan / "dispatch"
+        control.mkdir()
+        claim = control / "controller.owner"
+        for metadata in (None, dict(schema=1, hostname="other-node", pid=987654,
+                                    nonce="foreign-owner", started_ns=1)):
+            with self.subTest(metadata=metadata):
+                claim.mkdir()
+                owner_path = claim / "owner.json"
+                if metadata is not None:
+                    owner_path.write_text(json.dumps(metadata))
+                before = {path.name: path.read_bytes() for path in claim.iterdir()}
+                with patch.object(sys, "argv", self.argv), patch.object(NATIVE, "run_controller") as body, \
+                     patch.object(NATIVE.subprocess, "run") as submit:
+                    with self.assertRaises(SystemExit):
+                        NATIVE.main()
+                    body.assert_not_called(); submit.assert_not_called()
+                self.assertEqual({path.name: path.read_bytes() for path in claim.iterdir()}, before)
+                self.assertFalse((control / "state.json").exists())
+                if owner_path.exists(): owner_path.unlink()
+                claim.rmdir()
+
+    def test_exceptional_controller_exit_releases_only_its_own_claim(self):
+        claim = self.plan / "dispatch/controller.owner"
+        with patch.object(sys, "argv", self.argv), \
+             patch.object(NATIVE, "run_controller", side_effect=RuntimeError("test controller failure")):
+            with self.assertRaisesRegex(RuntimeError, "test controller failure"):
+                NATIVE.main()
+        self.assertFalse(claim.exists())
+
+    def test_mutated_controller_claim_is_preserved_on_exit(self):
+        owner_path = self.plan / "dispatch/controller.owner/owner.json"
+
+        def replace_owner(*args):
+            owner = json.loads(owner_path.read_text())
+            owner["nonce"] = "replacement-owner"
+            owner_path.write_text(json.dumps(owner))
+
+        with patch.object(sys, "argv", self.argv), \
+             patch.object(NATIVE, "run_controller", side_effect=replace_owner):
+            with self.assertRaisesRegex(RuntimeError, "ownership claim changed; preserved"):
+                NATIVE.main()
+        self.assertEqual(json.loads(owner_path.read_text())["nonce"], "replacement-owner")
+        with patch.object(sys, "argv", self.argv), patch.object(NATIVE, "run_controller") as body:
+            with self.assertRaises(SystemExit):
+                NATIVE.main()
+            body.assert_not_called()
+
+    def test_owner_metadata_sync_failure_retains_claim_before_controller_body(self):
+        claim = self.plan / "dispatch/controller.owner"
+        with patch.object(sys, "argv", self.argv), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS.os, "fsync", side_effect=OSError("owner sync failed")), \
+             patch.object(NATIVE, "run_controller") as body:
+            with self.assertRaisesRegex(OSError, "owner sync failed"):
+                NATIVE.main()
+            body.assert_not_called()
+        self.assertTrue(claim.is_dir())
+        self.assertFalse((self.plan / "dispatch/state.json").exists())
+        with patch.object(sys, "argv", self.argv), patch.object(NATIVE, "run_controller") as body:
+            with self.assertRaises(SystemExit):
+                NATIVE.main()
+            body.assert_not_called()
+        self.assertTrue(claim.is_dir())
+
+    def test_worker_helpers_without_directory_locking_are_refused(self):
+        with patch.object(sys, "argv", self.argv), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "exclusive_controller", None, create=True), \
+             patch.object(NATIVE, "run_controller") as body:
+            with self.assertRaisesRegex(SystemExit, "lack shared atomic-directory controller locking"):
+                NATIVE.main()
+            body.assert_not_called()
+        self.assertFalse((self.plan / "dispatch/state.json").exists())
+
     def test_partial_regional_panel_does_not_become_complete(self):
         unit = NATIVE.make_units(self.plan)["regional"]["input_00001"]
         self.receipt(self.plan, "regional", "regional_000001")
@@ -141,6 +241,7 @@ class NativeDispatchTests(unittest.TestCase):
             self.assertEqual(submit.call_count, 1)
         state = json.loads((self.plan / "dispatch/state.json").read_text())
         self.assertEqual(next(iter(state["jobs"].values()))["status"], "submission_unknown")
+        self.assertEqual(state["attempts"], {})
 
     def test_failed_scheduler_observation_retains_assignment_and_lock(self):
         with patch.object(sys, "argv", self.argv), contextlib.redirect_stdout(io.StringIO()), \
@@ -173,6 +274,174 @@ class NativeDispatchTests(unittest.TestCase):
         self.assertFalse(worker_lock.exists())
         state = json.loads((self.plan / "dispatch/state.json").read_text())
         self.assertEqual(state["attempts"]["prepare:draw_001"], 2)
+
+    def test_interrupted_terminal_lock_cleanup_replays_without_duplicate_retry(self):
+        argv = self.argv + ["--max-attempts", "2"]
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "123.pbs\n", "")):
+            NATIVE.main()
+        worker_lock = self.plan / "prepared/draw_001.lock"
+        worker_lock.mkdir(parents=True)
+        observation = dict(state="terminal", exit_status=137)
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job", return_value=observation), \
+             patch.object(NATIVE.shutil, "rmtree", side_effect=OSError("interrupted lock cleanup")), \
+             patch.object(NATIVE.subprocess, "run") as submit:
+            with self.assertRaisesRegex(OSError, "interrupted lock cleanup"):
+                NATIVE.main()
+            submit.assert_not_called()
+        interrupted = json.loads((self.plan / "dispatch/state.json").read_text())
+        self.assertEqual(interrupted["attempts"], {"prepare:draw_001": 1})
+        self.assertEqual(next(iter(interrupted["jobs"].values()))["status"], "live")
+        self.assertTrue(worker_lock.exists())
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job", return_value=observation), \
+             patch.object(NATIVE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "124.pbs\n", "")) as submit:
+            NATIVE.main()
+            self.assertEqual(submit.call_count, 1)
+        resumed = json.loads((self.plan / "dispatch/state.json").read_text())
+        self.assertEqual(resumed["attempts"], {"prepare:draw_001": 2})
+        self.assertEqual({job["job_id"]: job["status"] for job in resumed["jobs"].values()},
+                         {"123.pbs": "terminal", "124.pbs": "live"})
+        self.assertFalse(worker_lock.exists())
+
+    def test_many_exhausted_units_bound_console_examples_and_preserve_full_report(self):
+        self.write_table("draws", [dict(draw_id=f"draw_{i:03d}") for i in range(1, 26)])
+        manifest_path = self.plan / "dispatch-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["draws.csv"] = HELPERS.sha256(self.plan / "draws.csv")
+        manifest_path.write_text(json.dumps(manifest))
+        argv = self.argv + ["--max-attempts", "1", "--max-workers", "25", "--max-prepare", "25"]
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE.subprocess, "run", side_effect=[
+                 subprocess.CompletedProcess([], 0, f"{i}.pbs\n", "") for i in range(501, 526)]) as submit:
+            NATIVE.main()
+            self.assertEqual(submit.call_count, 25)
+        output = io.StringIO()
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(output), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job", return_value=dict(state="terminal", exit_status=1)), \
+             patch.object(NATIVE.subprocess, "run") as submit:
+            with self.assertRaisesRegex(RuntimeError, "retry budget exhausted for 25 unresolved units"):
+                NATIVE.main()
+            submit.assert_not_called()
+        report = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")][-1]
+        self.assertEqual(report["unresolved_count"], 25)
+        self.assertEqual(len(report["unresolved_examples"]), 20)
+        self.assertEqual(report["unresolved_examples"][0], "prepare:draw_001")
+        self.assertEqual(report["unresolved_examples"][-1], "prepare:draw_020")
+        state = json.loads(Path(report["full_report"]).read_text())
+        self.assertEqual(len(state["exhausted_work"]), 25)
+        self.assertEqual(state["exhausted_work"][-1]["id"], "draw_025")
+        self.assertEqual(len(state["jobs"]), 25)
+        self.assertTrue(all(job["status"] == "terminal" for job in state["jobs"].values()))
+
+    def test_preworker_failures_exhaust_confirmed_submissions_and_stop_once(self):
+        argv = self.argv + ["--max-attempts", "2"]
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "101.pbs\n", "")):
+            NATIVE.main()
+        # A bootstrap error can terminate PBS before any worker or receipt starts.
+        observation = dict(state="terminal", exit_status=1, resources_used={"walltime": "00:00:01"})
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job", return_value=observation), \
+             patch.object(NATIVE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "102.pbs\n", "")) as submit:
+            NATIVE.main()
+            self.assertEqual(submit.call_count, 1)
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job", return_value=observation), \
+             patch.object(NATIVE.subprocess, "run") as submit:
+            with self.assertRaisesRegex(RuntimeError, "retry budget exhausted.*prepare:draw_001"):
+                NATIVE.main()
+            submit.assert_not_called()
+        state = json.loads((self.plan / "dispatch/state.json").read_text())
+        self.assertEqual(state["attempts"], {"prepare:draw_001": 2})
+        self.assertEqual(len(state["jobs"]), 2)
+        self.assertTrue(all(job["status"] == "terminal" for job in state["jobs"].values()))
+        self.assertTrue(all(job["last_observation"] == observation for job in state["jobs"].values()))
+        self.assertEqual(state["campaign_state"], "retry_budget_exhausted")
+        self.assertEqual(state["exhausted_work"], [dict(kind="prepare", id="draw_001",
+            confirmed_submissions=2, max_attempts=2, missing_receipts=["draw_001"])])
+        prior_jobs = state["jobs"]
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job") as observe, \
+             patch.object(NATIVE.subprocess, "run") as submit:
+            with self.assertRaisesRegex(RuntimeError, "retry budget exhausted"):
+                NATIVE.main()
+            observe.assert_not_called(); submit.assert_not_called()
+        self.assertEqual(json.loads((self.plan / "dispatch/state.json").read_text())["jobs"], prior_jobs)
+
+    def test_exhausted_chain_stops_even_while_another_assignment_is_live(self):
+        self.receipt(self.plan, "prepared", "draw_001")
+        argv = [x for x in self.argv if x != "--once"] + ["--once", "--max-attempts", "1"]
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE.subprocess, "run", side_effect=[
+                 subprocess.CompletedProcess([], 0, f"{i}.pbs\n", "") for i in (201, 202)]):
+            NATIVE.main()
+        locks = [self.plan / f"chains/chain_{i:06d}.lock" for i in (1, 2)]
+        for lock in locks: lock.mkdir(parents=True)
+        output = io.StringIO()
+        with patch.object(sys, "argv", [x for x in argv if x != "--once"]), contextlib.redirect_stdout(output), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job", side_effect=lambda job: dict(
+                 state="terminal", exit_status=137) if job == "201.pbs" else dict(state="live", job_state="R")), \
+             patch.object(NATIVE.subprocess, "run") as submit, patch.object(NATIVE.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "retry budget exhausted.*chains:chain_000001"):
+                NATIVE.main()
+            submit.assert_not_called(); sleep.assert_not_called()
+        state = json.loads((self.plan / "dispatch/state.json").read_text())
+        self.assertEqual(len(state["jobs"]), 2)
+        self.assertEqual({job["job_id"]: job["status"] for job in state["jobs"].values()},
+                         {"201.pbs": "terminal", "202.pbs": "live"})
+        self.assertFalse(locks[0].exists()); self.assertTrue(locks[1].exists())
+        report = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")][-1]
+        self.assertEqual(report["active"]["chains"], 1)
+        self.assertEqual(report["unresolved_examples"], ["chains:chain_000001"])
+
+    def test_receipt_completion_overrides_a_failed_terminal_handle(self):
+        argv = self.argv + ["--max-attempts", "1"]
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "301.pbs\n", "")):
+            NATIVE.main()
+        self.receipt(self.plan, "prepared", "draw_001")
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job", return_value=dict(state="terminal", exit_status=1)), \
+             patch.object(NATIVE.subprocess, "run", side_effect=[
+                 subprocess.CompletedProcess([], 0, f"{i}.pbs\n", "") for i in (302, 303)]) as submit:
+            NATIVE.main()
+            self.assertEqual(submit.call_count, 2)
+        state = json.loads((self.plan / "dispatch/state.json").read_text())
+        self.assertEqual(state["complete"]["prepare"], ["draw_001"])
+        self.assertEqual(state["exhausted_work"], [])
+
+    def test_partial_regional_exhaustion_lists_only_missing_receipts(self):
+        self.receipt(self.plan, "prepared", "draw_001")
+        for i in (1, 2): self.receipt(self.plan, "chains", f"chain_{i:06d}")
+        for method in ("susie", "abf"): self.receipt(self.preflight, "preflight", method)
+        argv = self.argv + ["--max-attempts", "1"]
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "401.pbs\n", "")):
+            NATIVE.main()
+        self.receipt(self.plan, "regional", "regional_000001")
+        directory = self.plan / "regional/regional_000001"
+        before = {p.name: p.read_bytes() for p in directory.iterdir()}
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(NATIVE, "load_helpers", return_value=HELPERS), \
+             patch.object(HELPERS, "observe_job", return_value=dict(state="terminal", exit_status=137)), \
+             patch.object(NATIVE.subprocess, "run") as submit:
+            with self.assertRaisesRegex(RuntimeError, "retry budget exhausted.*regional:input_00001"):
+                NATIVE.main()
+            submit.assert_not_called()
+        state = json.loads((self.plan / "dispatch/state.json").read_text())
+        self.assertEqual(state["exhausted_work"][0]["missing_receipts"], ["regional_000002"])
+        self.assertEqual(state["complete"]["regional"], [])
+        self.assertEqual({p.name: p.read_bytes() for p in directory.iterdir()}, before)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "status": "passed",
+  "profile": "integration",
+  "scope": "Small synthetic-genotype/Gaussian real-fit CLI verification; not historical recovery, full-campaign results or full-size resource measurements",
+  "recorded_completion_utc": "2026-10-10 22:07:29 UTC",
+  "fresh_cli": {
+    "command": "FMB_CAMPAIGN_TEST_KEEP_DIR=results/campaign-bundle-cli-integration-5 python3 -m unittest discover -s tests/python -p test_campaign_cli.py",
+    "tests": 1,
+    "failures": 0,
+    "wall_seconds": 322.947,
+    "checks": [
+      "Actual ABF/marginal-z preflights and fits; Gaussian exact/forced-one references",
+      "Original/corrected/refit/resimulation records and exact original-record reuse",
+      "Bundle/receipt compaction, immutable resume, no persistent fit cache",
+      "Exact binary metric equality and typed decimal CSV agreement",
+      "Memory-versus-streamed census, scorer attribution, regime summaries and paired intervals",
+      "Corrupted bundle rejection, explicit stratum-memory-bound failure, missing-task incomplete state and empty analysis rebuild"
+    ]
+  },
+  "source": {
+    "plan_sha256": "b5fb5a34993a53436a655d128e4f61ceeca3e5f6431e323d0c9a51da2907d0de",
+    "plan_rds_sha256": "90d1ed991da652e2645df635a627939e1280843caecd6019974628baf6e2a0b6",
+    "corrected_source_snapshot_sha256": "a78ec00705fad566dba6abcbeb6e01fbf61bd4c35ecd280c889e5a2bd51ad058",
+    "original_source_snapshot_sha256": "23251aa0ba28180f439246ae907597c207bb0097b90f7e48152dc1a25d3961de",
+    "worker_sources": {
+      "R/campaign.R": "f0b64b7dc38a745185bf5a300ee5b757bb49c39f6898a7982ccf645d1a4abf69",
+      "R/challenge_evaluation.R": "66fefaf4bb04b64207bd93d4b0f2b1a297c141512c1155e9ed3dd61c9c47ee79",
+      "R/challenge_io.R": "650d9d47d7f190cc1b2f4741b46bb12d393fcd55d62fa3ab0721bfbaffa8f6a9",
+      "R/challenge_simulation.R": "6308cf64cf912b7cd7807e2a086316f55737c82c24db2129a0679e1703ded066",
+      "R/evaluate.R": "a6678c2a048bf8fd997f51f05ea16a2d095332e8b1ffc1a3e0734b208b3f8f0a",
+      "R/evaluate_extras.R": "509b333429bb995f4434632a0bae87bfcd5b1de83b0a6b170ff4e151b39ce0f2",
+      "R/fmbenchmark-package.R": "258f8b069047f1135ac63f3bd2fe203776a3232e7553af57cd045ecf980ae7da",
+      "R/gaussian_score_adapter.R": "3da9ef444148578c57ea662bcaaf54cb6d0e5cc11267c06030b6389a0880f980",
+      "R/plot_results.R": "fae142c629e0c2f0a999a45e8c751ac456c4f4702ae2804ae09711778f12b8aa",
+      "R/pooled_input_identity.R": "b87ae657e76133feb05b15b62271f5d8ec68c16402719acc0d15d889e2238690",
+      "R/run_methods.R": "91359aead39e7c9bae38ad02ad2204fcb61cddf44c1404ef9bf4debcc61f52c6",
+      "R/run_simulation.R": "d7e3b287692b21ea74d6440f0742820157863e007645c8ed59b7dce8400b284d",
+      "R/simulate_genotypes.R": "7e86316ab46a422b9de641eab1ec6a548ff0d47798191b969f4e37a9b97804f0",
+      "R/simulate_gwfm_data.R": "57da515c1ef329dd13b0cef7fe978a5d50d8b5c60518433c30d9c2872131c19c",
+      "R/simulate_phenotypes.R": "5ca63d3780fe87a6d5c483468073b61bc5906dc27059bdc973ea0ddf38a5ca2a",
+      "R/utils.R": "8335f393b819593d7d469d5481fb170a8687b4e48707c526610e3f98f94978a3",
+      "R/wrapper_abf.R": "a8de723a316419a46c54591707d7242d0aae65dfce488b9ba27ac9c5d2efba24",
+      "R/wrapper_beatrice.R": "7c8ce9a1e1cbc30e000e2e0b1e105ae1e28e0aa788b0adde2007db891277a0ca",
+      "R/wrapper_carma.R": "2209a75d5e5c31ce6090683d930404e1c5b20eb4dee45151a0eb09d094cf6fb4",
+      "R/wrapper_caviar.R": "206b544464bafadd6de15d531029aab558f3341fbb59f7ac63536a90f3602c18",
+      "R/wrapper_fb_joint.R": "c73435d9800df3f11c53a946b2830579ba10b95ac8a37ccae8a2d4a5932f7af2",
+      "R/wrapper_finemap.R": "adea3296225d66a21018af3ffcf8b3391096fd4ddd0c1752e7a70dfb9c54962b",
+      "R/wrapper_finemap_inf.R": "02ad0dbd5821d4f26f47eb46ee8f03b8ba21853805e519b786bae6685dd92876",
+      "R/wrapper_finimom.R": "c38c651b707d5606a3aabd3f1fccd5d2b4e1fb498af80b2c7db240833ffe2ad9",
+      "R/wrapper_functional_beatrice.R": "e2e41e50d1dbc168c4dc54ced9f6d12456d05cb57561f3a11bcf1dcf45d41423",
+      "R/wrapper_funmap.R": "4966008db6834cb4e2a6d892bcee590b90ef289ae79d50c648c849809cdf3bea",
+      "R/wrapper_marginal_z.R": "128c9450404c44cc1410adc598e992c72ddb92e5949e734cbd3aa1add7b379f8",
+      "R/wrapper_paintor.R": "3e37289d0ca8e1ab78a5b9a804b21275ee8d34fcab29f7387f7a78aaacd01997",
+      "R/wrapper_polyfun_est.R": "cfddd8d7b10f64d744ae6ee12357de6f7244dfb6fc47be6439c041bdbb5ffb44",
+      "R/wrapper_polyfun_ldsc.R": "a347ae542cafebeb88db47431802100ccc86770c4dcb03ab70eb423c193368bd",
+      "R/wrapper_polyfun_oracle.R": "4777074cb761280e2754f9592f4b0b5767794097310427e57d4677323da18497",
+      "R/wrapper_sbayesrc.R": "243aeffe88406228bc2d5297bd392703cf89aabbf52d0ee3c50bb2b17d34342c",
+      "R/wrapper_sbayesrc_native.R": "202f795decec1ea2b876a6c75aeecee848faf2bb8eb1aad23ead5b119c8f456a",
+      "R/wrapper_sparsepro.R": "de444e86cdef5b65ebaaf3b9cea99aae681df0ef94a122947309da47003b4537",
+      "R/wrapper_susie.R": "8e90c676958c3dadecea8edceaadd90a966fee0146f2f6d74ac0fa0110cf3bb3",
+      "R/wrapper_susie_inf.R": "5b989ae00597908d01b95bc4ff81159378d6f5ab1d1b1ac587bb6ffcc7dd7b22",
+      "scripts/campaign/build_priority_schedule.R": "05e4d8d130b9f4b096e35acf1816738c175e8cc663a3859dcfb9b3928a254096",
+      "scripts/campaign/collect.R": "201dc04946b7e5c3acf06b5ceb11bfa2eb2e8ad9481fac5d1f8a1ae65870934a",
+      "scripts/campaign/collect_streamed.R": "5fe0a602b7cb86c148fd6f7eb486d66c72a8bf59394029fad71f3db328c4fc55",
+      "scripts/campaign/common.R": "97e4369ff1270480a6a553ad7d8c72f1bcff66c14e8223cd51b07f488d082099",
+      "scripts/campaign/cost_report.R": "4bea9b9e56cdffc52cb39c8fca49d0dd59dd09591cf19371279108b34d515df3",
+      "scripts/campaign/create_plan.R": "c7d22017769ec709dd7ae2a97c5e3bbc56de69822dca7e8e08a4d0e4f9005489",
+      "scripts/campaign/dispatch.py": "b19d5925078154ba830f59379b02a4f0d2f216c7dc9484ab003ed3753e6f5ddf",
+      "scripts/campaign/generate.R": "32b7bce3505f9c6e4e6e5f93af8bcacc6f3f066740d6e63b4ff76e305f0b81ef",
+      "scripts/campaign/preflight.R": "65ebea77fb80cfc5bf55e8a144d5f78fee92b62fea0cc1a292e0d06906907e78",
+      "scripts/campaign/run_task.R": "cb1d47e6d47af0465f7965eb1c0acf03b77b43777c68d56a072d6e92366a3078"
+    }
+  },
+  "current_worker_differences": {
+    "scripts/campaign/cost_report.R": "1915a3c285ed520c660b0993ab2acaaf9aca5bdddca4551da4a216f245faff1a",
+    "scripts/campaign/dispatch.py": "cc2da80c47856fba3aeff5b0817ec63ad13990c168d34e052a35f8caec957510"
+  },
+  "current_worker_difference_scope": "Listed files differ from the immutable fresh fixture. Collector, run_task and all R method bytes are unchanged. This CLI fixture did not exercise scheduler dispatch; the 55 controller regressions, new full Python proof and actual cross-node ownership proof cover the repaired scheduler separately. Focused cost tests cover the changed cost report.",
+  "collection": {
+    "status": "complete",
+    "tasks_planned": 10,
+    "tasks_complete": 10,
+    "dataset_records": 34,
+    "locus_rows": 148,
+    "scoring_attribution_rows": 30,
+    "regime_summary_rows": 94,
+    "paired_comparison_rows": 540,
+    "corrected_refit_reused_locus_rows": 20,
+    "terminal_regular_files": 20,
+    "retained_loose_or_cache_files": 0,
+    "observed_max_stratum_rows": 20,
+    "observed_open_partition_files": 25,
+    "analysis_manifest_sha256": "6e6fc438328f83fa651ee389f131a8640df3ddd81ebd95427453980d3a56e0b3"
+  },
+  "receipt_timing_verification": {
+    "checked_receipts": 10,
+    "checkpoint_byte_hashes_match": true,
+    "new_dataset_counts_match": true,
+    "script_elapsed_equals_data_plus_overhead": true,
+    "exclusions": "R process startup, final timing receipt write, lock cleanup, queue and prior killed attempts; PBS resources_used remains separate"
+  },
+  "focused_stream_tests": {
+    "command": "python3 -m unittest discover -s tests/python -p test_campaign_streamed.py",
+    "tests": 2,
+    "failures": 0,
+    "checks": [
+      "Exact hexadecimal/binary IEEE doubles and Inf/NaN/NA/logical/text preservation",
+      "Truncated-header and missing-marker collision rejection",
+      "Bounded writer eviction/reopen and fixed positive-truth AP eligibility",
+      "Infinite loss retained in means and counts"
+    ]
+  },
+  "focused_cost_tests": {
+    "command": "python3 -m unittest discover -s tests/python -p test_campaign_cost_report.py",
+    "tests": 2,
+    "failures": 0,
+    "wall_seconds": 77.364,
+    "source_sha256": "1915a3c285ed520c660b0993ab2acaaf9aca5bdddca4551da4a216f245faff1a",
+    "test_sha256": "0dc444d92ae467086880ae94df87606ee910e423caaed0d0f524ad4f924a4020",
+    "scope": "Declared fake 10/66-second durations test arithmetic only; no full-size inference timing measured",
+    "checks": [
+      "Loose and bundled retention bytes include headers/receipts/attempts",
+      "Five-scenario packed-worker estimate amortizes 2-second startup once: 50+2=52 seconds",
+      "Challenge 66-second processing plus 3-second overhead gives 69 seconds",
+      "Input manifest and raw byte-hash corruption rejection"
+    ]
+  },
+  "hygiene": {
+    "R_parse": true,
+    "Python_compile": true,
+    "git_diff_check": true
+  }
+}

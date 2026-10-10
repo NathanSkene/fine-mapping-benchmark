@@ -16,6 +16,8 @@ selection$max_settings <- as.integer(selection$max_settings)
 if (is.na(selection$max_settings) || selection$max_settings < 1L) stop("Invalid setting limit")
 file_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)
 repo <- normalizePath(file.path(dirname(sub("^--file=", "", file_arg[1L])), ".."))
+reader_source <- file.path(repo, "paper", "read_selected_csv.R")
+source(reader_source)
 if (nzchar(Sys.getenv("FMB_R_LIB"))) .libPaths(c(Sys.getenv("FMB_R_LIB"), .libPaths()))
 if (dir.exists(file.path(repo, ".local-lib"))) .libPaths(c(file.path(repo, ".local-lib"), .libPaths()))
 for (path in list.files(file.path(repo, "R"), full.names = TRUE)) if (endsWith(path, ".R")) source(path)
@@ -47,25 +49,62 @@ if (!scientific && !selection$allow_incomplete)
 label <- if (scientific) "Full-profile collected evidence" else if (plan$profile != "full")
   paste("DEVELOPMENT ONLY: profile", plan$profile, "collection", status) else
   paste("INCOMPLETE CAMPAIGN: collection", status)
-read_table <- function(name) {
+read_table <- function(name, select = identity, max_rows = 100000L) {
   path <- file.path(analysis, name)
   if (!file.exists(path) || !path %in% manifest$artifacts$path)
     stop("Required table is absent from the sealed analysis: ", name)
-  utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  .paper_read_selected_csv(path, select = select, max_rows = max_rows)
 }
 native <- file.exists(file.path(analysis, "draw-metrics.csv"))
-rows <- read_table(if (native) "draw-metrics.csv" else "regime-summary.csv")
+validate_native_chunk <- function(chunk) {
+  has_eligibility <- "all_native_accuracy_eligible" %in% names(chunk)
+  if (!has_eligibility && scientific)
+    stop("Publication native figures require explicit accuracy eligibility; recollect under the current contract")
+  if (has_eligibility) {
+    ineligible <- chunk$method == "sbayesrc_native" & !(chunk$all_native_accuracy_eligible %in% TRUE)
+    fields <- intersect(c("ap_successful", "brier_successful", "recall_all_completed"), names(chunk))
+    if (any(vapply(chunk[ineligible, fields, drop = FALSE], function(x) any(is.finite(x)), TRUE)))
+      stop("Unqualified native accuracy appeared in ordinary comparison columns")
+  }
+}
+requested_methods <- if (nzchar(selection$methods)) strsplit(selection$methods, ",", fixed = TRUE)[[1L]] else character()
+if (anyDuplicated(requested_methods)) stop("Unknown or repeated method filter")
+seen_methods <- seen_settings <- character()
+rows <- read_table(if (native) "draw-metrics.csv" else "regime-summary.csv", function(chunk) {
+  seen_methods <<- union(seen_methods, chunk$method)
+  if (native) {
+    # Validate all streamed native rows before filters can hide an invalid row.
+    validate_native_chunk(chunk)
+    keys <- c("model", "pi", "h2", "exposure", "event")
+    chunk$setting <- apply(chunk[keys], 1L, function(v) paste(paste(keys, v, sep = "="), collapse = "; "))
+  } else chunk$setting <- paste(chunk$stage, chunk$stratum, sep = "; ")
+  if (length(requested_methods)) chunk <- chunk[chunk$method %in% requested_methods, , drop = FALSE]
+  if (nzchar(selection$setting_regex)) chunk <- chunk[grepl(selection$setting_regex, chunk$setting, perl = TRUE), , drop = FALSE]
+  seen_settings <<- union(seen_settings, chunk$setting)
+  if (length(seen_settings) > selection$max_settings)
+    stop("Export exceeds --max-settings; select prespecified settings using --setting-regex")
+  chunk
+})
+if (any(!requested_methods %in% seen_methods)) stop("Unknown or repeated method filter")
 if (!nrow(rows)) stop("No measured outcomes are available to plot")
 if (native) {
-  keys <- c("model", "pi", "h2", "exposure", "event")
-  rows$setting <- apply(rows[keys], 1L, function(v) paste(paste(keys, v, sep = "="), collapse = "; "))
+  has_native_eligibility <- "all_native_accuracy_eligible" %in% names(rows)
+  if (!has_native_eligibility && scientific)
+    stop("Publication native figures require explicit accuracy eligibility; recollect under the current contract")
+  if (has_native_eligibility) {
+    ineligible <- rows$method == "sbayesrc_native" & !(rows$all_native_accuracy_eligible %in% TRUE)
+    quality_fields <- intersect(c("ap_successful", "brier_successful", "recall_all_completed"), names(rows))
+    if (any(vapply(rows[ineligible, quality_fields, drop = FALSE], function(x) any(is.finite(x)), TRUE)))
+      stop("Unqualified native accuracy appeared in ordinary comparison columns")
+  } else label <- paste(label, "| native accuracy eligibility unavailable")
   rows$aligned <- rows$all_probability_targets_aligned
   rows$success_rate <- rows$n_successful / rows$n_planned
   rows$availability_label <- paste0(rows$n_successful, "/", rows$n_planned)
-  metrics <- c(success_rate = "Successful / planned", ap_successful = "AP: successful positive loci",
-               brier_successful = "Brier: successful fits", recall_all_completed = "Recall: completed attempts")
+  metrics <- c(success_rate = "Imported / planned", ap_successful = "AP: eligible fits",
+               brier_successful = "Brier: eligible fits", recall_all_completed = "Recall: eligible fits")
+  if (!has_native_eligibility) metrics <- c(success_rate = "Imported / planned",
+    ap_successful = "AP: imported fits", brier_successful = "Brier: imported fits", recall_all_completed = "Recall: imported fits")
 } else {
-  rows$setting <- paste(rows$stage, rows$stratum, sep = "; ")
   rows$aligned <- rows$n_probability_target_misaligned_successful == 0L
   rows$availability_label <- paste0(rows$n_successful, "/", rows$n_attempted)
   metrics <- c(success_rate = "Successful / attempted", ap_successful = "AP: successful positive loci",
@@ -73,12 +112,6 @@ if (native) {
 }
 required <- c("method", "setting", names(metrics), "aligned")
 if (!all(required %in% names(rows))) stop("Collector schema lacks plot fields: ", paste(setdiff(required, names(rows)), collapse = ", "))
-if (nzchar(selection$methods)) {
-  methods <- strsplit(selection$methods, ",", fixed = TRUE)[[1L]]
-  if (anyDuplicated(methods) || any(!methods %in% rows$method)) stop("Unknown or repeated method filter")
-  rows <- rows[rows$method %in% methods, ]
-}
-if (nzchar(selection$setting_regex)) rows <- rows[grepl(selection$setting_regex, rows$setting, perl = TRUE), ]
 if (!nrow(rows)) stop("No sealed outcomes match the requested setting/method filters")
 if (length(unique(rows$setting)) > selection$max_settings)
   stop("Export exceeds --max-settings; select prespecified settings using --setting-regex")
@@ -86,16 +119,19 @@ contrast_name <- if (native) "paired-draw-comparisons.csv" else "paired-comparis
 contrast_path <- file.path(analysis, contrast_name)
 contrasts <- NULL
 if (file.exists(contrast_path)) {
-  contrasts <- read_table(contrast_name)
   if (native) {
     key <- function(x) do.call(paste, c(x, sep = "|"))
     available <- unique(key(rows[c("model", "pi", "h2", "event", "method", "exposure")]))
-    a <- contrasts[c("model", "pi", "h2", "event", "method_a", "exposure_a")]
-    b <- contrasts[c("model", "pi", "h2", "event", "method_b", "exposure_b")]
-    contrasts <- contrasts[key(a) %in% available & key(b) %in% available, ]
+    contrasts <- read_table(contrast_name, function(chunk) {
+      a <- chunk[c("model", "pi", "h2", "event", "method_a", "exposure_a")]
+      b <- chunk[c("model", "pi", "h2", "event", "method_b", "exposure_b")]
+      chunk[key(a) %in% available & key(b) %in% available, , drop = FALSE]
+    }, max_rows = 2400L)
   } else {
-    contrasts <- contrasts[paste(contrasts$stage, contrasts$stratum, sep = "; ") %in% rows$setting &
-      contrasts$method_a %in% rows$method & contrasts$method_b %in% rows$method, ]
+    contrasts <- read_table(contrast_name, function(chunk) {
+      chunk[paste(chunk$stage, chunk$stratum, sep = "; ") %in% rows$setting &
+        chunk$method_a %in% rows$method & chunk$method_b %in% rows$method, , drop = FALSE]
+    }, max_rows = 2400L)
   }
   if (nrow(contrasts) > 2400L)
     stop("Export exceeds 2,400 paired contrasts; select prespecified settings/methods")
@@ -117,7 +153,7 @@ tryCatch({
       if (native) y <- y + (d$draw - mean(range(d$draw))) * .09
       values <- d[[metric]]; valid <- is.finite(values)
       plot(NA, xlim = c(0, 1), ylim = c(.3, length(methods) + .7), xlab = "", ylab = "", yaxt = "n",
-           main = metrics[i], bty = "n")
+           main = paste(strwrap(metrics[i], width = 22), collapse = "\n"), cex.main = .95, bty = "n")
       abline(v = seq(0, 1, .25), col = "#eeeeee")
       abline(h = seq_along(methods), col = "#f3f3f3")
       if (i == 1L) axis(2L, at = seq_along(methods), labels = rev(methods), las = 1L, tick = FALSE)
@@ -130,9 +166,9 @@ tryCatch({
     }
     mtext(paste(strwrap(setting, width = 140), collapse = "\n"), outer = TRUE, side = 3L, line = 1.6, cex = .9)
     mtext(label, outer = TRUE, side = 3L, line = .1, cex = .72, col = if (scientific) "#444444" else "#9b382a")
-    note <- if (native) "Points are genotype draws; four-chain success does not establish MCMC convergence. " else "Counts show successful / attempted locus fits. "
-    mtext(paste0(note, "Open Brier points: event-misaligned operational scores. Cross: undefined/no successful score."),
-          outer = TRUE, side = 1L, line = 1L, cex = .68)
+    note <- if (native) "AP uses positive loci; points are genotype draws. Four-chain success does not establish MCMC convergence. " else "Counts show successful / attempted locus fits. "
+    mtext(paste(strwrap(paste0(note, "Open Brier points: event-misaligned operational scores. Cross: undefined/no successful score."),
+                        width = 170), collapse = "\n"), outer = TRUE, side = 1L, line = .5, cex = .68)
   }
 }, finally = grDevices::dev.off())
 
@@ -193,6 +229,7 @@ figure_manifest <- list(schema = 1L, plan_sha256 = manifest$plan_sha256, collect
   profile = plan$profile, scientific_full_profile = scientific, label = label,
   selection = selection, n_settings_plotted = length(unique(rows$setting)),
   plotting_source_sha256 = .challenge_sha256(sub("^--file=", "", file_arg[1L])),
+  plotting_helpers = .campaign_artifact_manifest(reader_source),
   inputs = .campaign_artifact_manifest(inputs), outputs = .campaign_artifact_manifest(outputs),
   interpretation = "Setting-specific endpoint views, alphabetical method order, no overall rank; existing paired intervals only")
 jsonlite::write_json(figure_manifest, file.path(output, "figure-manifest.json"), pretty = TRUE,

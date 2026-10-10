@@ -161,3 +161,129 @@ lose on high-confidence false discoveries. A method unsupported on a declared
 input track has no scientific-quality comparison there; its operational
 availability still remains visible. Neither a universal overall winner nor an
 unweighted count of track wins is justified by an arbitrary stress-suite mix.
+
+## Native comparison audit: trace sampling and source identity
+
+This concerns the new native comparison, rather than Lucas's historical local
+SBayesRC surrogate. The pinned official source audit found that `collectSamples`
+updates its cached sample only when the one-based iteration exceeds burn-in
+and is divisible by thinning, while `outputSamples` writes on every iteration.
+The `CoreParameters` header has parameter names alone. Crediting every raw row
+as a draw would include uninitialised burn-in and repeated cached values,
+invalidating the planned effective-sample-size calculation. See the
+[pinned writer and sampling gate](https://github.com/jianzeng/GCTB/blob/cc7fa7d765c83a89c6375946cf77fe50ba1a317e/scr/mcmc.cpp).
+
+The installed release executable was checked directly in PBS job 4310409.
+Its SHA-256 is
+`649123c2fefacc23aa71c6537c9226b5a69f06f6045863672118009cbe680346`.
+At 150 iterations/50 burn-in/thinning 5 it produced 150 raw rows, the observed
+14-column header, no iteration field, and 20 retained iterations under the
+source-derived rule. Same-seed text/no-text final SNP-summary files were
+byte-identical. The [trace contract](../scripts/native/campaign/trace-contract.json)
+freezes this evidence; raw/retained files and extraction metadata are sealed
+per chain. The check establishes a software contract, not convergence,
+localisation quality or a native-method ranking.
+
+The actual binary log confirms default gamma `0 .001 .01 .1 1`, and all
+retained `Vg1` values are zero. The source computes component genetic variance
+only for nonzero components, supporting a prespecified structural `Vg1 = 0`
+exclusion. Its values are strictly validated and reported as a fixed constant
+with missing R-hat/ESS. No other constant parameter is excluded because of
+observed constancy. Actual same-seed all/core/no-text runs in PBS job 4310472
+matched final SNP, parameter, parameter-set and enrichment bytes; all/core
+retained core draws were identical.
+
+The audited source commit and release executable are recorded independently.
+Their matching version label does not establish compiled-source identity. The
+source's [robust-restart branch](https://github.com/jianzeng/GCTB/blob/cc7fa7d765c83a89c6375946cf77fe50ba1a317e/scr/main.cpp#L255-L276)
+redeclares a sample vector inside the branch while final output uses the outer
+vector; this raises a possible final-summary/trace mismatch after a restart.
+It is not an empirically demonstrated release-binary fault. Actual disruption
+or restart log markers therefore flag coherence as unverified and withhold
+ordinary trace diagnostics while preserving execution and output records.
+
+Seven native full-variant text arrays would print 4.48 billion numbers per
+default full-sized chain. The campaign requests an explicit core-retention
+policy, recording exact `/dev/null` sinks for those arrays and preserving raw
+core, small annotation/block traces and final summaries. It cannot provide
+unrecorded variant-level trajectory diagnostics. Formatting CPU cost remains;
+storage suppression is not represented as a faster inference algorithm.
+
+The actual Linux R wrapper was subsequently checked in PBS job 4310522 on a
+256-variant short chain. Its all/core imports had identical PIPs, posterior
+effect means and effect standard deviations, and all seven sinks targeted
+`/dev/null`. This validates the wrapper's retention contract at that scale.
+
+## Native comparison audit: FINEMAP output precision
+
+Strict output validation must respect the precision a native program actually
+writes. In PBS job 4310528, the repaired FINEMAP 1.4.2 wrapper completed two
+loci with causal-count posterior sums 0.9996 and 1.0011. The parser checks
+whether the three-significant-digit rounding intervals can contain a total
+probability of one, requires complete reported causal-count coverage, and
+preserves the reported probabilities without renormalisation. Treating any
+printed total unequal to one as malformed would have rejected these valid
+native outputs. This is a correction to our validation guard, not evidence
+that Lucas's historical FINEMAP predictions or reported rankings were wrong.
+
+## Learned-method audit: conditional set probabilities
+
+The conditional-selection helpers also initialised their probability arrays
+with integers. Adding fractional posterior weights truncated their eligible
+variant probabilities to zero. An independent table with weights .1 for the
+null, .4 for `{0}`, .2 for `{1}`, and .3 for `{0,1}` has conditional probability
+`.3/.7` for variant 1 given variant 0, rather than zero. The floating-point
+repair can change selected signals and subsequent explored support. It must
+be attributed as an inference correction, separately from the optimisation
+that makes the corrected eager and corrected batched calculations equivalent.
+See [analytical fixtures and source contract](beatrice-batched-reweighting.md).
+
+The BEATRICE set selector used a sum of conditional inclusion probabilities
+as its stopping rule. That sum is an expected number of included variants,
+not generally the probability of including at least one. For explored-model
+weights `{(0,1): .4, (0,): .3, (1,): .2, (2,): .1}`, the candidate set `{0,1}`
+has PIP sum 1.3 but union probability .9. The original sum rule can therefore
+stop below a requested .95 union target.
+
+The repair targets the union event conditional on the selected MAP variants
+being included and on the explored support. It preserves the original sum
+rule as an explicitly labelled diagnostic ablation. This correction changes
+set inference; it is distinct from making identical posterior reweighting
+faster. It does not turn a searched-support conditional probability into an
+unconditional full-model coverage guarantee. Original-source replay retains
+the original behavior for attribution.
+
+A local native-CLI check ran both repaired vanilla and functional methods for
+500 training iterations on eight variants. Each produced two singleton sets
+whose typed conditioning, union masses, null probability and attainment flags
+passed strict R import. This is small-input execution evidence, not coverage
+validation or a comparison of historical rankings. The
+[public proof](validation-artifacts/campaign-hardening-20261010/beatrice-events-proof.json)
+binds the exact implementation files and runtime; raw local outputs remain
+under `results/full-campaign-validation/beatrice-events-native-smoke/`.
+
+## Null-event audit: modeled candidates and generating targets
+
+The new Gaussian challenge records `truth$null` as absence of sparse generating
+targets over the full generating universe. The BEATRICE sidecar reports the
+probability of an empty modeled configuration over observed candidates,
+conditional on the explored support and frozen final prior. These events can
+differ after a causal candidate is removed. Absence of sparse targets also
+differs from absence of every total effect when background coefficients are
+nonzero.
+
+The current R challenge validator assumes a candidate-configuration null:
+both `max(PIP) <= 1 - Pnull` and `1 - Pnull <= sum(PIP)` must hold. Its null
+Brier score compares this model-empty forecast with the generating sparse
+null label. Such a comparison is an operational misspecification stress
+assessment, not evidence that the model-empty probability is calibrated for
+the same generating event. No explicit `null_event` type currently resolves
+that distinction in the R prediction schema.
+
+The RL interface declares the whole generating sparse-target null and omits
+the lower bound, because a missing cause can yield perfect observed PIPs of
+zero and whole-locus null probability zero. This valid forecast would violate
+the R candidate-empty bound. Keeping these scopes explicit avoids rejecting
+a coherent whole-locus forecast or claiming interchangeable null calibration.
+See [R validation/scoring](../R/challenge_evaluation.R) and
+[RL scoring](../rl_envs/finemap_rl/scoring.py).

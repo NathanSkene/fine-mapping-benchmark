@@ -1,6 +1,7 @@
 """Scheduler observation is evidence, never an optimistic restart hint."""
 import importlib.util
 import contextlib
+import csv
 import io
 import json
 from pathlib import Path
@@ -288,8 +289,58 @@ class DispatchTests(unittest.TestCase):
             if observation is None:
                 DISPATCH.main()
             else:
-                with mock.patch.object(DISPATCH,"observe_job",return_value=observation):
+                option = dict(side_effect=observation) if callable(observation) else dict(return_value=observation)
+                with mock.patch.object(DISPATCH,"observe_job",**option):
                     DISPATCH.main()
+
+    def fingerprint(self, root):
+        state = json.loads((root/"dispatch/state.json").read_text())
+        return {key:state[key] for key in ("plan_sha256","bootstrap_sha256",
+            "dispatch_manifest_sha256","priority_manifest_sha256","controller_sha256",
+            "start_python","start_python_sha256")}
+
+    def current_job(self, root):
+        state = json.loads((root/"dispatch/state.json").read_text())
+        self.assertEqual(len(state["jobs"]),1)
+        return next(iter(state["jobs"].values()))
+
+    def mark_starts(self, root, count, job=None):
+        job = job or self.current_job(root)
+        fingerprint = self.fingerprint(root)
+        path = DISPATCH.start_ledger_path(job["script"])
+        prior = DISPATCH.read_start_ledger(path,job["token"],job["kind"],
+            fingerprint["plan_sha256"],fingerprint["controller_sha256"],job["indices"])
+        for ordinal,index in enumerate(job["indices"][:count],1):
+            if ordinal <= len(prior): continue
+            DISPATCH.record_task_start(path,job["token"],job["kind"],index,ordinal,
+                fingerprint["plan_sha256"],fingerprint["controller_sha256"])
+        return job
+
+    def reseal_projection(self, root):
+        manifest = root/"dispatch-manifest.json"
+        value = json.loads(manifest.read_text())
+        for name in value["files"]: value["files"][name]=DISPATCH.sha256(root/name)
+        manifest.write_text(json.dumps(value))
+        priority = root/"priority.json"
+        value=json.loads(priority.read_text()); value["dispatch_manifest_sha256"]=DISPATCH.sha256(manifest)
+        value["generation_indices"]=[]; value["method_task_indices"]=[]
+        priority.write_text(json.dumps(value))
+
+    def batch_fixture(self, root, count=4):
+        _,_,_,command=self.priority_fixture(root)
+        (root/"generation.csv").write_text("generation_id\n")
+        (root/"datasets.csv").write_text("dataset_id,sim_sha256,sim_file\nd1,frozen,path\n")
+        (root/"tasks.csv").write_text("index,task_id,stage,method,dataset_ids\n"+
+            "".join(f"{i},t{i},challenge,exact,d1\n" for i in range(1,count+1)))
+        self.reseal_projection(root)
+        command[command.index("--max-workers")+1]="1"
+        return command
+
+    def seal_task(self, root, index):
+        target=root/f"tasks/t{index}"; target.mkdir(parents=True,exist_ok=True)
+        checkpoint=target/"completed.rds"; checkpoint.write_bytes(b"sealed completed bytes")
+        (target/"terminal.json").write_text(json.dumps(dict(schema=1,terminal=True,id=f"t{index}",
+            plan_sha256="a"*64,checkpoint_sha256=DISPATCH.sha256(checkpoint))))
 
     def test_submission_intent_is_transactional_and_unknown_result_stays_assigned(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -324,6 +375,7 @@ class DispatchTests(unittest.TestCase):
             command[command.index("--max-workers")+1]="1"
             good=lambda a,**k:subprocess.CompletedProcess(a,0,"123.pbs\n","")
             self.run_main(command,good)
+            self.mark_starts(root,1)
             lock=root/"datasets/generation_00003.lock"; lock.mkdir(parents=True)
             for observation in (dict(state="observation_error",detail="network error"),dict(state="missing")):
                 with self.subTest(observation=observation):
@@ -342,6 +394,7 @@ class DispatchTests(unittest.TestCase):
             root=Path(directory); _,_,_,command=self.priority_fixture(root)
             command[command.index("--max-workers")+1]="1"
             self.run_main(command,lambda a,**k:subprocess.CompletedProcess(a,0,"123.pbs\n",""))
+            self.mark_starts(root,1)
             lock=root/"datasets/generation_00003.lock"; lock.mkdir(parents=True)
             before=json.loads((root/"dispatch/state.json").read_text())
             old=next(iter(before["jobs"].values()))
@@ -358,7 +411,8 @@ class DispatchTests(unittest.TestCase):
             with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],2)
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM job_units").fetchone()[0],2)
-                self.assertEqual(db.execute("SELECT attempts FROM units WHERE kind='generation' AND unit_index=3").fetchone()[0],2)
+                # A confirmed retry assignment has not started its R command.
+                self.assertEqual(db.execute("SELECT attempts FROM units WHERE kind='generation' AND unit_index=3").fetchone()[0],1)
                 self.assertEqual(db.execute("SELECT completed FROM cleanup").fetchone()[0],1)
                 event=json.loads(db.execute("SELECT payload FROM events WHERE event='job_authoritatively_finished'").fetchone()[0])
                 self.assertEqual(event["exit_status"],137)
@@ -393,7 +447,7 @@ class DispatchTests(unittest.TestCase):
             self.assertIn("not automatically migrated",result.stderr)
             self.assertEqual(state.read_text(),original)
             self.assertFalse((control/"ledger.sqlite3").exists())
-            state.write_text(json.dumps(dict(schema=2,jobs={"committed":{"status":"submission_unknown"}})))
+            state.write_text(json.dumps(dict(schema=DISPATCH.ControllerLedger.SCHEMA,jobs={"committed":{"status":"submission_unknown"}})))
             result=subprocess.run(command+["--dry-run"],text=True,capture_output=True)
             self.assertNotEqual(result.returncode,0)
             self.assertIn("refusing to discard",result.stderr)
@@ -452,7 +506,7 @@ class DispatchTests(unittest.TestCase):
             result=subprocess.run(command+["--dry-run"],text=True,capture_output=True)
             self.assertEqual(result.returncode,0,result.stderr)
             state=json.loads((root/"dispatch/state.json").read_text())
-            fingerprint={key:state[key] for key in ("plan_sha256","bootstrap_sha256","dispatch_manifest_sha256","priority_manifest_sha256","controller_sha256")}
+            fingerprint=self.fingerprint(root)
             ledger=DISPATCH.ControllerLedger(root/"dispatch/ledger.sqlite3",fingerprint)
             try:
                 with ledger.transaction():
@@ -483,6 +537,278 @@ class DispatchTests(unittest.TestCase):
             snapshot=json.loads((root/"dispatch/state.json").read_text())
             self.assertEqual(snapshot["complete_counts"]["methods"],0)
             self.assertLess(len(json.dumps(snapshot)),3000)
+
+    def test_real_sequential_script_records_only_started_prefix_before_early_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root)
+            fake=root/"fake-Rscript"
+            fake.write_text(f"#!{sys.executable}\n"+"import json,sys\nfrom pathlib import Path\n"+
+                "index=int(sys.argv[-1])\n"+
+                "ledger=next(Path('dispatch').glob('*.starts.jsonl')).read_bytes()\n"+
+                "assert ledger.endswith(b'\\n')\n"+
+                "assert json.loads(ledger.splitlines()[-1])['index']==index\n"+
+                "with Path('invoked.txt').open('a') as out: out.write(str(index)+'\\n')\n"+
+                "sys.exit(137 if index==2 else 0)\n")
+            fake.chmod(0o755); command += ["--rscript",str(fake)]
+            real_run=subprocess.run
+            def qsub(arguments,**kwargs):
+                execution=real_run(["bash",arguments[1]],text=True,capture_output=True)
+                self.assertEqual(execution.returncode,137,execution.stderr)
+                return subprocess.CompletedProcess(arguments,0,"123.pbs\n","")
+            self.run_main(command,qsub)
+            self.assertEqual((root/"invoked.txt").read_text(),"1\n2\n")
+            job=self.current_job(root)
+            records=DISPATCH.read_start_ledger(DISPATCH.start_ledger_path(job["script"]),job["token"],
+                "methods","a"*64,DISPATCH.sha256(MODULE_PATH),job["indices"])
+            self.assertEqual([record[0]["index"] for record in records],[1,2])
+            # Submission itself consumes no task-start budget; polling ingests
+            # only the two commands which reached their fsynced intent.
+            with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
+                self.assertEqual([x[0] for x in db.execute("SELECT attempts FROM units ORDER BY unit_index")],[0,0,0,0])
+            self.run_main(command,lambda *a,**k:self.fail("Duplicate live qsub"),dict(state="live"))
+            with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
+                self.assertEqual([x[0] for x in db.execute("SELECT attempts FROM units ORDER BY unit_index")],[1,1,0,0])
+
+    def test_repeated_early_timeouts_leave_suffix_retryable_and_report_exhaustion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root)+["--max-attempts","2"]
+            handles=iter(["123.pbs","124.pbs","125.pbs"])
+            qsub=lambda a,**k:subprocess.CompletedProcess(a,0,next(handles)+"\n","")
+            self.run_main(command,qsub)
+            self.mark_starts(root,1)
+            self.run_main(command,qsub,dict(state="terminal",exit_status=137))
+            self.mark_starts(root,1)
+            self.run_main(command,qsub,dict(state="terminal",exit_status=137))
+            self.assertEqual(self.current_job(root)["indices"],[2,3,4])
+            with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
+                self.assertEqual([x[0] for x in db.execute("SELECT attempts FROM units ORDER BY unit_index")],[2,0,0,0])
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE event='prestart_infrastructure_failure'").fetchone()[0],0)
+            self.mark_starts(root,3)
+            for index in (2,3,4): self.seal_task(root,index)
+            with self.assertRaisesRegex(RuntimeError,"Campaign incomplete: retry-exhausted"):
+                self.run_main(command,lambda *a,**k:self.fail("No work remains eligible"),dict(state="terminal",exit_status=0))
+            with (root/"dispatch/retry-blockers.csv").open(newline="") as handle:
+                rows=list(csv.DictReader(handle))
+            self.assertEqual([(x["unit_index"],x["reason"]) for x in rows],[("1","task_start_limit")])
+            state=json.loads((root/"dispatch/state.json").read_text())
+            self.assertEqual(state["complete_counts"]["methods"],3)
+            self.assertEqual(state["task_start_intents"]["methods"],5)
+            self.assertFalse(state["jobs"])
+
+    def test_pre_first_start_kills_charge_only_first_unit_infrastructure_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root)+["--max-prestart-failures","2"]
+            handles=iter(["123.pbs","124.pbs","125.pbs"])
+            qsub=lambda a,**k:subprocess.CompletedProcess(a,0,next(handles)+"\n","")
+            self.run_main(command,qsub)
+            original=self.current_job(root)
+            self.assertEqual(DISPATCH.start_ledger_path(original["script"]).read_bytes(),b"")
+            self.run_main(command,qsub,dict(state="terminal",exit_status=137))
+            self.run_main(command,qsub,dict(state="terminal",exit_status=137))
+            self.assertEqual(self.current_job(root)["indices"],[2,3,4])
+            with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
+                self.assertEqual([tuple(x) for x in db.execute("SELECT attempts,prestart_failures FROM units ORDER BY unit_index")],[(0,2),(0,0),(0,0),(0,0)])
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM task_starts").fetchone()[0],0)
+            with (root/"dispatch/retry-blockers.csv").open(newline="") as handle:
+                self.assertEqual(next(csv.DictReader(handle))["reason"],"prestart_infrastructure_limit")
+        # A single repeatedly preempted unit eventually stops explicitly.
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root,1)+["--max-prestart-failures","2"]
+            qsub=lambda a,**k:subprocess.CompletedProcess(a,0,"123.pbs\n","")
+            self.run_main(command,qsub)
+            self.run_main(command,qsub,dict(state="terminal",exit_status=137))
+            with self.assertRaisesRegex(RuntimeError,"Campaign incomplete"):
+                self.run_main(command,lambda *a,**k:self.fail("Budget is exhausted"),dict(state="terminal",exit_status=137))
+
+    def test_final_prefix_is_reingested_after_terminal_scheduler_observation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root)
+            qsub=lambda a,**k:subprocess.CompletedProcess(a,0,"123.pbs\n","")
+            self.run_main(command,qsub)
+            old=self.mark_starts(root,1)
+            def terminal(_):
+                # This append happens after the poll's first ingest, while
+                # qstat is conceptually in flight; it must not be lost.
+                self.mark_starts(root,2,old)
+                return dict(state="terminal",exit_status=137)
+            self.run_main(command,qsub,terminal)
+            with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
+                self.assertEqual([x[0] for x in db.execute("SELECT attempts FROM units ORDER BY unit_index")],[1,1,0,0])
+                event=json.loads(db.execute("SELECT payload FROM events WHERE event='job_authoritatively_finished'").fetchone()[0])
+                self.assertEqual(event["started_task_count"],2)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM task_starts").fetchone()[0],2)
+
+    def test_start_accounting_rolls_back_and_is_idempotent_across_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root)
+            self.run_main(command,lambda a,**k:subprocess.CompletedProcess(a,0,"123.pbs\n",""))
+            job=self.mark_starts(root,2); fingerprint=self.fingerprint(root)
+            ledger=DISPATCH.ControllerLedger(root/"dispatch/ledger.sqlite3",fingerprint)
+            try:
+                with mock.patch.object(ledger,"event",side_effect=RuntimeError("crash before commit")):
+                    with self.assertRaisesRegex(RuntimeError,"crash before commit"):
+                        ledger.ingest_starts(job,fingerprint)
+                self.assertEqual(ledger.db.execute("SELECT COUNT(*) FROM task_starts").fetchone()[0],0)
+                self.assertEqual(ledger.counts()["methods"]["attempts"],0)
+                self.assertEqual(ledger.ingest_starts(job,fingerprint),2)
+                self.assertEqual(ledger.ingest_starts(job,fingerprint),2)
+                self.assertEqual(ledger.counts()["methods"]["attempts"],2)
+            finally: ledger.close()
+            # A process can die after counting starts, before releasing the
+            # terminal assignment. Resume must not count the prefix twice.
+            self.run_main(command,lambda a,**k:subprocess.CompletedProcess(a,0,"124.pbs\n",""),dict(state="terminal",exit_status=137))
+            with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM task_starts").fetchone()[0],2)
+                self.assertEqual(db.execute("SELECT SUM(attempts) FROM units").fetchone()[0],2)
+
+    def test_missing_malformed_and_truncated_start_ledgers_fail_closed(self):
+        mutations={
+            "missing":lambda path:path.unlink(),
+            "partial":lambda path:path.write_bytes(path.read_bytes()+b'{"schema":'),
+            "foreign_token":lambda path:path.write_text(path.read_text().replace('"token":"','"token":"f')),
+            "wrong_index":lambda path:path.write_text(path.read_text().replace('"index":1','"index":3')),
+            "wrong_ordinal":lambda path:path.write_text(path.read_text().replace('"ordinal":1','"ordinal":2')),
+            "boolean_schema":lambda path:path.write_text(path.read_text().replace('"schema":1','"schema":true')),
+            "duplicate_key":lambda path:path.write_text(path.read_text().replace('"schema":1','"schema":1,"schema":1')),
+            "oversize":lambda path:path.write_bytes(b" "*2049+b"\n"),
+        }
+        for name,mutate in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory); command=self.batch_fixture(root)
+                self.run_main(command,lambda a,**k:subprocess.CompletedProcess(a,0,"123.pbs\n",""))
+                job=self.mark_starts(root,1); mutate(DISPATCH.start_ledger_path(job["script"]))
+                with self.assertRaisesRegex(RuntimeError,"assignments retained"):
+                    self.run_main(command,lambda *a,**k:self.fail("Duplicate qsub"),dict(state="terminal",exit_status=137))
+                with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM units WHERE active_job=?",(job["token"],)).fetchone()[0],4)
+                    self.assertEqual(db.execute("SELECT status FROM jobs").fetchone()[0],"live")
+                    self.assertEqual(db.execute("SELECT SUM(attempts+prestart_failures) FROM units").fetchone()[0],0)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root)
+            self.run_main(command,lambda a,**k:subprocess.CompletedProcess(a,0,"123.pbs\n",""))
+            job=self.mark_starts(root,1)
+            self.run_main(command,lambda *a,**k:self.fail("Duplicate qsub"),dict(state="live"))
+            DISPATCH.start_ledger_path(job["script"]).write_bytes(b"")
+            with self.assertRaisesRegex(RuntimeError,"truncated or rewritten"):
+                self.run_main(command,lambda *a,**k:self.fail("Duplicate qsub"),dict(state="terminal"))
+            with sqlite_connection(root/"dispatch/ledger.sqlite3") as db:
+                self.assertEqual(db.execute("SELECT SUM(attempts) FROM units").fetchone()[0],1)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM units WHERE active_job IS NOT NULL").fetchone()[0],4)
+
+    def test_original_exhaustion_blocks_pair_but_independent_work_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root,3)+["--max-attempts","1"]
+            (root/"tasks.csv").write_text("index,task_id,stage,method,dataset_ids\n"
+                "1,t1,original_refit,exact,d1\n2,t2,corrected_refit,exact,d1\n"
+                "3,t3,challenge,exact,d1\n")
+            self.reseal_projection(root)
+            qsub=lambda a,**k:subprocess.CompletedProcess(a,0,"123.pbs\n","")
+            self.run_main(command,qsub)
+            self.assertEqual(self.current_job(root)["indices"],[1])
+            self.mark_starts(root,1)
+            self.run_main(command,qsub,dict(state="terminal",exit_status=137))
+            self.assertEqual(self.current_job(root)["indices"],[3])
+            with (root/"dispatch/retry-blockers.csv").open(newline="") as handle:
+                self.assertEqual([(row["unit_index"],row["reason"]) for row in csv.DictReader(handle)],
+                    [("1","task_start_limit"),("2","original_prerequisite_exhausted")])
+            self.mark_starts(root,1); self.seal_task(root,3)
+            with self.assertRaisesRegex(RuntimeError,"dependency-blocked"):
+                self.run_main(command,lambda *a,**k:self.fail("Blocked pair must not run"),dict(state="terminal",exit_status=0))
+
+    def test_generation_exhaustion_report_does_not_invent_generation_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root,1)
+            (root/"generation.csv").write_text("generation_id\n1\n2\n")
+            (root/"datasets.csv").write_text("dataset_id,sim_sha256,sim_file\n"
+                "d1,generated,path/generation_00002/panel.rds\n")
+            self.reseal_projection(root)
+            # Use a design-only initialization, then inspect the report's
+            # explicit row classifications with overlapping numeric IDs.
+            result=subprocess.run(command+["--dry-run"],text=True,capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            ledger=DISPATCH.ControllerLedger(root/"dispatch/ledger.sqlite3",self.fingerprint(root))
+            try:
+                ledger.db.execute("UPDATE units SET attempts=3 WHERE kind='generation' AND unit_index=2")
+                report=ledger.report_retry_blockers(root/"dispatch/retry-blockers.csv",3,3)
+                self.assertEqual(report["total"],2)
+                with (root/"dispatch/retry-blockers.csv").open(newline="") as handle:
+                    self.assertEqual([(x["kind"],x["unit_index"],x["reason"]) for x in csv.DictReader(handle)],
+                        [("generation","2","task_start_limit"),("methods","1","generation_prerequisite_exhausted")])
+                self.assertEqual(ledger.ready("generation",3,limit=2),[1])
+            finally: ledger.close()
+
+    def test_worker_refuses_duplicate_or_skipped_start_ordinal_before_R(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"starts.jsonl"; path.touch()
+            token="a"*32; source=DISPATCH.sha256(MODULE_PATH)
+            with self.assertRaisesRegex(RuntimeError,"preceding prefix"):
+                DISPATCH.record_task_start(path,token,"methods",2,2,"a"*64,source)
+            DISPATCH.record_task_start(path,token,"methods",1,1,"a"*64,source)
+            before=path.read_bytes()
+            with self.assertRaisesRegex(RuntimeError,"overlong"):
+                DISPATCH.record_task_start(path,token,"methods",1,1,"a"*64,source)
+            self.assertEqual(path.read_bytes(),before)
+
+    def test_atomic_controller_claim_refuses_second_owner_and_releases_only_itself(self):
+        with tempfile.TemporaryDirectory() as directory:
+            control=Path(directory)
+            with DISPATCH.exclusive_controller(control) as owner:
+                value=json.loads((control/"controller.owner/owner.json").read_text())
+                self.assertEqual(value,owner)
+                self.assertEqual(value["schema"],1)
+                self.assertEqual(len(value["nonce"]),32)
+                self.assertTrue(value["hostname"])
+                with self.assertRaisesRegex(SystemExit,"ownership claim exists"):
+                    with DISPATCH.exclusive_controller(control): self.fail("Second controller entered")
+                self.assertEqual(json.loads((control/"controller.owner/owner.json").read_text()),owner)
+            self.assertFalse((control/"controller.owner").exists())
+            with self.assertRaisesRegex(RuntimeError,"operator test exception"):
+                with DISPATCH.exclusive_controller(control):
+                    raise RuntimeError("operator test exception")
+            self.assertFalse((control/"controller.owner").exists())
+
+    def test_existing_incomplete_malformed_and_stale_claims_are_preserved(self):
+        for content in (None,b"{broken",b'{"schema":1,"hostname":"gone","pid":1,"nonce":"stale"}\n'):
+            with self.subTest(content=content),tempfile.TemporaryDirectory() as directory:
+                control=Path(directory); claim=control/"controller.owner"; claim.mkdir()
+                if content is not None: (claim/"owner.json").write_bytes(content)
+                with self.assertRaisesRegex(SystemExit,"stale controller ownership claim"):
+                    with DISPATCH.exclusive_controller(control): self.fail("Unknown owner entered")
+                self.assertTrue(claim.exists())
+                if content is not None: self.assertEqual((claim/"owner.json").read_bytes(),content)
+                self.assertFalse((control/"controller.lock").exists())
+
+    def test_changed_claim_is_not_released_and_initial_metadata_failure_leaves_claim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            control=Path(directory)
+            with self.assertRaisesRegex(RuntimeError,"claim changed; preserved"):
+                with DISPATCH.exclusive_controller(control):
+                    (control/"controller.owner/owner.json").write_text('{"nonce":"foreign"}\n')
+            self.assertEqual((control/"controller.owner/owner.json").read_text(),'{"nonce":"foreign"}\n')
+        with tempfile.TemporaryDirectory() as directory:
+            control=Path(directory)
+            with mock.patch.object(DISPATCH.os,"fsync",side_effect=OSError("sync failed")):
+                with self.assertRaisesRegex(OSError,"sync failed"):
+                    with DISPATCH.exclusive_controller(control): self.fail("Unsynced owner entered")
+            self.assertTrue((control/"controller.owner").exists())
+            with self.assertRaises(SystemExit):
+                with DISPATCH.exclusive_controller(control): self.fail("Incomplete claim entered")
+
+    def test_controller_claim_encloses_ledger_creation_and_releases_after_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); command=self.batch_fixture(root)
+            original_create=DISPATCH.ControllerLedger.create
+            def create(*arguments,**kwargs):
+                self.assertTrue((root/"dispatch/controller.owner/owner.json").exists())
+                return original_create(*arguments,**kwargs)
+            def failed_submit(*a,**k):
+                self.assertTrue((root/"dispatch/controller.owner/owner.json").exists())
+                raise subprocess.TimeoutExpired("qsub",60)
+            with mock.patch.object(DISPATCH.ControllerLedger,"create",side_effect=create):
+                with self.assertRaisesRegex(RuntimeError,"outcome unknown"):
+                    self.run_main(command,failed_submit)
+            self.assertFalse((root/"dispatch/controller.owner").exists())
+            self.assertEqual(self.current_job(root)["status"],"submission_unknown")
 
 
 if __name__ == "__main__":

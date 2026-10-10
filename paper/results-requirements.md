@@ -28,12 +28,18 @@ working draft until the results and provenance below are present and checked.
 5. **Completed output archives:** per-attempt predictions and status; variant
    alignment; raw and assessed results; task-level and grouped metrics;
    posterior-set semantics; resource measurements. A submission/job ID alone
-   does not prove completion.
+   does not prove completion. Record native posterior conditioning and null
+   support, including conditional explored-support set events. Every reported
+   null forecast must identify its candidate-model or generating-universe
+   event; operational proxy scores are separate from same-event calibration.
 6. **Primary evidence tables:** per-setting mean/macro AP with ties; attempted
    recovery and completion; PIP raw Brier/log loss; pooled FDR and discovery
    counts at fixed prespecified PIP thresholds; null false-call rates; native
    set event hit rates, distinct-target recovery and sizes; full-configuration
-   coverage where declared; CPU/wall time and memory; convergence.
+   coverage where declared; CPU/wall time and memory; chain assessability,
+   diagnostics and final-summary/trace coherence. Native imported outcomes
+   remain separate from diagnostically qualified accuracy; four imported
+   chains alone cannot establish mixing or permit a native winner claim.
 7. **Paired uncertainty:** use the same independent locus/panel clusters for
    every method in a contrast. Preserve phenotype reuse and shared-prior
    dependence. Report effect differences and confidence intervals, not only
@@ -60,6 +66,10 @@ Suggested primary contrasts, chosen before final results are inspected:
   score distributions and exact ties.
 - Original versus repaired learned-prior posterior calculation on the same
   inputs, with final-prior consistency as a mathematical diagnostic.
+- Conditional-union set selection versus the original summed-PIP diagnostic
+  ablation on the same explored support and conditioning event. Report whether
+  the conditional union target was met; do not claim an unconditional or
+  exhaustive-model coverage guarantee.
 - Joint `fb_xregion` versus single-locus Functional BEATRICE, preserving the
   controlled likelihood/optimisation budget and documenting prior reuse.
 - Functional methods versus their annotation-free counterparts with useful,

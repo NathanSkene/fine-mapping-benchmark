@@ -100,6 +100,27 @@ verify plan/projection/bootstrap/checkpoint hashes. An uncertain `qstat` or
 `qsub` result does not permit a duplicate execution. Authoritatively terminal
 jobs without a receipt can retry up to three attempts, preserving scheduler
 outcomes and clearing abandoned locks only after the process has stopped.
+For native jobs, `--max-attempts` counts confirmed PBS submissions for the
+whole preparation, chain or regional-panel unit, including bootstrap failures
+before R starts. If all assigned handles have stopped and its required receipts
+are still missing at that limit, the controller records each exhausted kind,
+unit ID and missing receipt in `dispatch/state.json` and exits with an error,
+including in `--once` mode. Its printed summary lists at most twenty examples;
+the state retains the complete report and all prior assignments/observations.
+Other live assignments keep their handles and locks. Inspect those records
+before explicitly extending the retry budget or supplying valid completed
+receipts; exhaustion does not mark any scientific result complete.
+
+Both controllers claim `dispatch/controller.owner` by atomic directory creation
+before reading or changing scheduler state. Its `owner.json` records the host,
+PID and a unique ownership nonce; any existing claim blocks another controller,
+including a directory with missing metadata. The shared scheduler helper keeps
+the local advisory lock as a secondary guard. Graceful exit releases only its
+own unchanged claim. A killed process can leave a claim behind: inspect its
+owner and scheduler assignments before a deliberate manual release; controllers
+never automatically clear stale or unknown controller claims. A newer native
+controller requires worker scheduler helpers with this shared directory-lock
+API and refuses older helpers that provide only advisory locking.
 
 Run both integration campaigns and the full-size resource probes before
 scientific interpretation. Estimate retained output bytes and compute from the

@@ -232,9 +232,9 @@ python3 scripts/campaign/dispatch.py \
 ```
 
 Remove `--dry-run` for a real dispatch cycle; remove `--once` for a persistent
-controller. The schema-2 `dispatch/ledger.sqlite3` stores the frozen plan
-projection, per-unit assignments and attempts, every job and its exact script
-hash, and the append-only observation/retry history. The controller streams the
+controller. The schema-3 `dispatch/ledger.sqlite3` stores the frozen plan
+projection, per-unit assignments and start-intent budgets, every job and its
+exact script hash, and the append-only observation/retry history. The controller streams the
 CSV projection into SQLite once and queries indexed ready work; it does not
 load all tasks or historical jobs into Python on each poll. The small
 `dispatch/state.json` contains the configuration hashes, counts and currently
@@ -246,10 +246,21 @@ the controller's interpretation of the plan. An immutable-projection digest
 also detects changed fixed rows in the ledger on resume. Terminal receipts
 commit to the R checkpoint bytes and plan ID.
 
-The controller holds one exclusive `flock` and uses SQLite rollback journaling
+Before opening SQLite or reading scheduler state, the controller claims
+`dispatch/controller.owner/` with an atomic directory creation. Its synced
+`owner.json` records hostname, PID, a random ownership nonce and creation time.
+Any existing claim blocks another controller, including a directory with
+missing, malformed or stale metadata. A matching owner removes its own claim
+on graceful normal or exceptional exit; a killed process leaves a claim for
+explicit operator investigation. Never remove it until the recorded process
+and scheduler state have been reconciled. A local `flock` remains a secondary
+guard: an actual deployment probe showed it alone did not exclude a second
+controller on another node of the shared filesystem.
+
+The controller uses SQLite rollback journaling
 (`journal_mode=DELETE`, `synchronous=FULL`). Submission intent and all reserved
 unit assignments commit in one transaction **before** calling `qsub`. A returned
-handle and the attempt counters commit together; a timeout, malformed handle or
+handle commits without charging task-start budgets; a timeout, malformed handle or
 interrupted confirmation leaves a reserved unknown/pending submission and stops
 the controller. Inspect its recorded unique PBS job name before reconciling it;
 deleting the ledger or clearing reservations to obtain a retry can launch the
@@ -260,15 +271,37 @@ the released assignments and a cleanup obligation before deleting abandoned
 worker locks. Resume finishes that cleanup before a fresh attempt and preserves
 the earlier scripts and observations.
 
-The controller requires a filesystem with reliable process locks and SQLite
-locking/sync semantics; validate those on the deployment storage. Workers never
+Each job has a pre-created, synced `job-<token>.starts.jsonl`. Immediately
+before each sequential R command, a small Python worker mode appends and syncs
+an ordered task-start intent. `--start-python` selects an interpreter available
+on compute nodes; its path and bytes are bound to the controller configuration.
+The controller validates the ledger's exact job token, plan/source commitments,
+task kind, assigned index and ordinal, then counts each start once in an atomic
+SQLite transaction. It re-reads the final prefix after terminal scheduler
+evidence before releasing assignments. An early batch failure leaves untouched
+suffix tasks with their entire retry budgets. A start intent is conservative:
+a process killed after syncing the intent but before invoking R consumes that
+one task's budget. It does not prove that R executed.
+
+A missing, malformed, truncated or rewritten start ledger stops dispatch and
+retains assignments. A valid empty ledger differs from a missing ledger. Only
+authoritative terminal/missing scheduler evidence with that valid empty ledger
+charges a separate pre-start infrastructure failure to the batch's first unit;
+it never charges the untouched suffix. `--max-attempts` bounds task-start intents
+and `--max-prestart-failures` bounds these infrastructure failures, both default
+to three. Transient observations and unresolved submissions consume neither
+budget and never authorize duplicate launch.
+
+The controller requires a filesystem with reliable atomic directory creation
+and SQLite locking/sync semantics; validate those on deployment storage across
+nodes, not only on one host. Workers never
 open this database. WAL is deliberately avoided because SQLite documents its
 [network-filesystem restriction](https://www.sqlite.org/wal.html). For a live
 database backup, use SQLite's backup API. For a plain file copy, first stop the
 controller cleanly and close database readers, then preserve the entire
-`dispatch/` directory, including the ledger and job scripts. Do not remove a hot
-rollback journal left by an interrupted process. Legacy schema-1 JSON state is
-explicitly rejected rather than silently migrated; a schema-2 status file with
+`dispatch/` directory, including the ledger, job scripts and start ledgers. Do not remove a hot
+rollback journal left by an interrupted process. Legacy schema-1/2 scheduler state is
+explicitly rejected rather than silently migrated; a schema-3 status file with
 a missing ledger is also an error. Preserve and inspect any existing history
 before deliberately starting a new campaign ledger.
 
@@ -296,9 +329,15 @@ This is not a byte-complete commitment to every installed dependency.
 An explicit terminal/missing PBS handle permits retry of unfinished assigned
 units; transient query errors and timeouts do not. An ambiguous submission
 stops dispatch with its unique job name recorded, preventing duplicate launch.
-The controller caps automatic attempts at three while preserving every prior
-job outcome. Runtime/timeout failures still require inspection; exhausting
-retries is incomplete work, not a finished benchmark.
+The controller preserves every prior job outcome. `retry-blockers.csv` reports
+unfinished units with exhausted start/infrastructure budgets, and method units
+blocked by an exhausted generation or original-refit prerequisite. For paired
+attribution, every corrected refit waits for its matching original refit even
+when a method adapter would not require cached-output reuse. Independent ready
+work continues; when no live or eligible work remains, exhausted work causes an
+explicit incomplete-campaign error instead of an indefinite poll. The CSV and
+bounded status counts identify the unresolved work. Runtime/timeout failures
+still require inspection; exhausting retries never constitutes a finished benchmark.
 
 ## Prespecified priority order and planning limits
 

@@ -1,7 +1,7 @@
 # Comparative manuscript
 
 `manuscript.md` is the authored paper source. It is explicitly a working
-draft while the full optional/native campaign runs. It contains the
+draft while the full optional/native campaign is prepared and executed. It contains the
 mathematical and experimental comparison contract, primary references,
 respectful historical attribution and verified development evidence.
 Its final-result requirements are in `results-requirements.md`.
@@ -32,6 +32,11 @@ Choose publication panels with `--setting-regex PATTERN` and, where useful,
 the figure manifest. The default export limit is 100 settings and 2,400 paired
 contrasts; exceeding it requires a narrower declared view. Filters select
 already computed outcomes and do not retune methods or recompute intervals.
+The CSV reader scans 10,000 rows at a time and retains only selected rows,
+with a separate 100,000-row retention limit for setting tables. The helper's
+source hash accompanies the main plotting-source hash. Large unselected paired
+tables therefore do not need to fit in RAM. Run its parser/bounds checks with
+`Rscript --vanilla paper/test_csv_reader.R`.
 
 Publication-mode exports require a complete full-profile collection.
 `--allow-incomplete` enables watermarked installation/development views, which

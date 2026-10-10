@@ -38,9 +38,61 @@ It binds all six production R/Python/contract files by SHA-256. These complete
 interfaces supplement the analytical probability examples and real neural
 tests; the tiny fixture cannot estimate comparative accuracy or campaign cost.
 
-## Executed correctness checks
+The [fresh command-line campaign check](validation-artifacts/campaign-hardening-20261010/campaign-cli-check.json)
+ran ten actual ABF/marginal-score tasks with 34 dataset records and 148 locus
+rows. It verified safe resume, exact-fit reuse, sealed bundle corruption refusal,
+incomplete-work denominators and empty-analysis rebuilding. The bounded collector
+matched the in-memory reference for typed raw metrics, all summaries, scoring
+attribution and paired intervals. Separate stream tests exercised extreme double
+values, infinite losses, missing values and quoted text; resource tests verified
+packed-task overhead allocation. These are small correctness experiments.
 
-- The final installed-package suite passed **947 expectations**, with zero
+Fifty-five scheduler regressions passed, including submission intent committed
+before `qsub`, ambiguous outcomes, failed observations, retry cleanup and altered
+immutable projections. Regional attempts count durable task-start intents;
+unstarted batch tails remain eligible. A separate limit bounds failures before
+the first start. Terminal observations trigger a final start-ledger read before
+assignment release. Native jobs count confirmed unit submissions. Both
+controllers report exhausted work explicitly and claim ownership by atomic
+directory creation before accessing state. Unknown submissions, malformed
+start ledgers and stale ownership claims require reconciliation.
+
+The [local full-design ledger probe](validation-artifacts/campaign-hardening-20261010/sqlite-controller-scale.json)
+records source-bound measurements for 649,220 method tasks and 240 generation
+units. The schema-3 probe used approximately 32.05 MiB peak process memory and
+produced a 1,280-byte status projection after 100,000 synthetic terminal
+jobs/events. Its indexed check and synced empty retry-blocker report took
+2.44 ms; this timing excludes a populated dependency report. The earlier
+schema-2 measurements are preserved separately. These are local storage and
+memory measurements. Real PBS execution and shared-filesystem ownership have
+separate integration gates.
+
+The [expanded Python proof](validation-artifacts/campaign-hardening-20261010/python-validation.json)
+records **97 passing tests**, zero failures, errors or skips, with resource
+warnings treated as errors. This fresh run includes all 55 scheduler regressions
+and actual R/Torch campaign integrations. The earlier **30-test RL/Docker**
+proof is retained with its unchanged relevant source hashes; it is not used to
+claim coverage of the repaired controllers. The R, BEATRICE and RL scientific
+source bytes remained unchanged through these scheduler repairs.
+
+The [actual server filesystem record](validation-artifacts/campaign-hardening-20261010/server-filesystem-ownership.json)
+preserves a failed cross-node advisory-lock check: PBS job `4311453.pbs-7`
+acquired `flock` while the login host held the same shared file. This failure
+motivated the atomic directory ownership guard. The actual frozen production
+helper subsequently passed on login and compute hosts in `4311477.pbs-7`:
+the second owner was refused, synced metadata was readable, claims released
+cleanly and serialized SQLite commits were visible in both directions. The
+[reproduction fixture](validation-artifacts/campaign-hardening-20261010/probe-controller-ownership-cross-node.py)
+is bound to the tested helper hash. These checks establish observed coordination
+behavior; they do not simulate storage failure or automate stale-owner recovery.
+
+## Earlier development correctness checks
+
+The checks below describe earlier source snapshots. The campaign-hardening
+record above and its exact source hashes supersede their test totals; archived
+development predictions retain their original interpretation limits.
+
+- The earlier installed-package suite passed **947 expectations**, with zero
   failures or errors, 15 explicitly skipped dependency cases and one warning
   about the legacy single-region SBayesRC-style annotation refit. The 17
   repository-only tuning assertions also passed: **964 R expectations** across

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import fcntl
 import importlib.util
 import json
 from pathlib import Path
@@ -96,7 +95,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--regional-select", default="1:ncpus=1:mem=32gb")
     p.add_argument("--walltime", default="72:00:00")
     p.add_argument("--poll-seconds", type=int, default=60)
-    p.add_argument("--max-attempts", type=int, default=3)
+    p.add_argument("--max-attempts", type=int, default=3,
+                   help="Confirmed PBS submissions per native unit, including pre-worker failures")
     p.add_argument("--rscript", default="Rscript")
     p.add_argument("--once", action="store_true")
     p.add_argument("--dry-run", action="store_true")
@@ -123,18 +123,13 @@ def main() -> None:
     units = make_units(root)
     control = root / "dispatch"
     control.mkdir(exist_ok=True)
-    lock = (control / "controller.lock").open("a")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        lock.close()
-        raise SystemExit("Another controller owns this native campaign")
-    try:
+    exclusive_controller = getattr(helpers, "exclusive_controller", None)
+    if exclusive_controller is None:
+        raise SystemExit("Worker scheduler helpers lack shared atomic-directory controller locking")
+    with exclusive_controller(control):
         run_controller(args, root, repo, bootstrap, helpers, plan_sha,
                        preflight_root, preflight_sha, preflight_manifest_sha,
                        projection_sha, units, control)
-    finally:
-        lock.close()
 
 
 def run_controller(args, root, repo, bootstrap, helpers, plan_sha,
@@ -240,6 +235,33 @@ def run_controller(args, root, repo, bootstrap, helpers, plan_sha,
                 assigned[job["kind"]].add(job["id"])
                 live[job["kind"]] += 1
         persist()
+        # This controller submits one whole unit per PBS job. Its retry budget
+        # counts confirmed submissions, including bootstrap/pre-worker failures.
+        # Do not keep polling an exhausted unit while unrelated jobs remain live,
+        # and do not let --once make an exhausted campaign look successful.
+        exhausted = []
+        for kind in units:
+            for identity, unit in units[kind].items():
+                attempts = state["attempts"].get(f"{kind}:{identity}", 0)
+                if attempts < args.max_attempts or identity in assigned[kind] or completed(kind, identity):
+                    continue
+                missing = [receipt for directory, receipt in
+                           zip(unit_directories(root, kind, unit), unit["receipts"])
+                           if not helpers.terminal_receipt(directory, receipt, plan_sha)]
+                exhausted.append({"kind": kind, "id": identity,
+                                  "confirmed_submissions": attempts,
+                                  "max_attempts": args.max_attempts,
+                                  "missing_receipts": missing})
+        state["exhausted_work"] = exhausted
+        state["campaign_state"] = "retry_budget_exhausted" if exhausted else "active"
+        persist()
+        if exhausted:
+            examples = [f"{unit['kind']}:{unit['id']}" for unit in exhausted[:20]]
+            print(json.dumps({"retry_budget_exhausted": True, "unresolved_count": len(exhausted),
+                              "unresolved_examples": examples, "active": live,
+                              "full_report": str(path)}), flush=True)
+            raise RuntimeError(f"Native retry budget exhausted for {len(exhausted)} unresolved units: " +
+                               ", ".join(examples) + f"; full report in {path}")
         ready_methods = {method for unit in units["regional"].values() for method in unit["methods"]
                          if helpers.terminal_receipt(preflight_root / "preflight" / method, method, preflight_sha)}
         submissions = 0
@@ -260,6 +282,7 @@ def run_controller(args, root, repo, bootstrap, helpers, plan_sha,
         print(json.dumps({"complete": {k: len(done[k]) for k in units},
                           "planned": {k: len(units[k]) for k in units}, "active": live}), flush=True)
         if all(len(done[k]) == len(units[k]) for k in units):
+            state["campaign_state"] = "complete"; persist()
             print("Native terminal receipts complete; run collector and diagnostic audit.", flush=True)
             return
         if args.once or args.dry_run:

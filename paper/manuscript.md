@@ -28,7 +28,7 @@ and distinguish localisation from calibrated confidence. We reassess Lucas
 Siu's open fine-mapping benchmarking framework at a frozen source revision.
 The framework provides a useful common interface, haplotype-based simulation,
 multiple method adapters, cross-region functional-prior experiments and an
-explicit record of iterative criticism. Our review identifies eighteen issues
+explicit record of iterative criticism. Our review identifies issues
 in scoring, simulation, posterior calculation, comparator identity and
 experimental design. We repair these issues and add a 22-track synthetic
 challenge with explicit nulls, missing causes, LD ambiguity and mismatch,
@@ -253,6 +253,27 @@ not erased from the denominator just because no method can predict its ID.
 The benchmark records that information bottleneck instead of blaming an
 algorithm for failing to identify an unprovided variant.
 
+Null forecasts require the same distinction. The Gaussian assessor's null
+label means that the entire generating universe has no sparse targets.
+BEATRICE's reported null probability instead concerns the empty modeled
+configuration among observed candidates, conditional on explored support and
+the frozen learned prior. Comparing that number with the generating-null
+label is an operational forecast assessment under model misspecification.
+It cannot establish calibration for the same event when an omitted cause or
+background architecture separates the model's event from the generating
+target. The sparse-target null also differs from absence of every nonzero
+total effect under a continuous background.
+
+The current R challenge accepts a candidate-configuration null forecast and
+checks both union bounds, $\max_jp_j\le1-q\le\sum_jp_j$. Its optional null
+Brier score uses the generating sparse-target label; that interpretation is
+stated explicitly. The RL interface below instead targets the whole
+generating locus and requires only the upper bound on individual observed
+PIPs. Future submissions should declare the null event directly, rather than
+using one untyped field for these distinct claims.
+[Challenge event validation and scoring](../R/challenge_evaluation.R),
+[Generating truth](../R/challenge_simulation.R).
+
 ## Corrected phenotype construction
 
 The repaired genotype/phenotype family centres the marginal regression and
@@ -462,6 +483,45 @@ original deep variational design is retained and identified; the repair
 addresses posterior coherence rather than claims to invent a replacement
 inference family. [BEATRICE, 2024](https://doi.org/10.1093/bioinformatics/btae590).
 
+An independent audit found an additional scientific bug in conditional signal
+selection: integer-valued accumulator arrays truncated fractional posterior
+weights to zero. For example, configuration probabilities .1 for the null,
+.4 for {0}, .2 for {1}, and .3 for {0,1} imply
+$P(1\in C\mid0\in C)=.3/.7$, while the original eligible-variant accumulator
+returned zero. Floating-point accumulation restores this conditional
+probability and can change later signal selection. This is an intentional
+inference correction. The separate batched reweighting optimisation is tested
+against the corrected eager calculation, not against the faulty original
+selection. [Correction and analytical tests](../docs/beatrice-batched-reweighting.md).
+
+BEATRICE's sequential sets also need an explicit probability event. Let
+$\mathcal T$ denote the explored configuration support, $G$ the selected MAP
+variants conditioned on at that step, and $A$ a candidate set. The relevant
+conditional union mass is
+
+$$q(A;G,\mathcal T)=
+\frac{\sum_{C\in\mathcal T:G\subseteq C,\ C\cap A\ne\varnothing}w_C}
+{\sum_{C\in\mathcal T:G\subseteq C}w_C}.$$
+
+Summing conditional PIPs instead gives the expected number of variants in
+$A$, which can exceed this union probability. The corrected selector targets
+the conditional union event and retains the original sum rule as a labelled
+diagnostic ablation. Set-level metadata must state the conditioning variants,
+explored support and whether the target was reached. All sets are assessed
+against the final memo subsequently persisted with the PIPs; zero supported
+conditioning mass is rejected. A .95 conditional target under searched
+support is not an unconditional .95 guarantee under the full model. Search
+omissions and uncertainty about the conditioned MAP variants remain
+scientifically relevant.
+
+Local end-to-end checks ran the repaired vanilla and functional methods for
+500 training iterations on eight-variant inputs. Each emitted two singleton
+sets; the R wrappers imported their ordered variant identities, conditioning
+variants, final-support null probability and union-target attainment flags.
+This verifies the execution and event-import contract on that small example,
+not empirical coverage or a method ranking.
+[Recorded two-method check](../docs/validation-artifacts/campaign-hardening-20261010/beatrice-events-proof.json).
+
 ## Functional-prior and native-method comparisons
 
 Functional annotations can improve localisation if they carry relevant,
@@ -502,16 +562,59 @@ The design therefore contains 540 inputs and 2,160 native chains. Regional
 competitors receive matching summary statistics and annotation exposures.
 
 Each input starts with four independent chains of 25,000 iterations, 5,000
-burn-in and thinning 10. GCTB's retained `CoreParameters` text traces are assessed
+burn-in and thinning 10. A real release-binary check established that its raw
+`CoreParameters` file writes a cached row on every iteration, without iteration
+labels, including burn-in and repeated values between retained draws. The
+parser is bound to that executable's SHA-256 and observed header. It requires
+exactly the planned raw row count and retains only one-based iterations greater
+than burn-in and divisible by thinning. This yields 2,000 retained draws per
+full-design chain, with explicit iteration numbers and sealed extraction
+metadata. Burn-in and stale repeats do not contribute to effective sample size.
+The retained core-parameter draws are assessed
 using the official `posterior` implementation of rank-normalised/folded split
 R-hat and bulk/tail effective sample size. The prespecified thresholds are
-R-hat at most 1.01 and both effective sample sizes at least 400. Missing,
-constant or nonfinite traces cannot establish convergence. Core-parameter
+R-hat at most 1.01 and both effective sample sizes at least 400. The declared
+RC/default-gamma structural constant `Vg1 = 0` must be exactly zero in every
+retained draw, is reported separately with missing R-hat/ESS, and is excluded
+from sampled-parameter pass criteria. The source code and actual release
+log/draws support this one prespecified constant. Other constant or nonfinite
+sampled-parameter traces cannot establish convergence. Core-parameter
+assessability and threshold failures are distinguished: the source can clamp
+residual variance to trait variance, so a constant ancillary trace need not
+mean the posterior predictions are wrong, and longer chains may not resolve
+that assessability limitation. Raw imported probability-score outcomes remain
+available. Ordinary native accuracy summaries and paired contrasts require
+every input in the draw/setting to have four coherent, successful chains passing
+the strict core criterion; no favourable subset is compared against a regional
+method's full setting. Core-parameter
 diagnostics do not establish mixing of every unrecorded SNP indicator;
-across-chain PIP variation is reported separately. No convergence claim is made
+truth-free across-chain PIP variation is reported separately through median,
+95th-percentile and maximum SNP ranges, disagreements on 0.95 calls, and ranges
+of block-level PIP sums. Equal block sums can conceal chains selecting different
+LD-equivalent variants. These descriptions carry no invented convergence or
+precision threshold. No convergence claim is made
 for short-chain integration or resource canaries. A prespecified optional
 extension retains the initial outcomes and applies equally to every input
 failing these diagnostics, independently of accuracy.
+
+The audited source commit is a reference for interpreting the writer, not proof
+of the compiled release commit. A source-level robust-restart branch raises a
+possible mismatch between replacement-run traces and final summaries; this
+has not been demonstrated in the release binary. Observed restart/disruption
+markers therefore withhold ordinary trace diagnostics and flag coherence as
+unverified while preserving the execution record. The native executable is
+unmodified. Its seven full-variant text arrays are redirected to `/dev/null`;
+raw core, small annotation/block traces and final SNP summaries remain. This
+policy saves storage without claiming per-variant trajectory diagnostics or
+avoiding native formatting cost. Matched release-binary runs with and without
+text output gave byte-identical final SNP summaries on the short validation
+input. The all/core/no-text retention check also matched parameter,
+parameter-set and enrichment summaries, and all/core retained core draws were
+identical. These are output-contract checks, not scientific performance results.
+[Observed trace contract](../scripts/native/campaign/trace-contract.json),
+[GCTB trace writer](https://github.com/jianzeng/GCTB/blob/cc7fa7d765c83a89c6375946cf77fe50ba1a317e/scr/mcmc.cpp),
+[conditional residual-variance update](https://github.com/jianzeng/GCTB/blob/cc7fa7d765c83a89c6375946cf77fe50ba1a317e/scr/model.cpp#L2141-L2155),
+[source restart branch](https://github.com/jianzeng/GCTB/blob/cc7fa7d765c83a89c6375946cf77fe50ba1a317e/scr/main.cpp#L255-L276).
 
 Native effects and standard errors are converted to original per-A1-allele
 units using empirical raw-dosage standard deviations, with verified ALT
@@ -535,6 +638,19 @@ that scope are labelled accordingly. [CARMA](https://doi.org/10.1038/s41588-023-
 Funmap and SparsePro are functional-prior comparators with their own
 information and fitting conventions. [Funmap](https://doi.org/10.1093/bioinformatics/btaf017),
 [SparsePro software](https://github.com/zhwm/SparsePro).
+
+Native probability support is also part of the comparison. The audited PAINTOR
+enumerator advances from the all-zero configuration before evaluating it, so
+its PIPs condition on at least one modelled cause. At a two-cause limit its
+support contains $p + {p\choose2}$ nonempty configurations. Its distinct MCMC
+path includes null in its search, but neither output supplies a locus-null
+posterior. Forced-nonnull assumptions remain assessable through operational
+Brier/log loss on null tasks; those outcomes show their consequences under the
+benchmark's population. They do not establish calibration of a conditional
+probability as an unconditional one. ABF's forced-single-cause baseline and
+FINEMAP's observed default zero prior on the null need the same explicit
+support disclosure. [PAINTOR source enumeration](https://github.com/gkichaev/PAINTOR_V3.0/blob/ffce82a7114eeb98220db39ba5d6b69e5a419a9e/Functions_model.cpp#L124-L151),
+[native support audit](../docs/paintor-native-contract.md).
 
 ## Tuning, pairing and uncertainty
 
@@ -586,12 +702,25 @@ execution controls have their own source commitments and validation records.
 
 A native FINEMAP 1.4.2 integration run found exact PIP agreement between the
 wrapper and direct binary output on its synthetic fixture, including a
-consistent variant permutation. Native GCTB 2.5.5 standard SBayesRC executed
+consistent variant permutation. A later actual-binary parser check completed
+two loci whose reported causal-count probabilities summed to 0.9996 and
+1.0011. These values are compatible with FINEMAP's three-significant-digit
+output precision; the parser checks the corresponding rounding intervals and
+complete causal-count coverage without renormalising the imported values.
+This verifies an output contract, not posterior calibration.
+Native GCTB 2.5.5 standard SBayesRC executed
 on a 256-variant four-block synthetic fixture. Its short chain had PIP sum
 61.86 against sixteen planted sparse effects. That difference demonstrates
 why successful execution is not a calibration claim. The run was not designed
 to establish convergence or genome-wide accuracy. Both raw evidence and
 provenance are retained. [Native integration evidence](../docs/validation-artifacts/README.md).
+
+The final native-wrapper retention check also compared actual Linux R API
+imports with the seven documented text sinks enabled. Imported PIPs, posterior
+effect means and effect standard deviations were identical in this short
+256-variant run. The underlying same-seed all/core/no-text checks described
+above additionally matched native final output bytes. These checks support
+the recording policy; they do not establish full-sized runtime or mixing.
 
 The RL extension completed 30 local tests, including actual Gymnasium checks,
 Docker source execution and attack fixtures, and persistent OpenEnv WebSocket
@@ -784,6 +913,31 @@ decision-based assessment. They should inherit the same discipline about
 events, inputs, provenance and uncertainty.
 
 # Data, code and reproducibility
+
+A source-bound local orchestration-only check constructed the schema-3
+649,220-method-task and 240-generation-unit scheduler projection with about
+32 MiB peak process memory. Initialisation took 202 seconds with Python
+allocation tracing enabled; resume verification of its frozen rows took
+22 seconds. Adding 100,000 synthetic terminal job records and events left
+the live-state JSON at 1,280 bytes. With no exhausted units, the indexed
+retry-blocker check and empty-report publication took 2.4 milliseconds.
+These measurements test disk-backed scheduling feasibility on that local
+filesystem. They do not measure inference throughput, time a full exhausted-
+dependency report or establish the shared server filesystem's locking and sync
+behaviour. The record preserves the earlier schema-2 source-bound probe;
+its timings are not a controlled before/after speed comparison.
+[Recorded scheduler scale check](../docs/validation-artifacts/campaign-hardening-20261010/sqlite-controller-scale.json).
+
+Interrupted sequential batches require separate submission and task-start records.
+The repaired controller syncs a per-job ordered start-intent ledger before each
+R command and counts each intent once transactionally; untouched suffix tasks
+retain their retry budgets. Exhausted units and dependent comparisons remain
+explicitly incomplete. Cross-node ownership also needs a storage-specific
+contract: a deployment probe allowed two nodes to acquire the same `flock`.
+The controller therefore claims an atomic ownership directory before opening
+scheduler state and preserves unknown stale claims for manual reconciliation.
+These are execution-integrity repairs, not changes to a fine-mapping model or
+its scientific score. [Controller execution contract](../scripts/campaign/README.md).
 
 Original software: [Lucas Siu's repository at the audited revision](https://github.com/lucassiu14/fine-mapping-benchmark/tree/f053fdf318a3abe2c44eeb0ac3f3c99a03979b81).
 Corrected implementation: [Nathan Skene's fork](https://github.com/NathanSkene/fine-mapping-benchmark),

@@ -1,0 +1,107 @@
+{
+  "format": "fmbenchmark-python-validation-v1",
+  "completed_at_utc": "2026-10-10T23:57:05.426172+00:00",
+  "status": "PASS",
+  "fresh_general_suite": {
+    "command": ".python-env/bin/python -W error::ResourceWarning -m unittest discover -s tests/python -v",
+    "environment": {
+      "PATH_preference": "/opt/homebrew/bin",
+      "R_PROFILE_USER": "/dev/null",
+      "RENV_CONFIG_AUTOLOADER_ENABLED": "false",
+      "R_LIBS_USER": "/Users/nathanskene/Projects/fine-mapping-benchmark/.local-lib",
+      "FMB_R_LIB": "/Users/nathanskene/Projects/fine-mapping-benchmark/.local-lib",
+      "FMB_RSCRIPT": "/opt/homebrew/bin/Rscript",
+      "NOT_CRAN": "true",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1",
+      "VECLIB_MAXIMUM_THREADS": "1",
+      "FMB_NEURAL_SMOKE": "1"
+    },
+    "tests_run": 97,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0,
+    "elapsed_seconds": 345.119,
+    "resource_warning_policy": "error",
+    "resource_warnings_or_ignored_exceptions_in_log": 0,
+    "module_test_counts": {
+      "test_campaign_cli": 1,
+      "test_campaign_cost_report": 2,
+      "test_campaign_dispatch": 34,
+      "test_campaign_streamed": 2,
+      "test_native_dispatch": 21,
+      "test_neural_posterior_smoke": 5,
+      "test_posterior_batch": 14,
+      "test_posterior_memo": 9,
+      "test_priority_schedule": 2,
+      "test_tuning_contract": 7
+    },
+    "controller_tests_run": 55,
+    "log": "all-python-tests.log",
+    "log_sha256": "eecf2378c9a45071d86fc3788b5d72000127a7a3a55f700f514061c2671914ac"
+  },
+  "source_binding": {
+    "source_before": "source-before.json",
+    "source_before_sha256": "f7e00584a5e020321be6e80018bb40f467bed0851908eade651f8e164e623ba1",
+    "source_after": "source-after.json",
+    "source_after_sha256": "c5621ac3f2ac5342d9a843cc232853918b045409ef1c762427e1dd783bf270f7",
+    "source_file_count": 266,
+    "canonical_source_map_sha256": "93fd51083461e45265185d5617fddf541a6efb7d8e9ad1663d056af291c074e1",
+    "canonical_source_map_encoding": "UTF-8 JSON mapping relative file paths to SHA256, sort_keys=True, separators=(comma,colon), no trailing newline",
+    "changed_paths": [],
+    "added_paths": [],
+    "controller_sha256": {
+      "scripts/campaign/dispatch.py": "cc2da80c47856fba3aeff5b0817ec63ad13990c168d34e052a35f8caec957510",
+      "scripts/server_setup/native_dispatch.py": "ce7ad70e712bdf2647ceef303d81d344768b32b2301c00454cac51c27c06ae8c"
+    },
+    "git_head_before": "a79bb710dd808879382f4109bf2f3ffd37e3412b",
+    "git_head_after": "a79bb710dd808879382f4109bf2f3ffd37e3412b"
+  },
+  "runtime": {
+    "python_version": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+    "R_version": "R version 4.6.1 (2026-06-24) -- \"Happy Hop\"",
+    "distributions": {
+      "numpy": "2.5.3",
+      "torch": "2.14.1",
+      "pandas": "3.0.6",
+      "matplotlib": "3.11.2",
+      "gymnasium": "1.3.0",
+      "openenv-core": "0.3.0",
+      "finemap-rl": "0.1.0"
+    },
+    "runtime_provenance_sha256": "0528b665b4cf8ab75e042dcf42576840f97104d073809a85ee9fae45bc1f5185"
+  },
+  "retained_full_evidence_directory": "results/full-campaign-validation/final-python-after-controller-recovery",
+  "full_proof_sha256": "afc0dc036e61e3c282506dad1d31c3a07bc1efaefe6ce655a2de30feec1d8866",
+  "reused_RL_Docker_proof": {
+    "freshly_rerun": false,
+    "previous_evidence_directory": "results/full-campaign-validation/final-python-after-beatrice-events",
+    "previous_proof_sha256": "a2d42a6244d22de44c38c84fd95cf0e5e907de6d81289fd94d3f65787cdaab9b",
+    "previous_log_sha256": "34964fc6f5382eeb27e75488fc872203e1e8bd8225cab9fd49957125fbb82dc7",
+    "tests_run": 30,
+    "errors": 0,
+    "failures": 0,
+    "skips": 0,
+    "revalidated_source_count": 13,
+    "revalidated_source_sha256": {
+      "rl_envs/Dockerfile.predictor": "6151414c1409c74a30f6895834b5bc2a210c1bf17fff126c5bc169d9b5c1ada2",
+      "rl_envs/finemap_rl/__init__.py": "3a194e1ac064e3f903d40673f0e9d36761b50d5ae83c80e84d0b9f364e0ae03b",
+      "rl_envs/finemap_rl/baselines.py": "30ef80e97448498f9bf7d799ead87edaf89a052c3f761987d432b5b722998665",
+      "rl_envs/finemap_rl/cli.py": "f4a8b25aaea3969c0f966b4e168ccec0f3925d21a3bb5a91f765b60a0b1aac43",
+      "rl_envs/finemap_rl/code_runner.py": "0001986363e8a03c74c051627b3cbd5001b4fef8080bb96718660332a1be06c6",
+      "rl_envs/finemap_rl/environments.py": "e9fcb7794d1115041ff570184ee5bc92c142fc6c93b5d1fb01365f2310acadab",
+      "rl_envs/finemap_rl/gym_adapter.py": "c2b47f922a520783175458f90b0d1f28a433f4f02cbab72cc676e994fa7823b0",
+      "rl_envs/finemap_rl/openenv_adapter.py": "5b06a639750b80610cc90a0708f12ca65c6c9429ee9bb155e0849dc50ee47227",
+      "rl_envs/finemap_rl/scoring.py": "f026a85fde27a7982b392313c174730a1938c145b7ad13a8d2a965ae642bad58",
+      "rl_envs/finemap_rl/tasks.py": "35ef8f7cf5ca004038ed3ad871e730cc805f7fe6a70eb3143edcb97a6f392ba2",
+      "rl_envs/openenv.yaml": "fdd58181180a2b27b93e54ac1a47de5104f86640559815ca52b091282e4121ef",
+      "rl_envs/pyproject.toml": "756222450818282e086ad67cf307d1aa23a61b8e68b643f90c930e8b0860de3f",
+      "rl_envs/tests/test_environments.py": "6b61aa126f2297965c3fff06e388b757f037941d66cb796c3a41b3e12833c077"
+    },
+    "scope": "RL environment, Gymnasium/OpenEnv and actual Docker tests; reused solely because every relevant source/test/config hash remains unchanged. These do not validate controller recovery."
+  },
+  "coverage_statement": "The 97 general tests were freshly rerun against the repaired frozen controllers and include actual R fits/collection, real Torch inference, scientific posterior/event invariants, controller recovery, resource estimates, priority and tuning contracts. The separate 30 RL/Docker tests were not rerun; their prior actual proof is reused only after all 13 relevant source/test/config hashes were revalidated unchanged. The old 102-test proof does not establish correctness of the repaired controllers.",
+  "limitations": "Local small actual integration fits and analytical/generated tests do not establish full-size campaign runtime, empirical scientific validity, native stochastic reproducibility, hosted multi-tenant security or commercial acceptance."
+}

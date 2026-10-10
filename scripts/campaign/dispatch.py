@@ -15,8 +15,10 @@ import os
 from pathlib import Path
 import re
 import shlex
+import socket
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 
@@ -37,6 +39,59 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+@contextmanager
+def exclusive_controller(control: Path):
+    """Shared-storage ownership: atomic mkdir first, local flock second.
+
+    No existing claim, including an incomplete claim left by a killed process,
+    is automatically cleared. The owner can remove only the unchanged directory
+    and exact metadata it created. Workers never enter this context.
+    """
+    claim = control / "controller.owner"
+    try:
+        claim.mkdir()
+    except FileExistsError as error:
+        raise SystemExit("Another or stale controller ownership claim exists: "+str(claim)+
+                         "; inspect its owner and scheduler state before manual recovery") from error
+    identity = claim.stat()
+    owner = dict(schema=1,hostname=socket.gethostname(),pid=os.getpid(),
+                 nonce=uuid.uuid4().hex,started_ns=time.time_ns())
+    raw = (json.dumps(owner,sort_keys=True)+"\n").encode()
+    # A failure before metadata has been fully synced leaves an incomplete
+    # claim deliberately. It cannot be safely auto-reconciled by another node.
+    owner_path = claim / "owner.json"
+    with owner_path.open("xb") as handle:
+        handle.write(raw); handle.flush(); os.fsync(handle.fileno())
+    for path in (claim,control):
+        descriptor = os.open(path,os.O_RDONLY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+    try:
+        with (control/"controller.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise SystemExit("Another local controller owns this campaign") from error
+            yield owner
+    finally:
+        # Never recursively delete a claim, and never remove foreign, missing,
+        # edited or replaced metadata even after our own process encounters an
+        # exception. Such a claim needs explicit operator reconciliation.
+        try:
+            current = claim.lstat()
+            unchanged = (current.st_dev,current.st_ino)==(identity.st_dev,identity.st_ino) \
+                and not claim.is_symlink() and owner_path.read_bytes()==raw \
+                and set(x.name for x in claim.iterdir())=={"owner.json"}
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            raise RuntimeError("Controller ownership claim changed; preserved for manual recovery: "+str(claim))
+        owner_path.unlink(); claim.rmdir()
+        descriptor = os.open(control,os.O_RDONLY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
 
 
 def terminal_receipt(directory: Path, identity: str, plan_sha: str,
@@ -149,6 +204,78 @@ def observe_job(job_id: str, runner=subprocess.run) -> dict:
         return {"state": "observation_error", "detail": str(error)}
 
 
+def start_ledger_path(script: str | Path) -> Path:
+    return Path(script).with_suffix(".starts.jsonl")
+
+
+def read_start_ledger(path: Path, token: str, kind: str, plan_sha: str,
+                      controller_sha: str, indices: list[int] | None = None,
+                      max_records: int | None = None) -> list[tuple[dict, str]]:
+    """A complete prefix of this job's ordered start intents, never a hint."""
+    import stat
+    if not path.exists() or path.is_symlink() or not stat.S_ISREG(path.stat().st_mode):
+        raise RuntimeError(f"Missing or invalid worker start ledger: {path}")
+    limit = len(indices) if indices is not None else max_records
+    if limit is None or limit < 0:
+        raise RuntimeError("Missing worker start-ledger bound")
+    fields = {"schema", "token", "kind", "index", "ordinal", "plan_sha256",
+              "controller_sha256", "started_ns"}
+    def object_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result: raise ValueError("Duplicate start-ledger field")
+            result[key] = value
+        return result
+    records = []
+    with path.open("rb") as handle:
+        while True:
+            line = handle.readline(2049)
+            if not line: break
+            if len(line) > 2048 or not line.endswith(b"\n") or len(records) >= limit:
+                raise RuntimeError(f"Truncated, oversized or overlong worker start ledger: {path}")
+            try:
+                value = json.loads(line, object_pairs_hook=object_pairs)
+            except (ValueError, UnicodeDecodeError) as error:
+                raise RuntimeError(f"Malformed worker start ledger: {path}") from error
+            ordinal = len(records) + 1
+            if not isinstance(value, dict) or set(value) != fields \
+                    or type(value["schema"]) is not int or value["schema"] != 1 \
+                    or value["token"] != token or value["kind"] != kind \
+                    or value["plan_sha256"] != plan_sha or value["controller_sha256"] != controller_sha \
+                    or type(value["ordinal"]) is not int or value["ordinal"] != ordinal \
+                    or type(value["index"]) is not int or value["index"] < 1 \
+                    or (indices is not None and value["index"] != indices[ordinal-1]) \
+                    or type(value["started_ns"]) is not int or not 0 < value["started_ns"] < 2**63:
+                raise RuntimeError(f"Foreign or out-of-order worker start ledger: {path}")
+            records.append((value, hashlib.sha256(line).hexdigest()))
+    return records
+
+
+def record_task_start(path: Path, token: str, kind: str, index: int, ordinal: int,
+                      plan_sha: str, controller_sha: str) -> None:
+    """Worker-only mode: fsync intent before shell is permitted to invoke R."""
+    if not re.fullmatch(r"[a-f0-9]{32}", token) or kind not in {"generation", "methods"} \
+            or type(index) is not int or index < 1 or type(ordinal) is not int or ordinal < 1 \
+            or not re.fullmatch(r"[a-f0-9]{64}", plan_sha) \
+            or sha256(Path(__file__)) != controller_sha:
+        raise RuntimeError("Invalid worker task-start contract")
+    prior = read_start_ledger(path, token, kind, plan_sha, controller_sha,
+                              max_records=ordinal-1)
+    if len(prior) != ordinal-1:
+        raise RuntimeError("Worker start ledger is not the expected preceding prefix")
+    value = dict(schema=1, token=token, kind=kind, index=index, ordinal=ordinal,
+                 plan_sha256=plan_sha, controller_sha256=controller_sha,
+                 started_ns=time.time_ns())
+    line = (json.dumps(value, sort_keys=True, separators=(",", ":"))+"\n").encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if os.write(descriptor, line) != len(line):
+            raise RuntimeError("Incomplete task-start append; refuse to invoke R")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 class ControllerLedger:
     """Disk-backed plan, assignments and history; completion rows are hints.
 
@@ -156,7 +283,7 @@ class ControllerLedger:
     journal preserves committed submission intent before qsub; JSON is only
     a bounded status projection. WAL is avoided on shared cluster filesystems.
     """
-    SCHEMA = 2
+    SCHEMA = 3
 
     def __init__(self, path: Path, fingerprint: dict):
         self.path = path
@@ -219,7 +346,8 @@ class ControllerLedger:
             db.executescript("""
                 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE stats(kind TEXT PRIMARY KEY, total INTEGER NOT NULL DEFAULT 0,
-                    completed INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0);
+                    completed INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
+                    prestart_failures INTEGER NOT NULL DEFAULT 0);
                 INSERT INTO stats(kind) VALUES ('generation'),('methods');
                 CREATE TABLE jobs(token TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
                     kind TEXT NOT NULL, job_id TEXT, submitted_epoch REAL NOT NULL,
@@ -231,11 +359,14 @@ class ControllerLedger:
                     dataset_ids TEXT, priority_rank INTEGER, original_index INTEGER,
                     completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)),
                     attempts INTEGER NOT NULL DEFAULT 0, active_job TEXT REFERENCES jobs(token),
+                    prestart_failures INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(kind,unit_index));
                 CREATE INDEX units_ready ON units(kind,completed,active_job,position);
                 CREATE INDEX units_group ON units(kind,method,stage,completed,active_job,position);
                 CREATE INDEX units_original ON units(method,stage,dataset_ids,position);
                 CREATE INDEX units_priority ON units(kind,completed,active_job,priority_rank,position);
+                CREATE INDEX units_attempt_limit ON units(completed,active_job,attempts);
+                CREATE INDEX units_prestart_limit ON units(completed,active_job,prestart_failures);
                 CREATE TABLE method_groups(method TEXT NOT NULL, stage TEXT NOT NULL,
                     first_position INTEGER NOT NULL, PRIMARY KEY(method,stage));
                 CREATE TABLE job_units(token TEXT NOT NULL REFERENCES jobs(token),
@@ -255,6 +386,12 @@ class ControllerLedger:
                     FOREIGN KEY(kind,unit_index) REFERENCES units(kind,unit_index));
                 CREATE INDEX cleanup_pending ON cleanup(completed);
                 CREATE INDEX jobs_active ON jobs(status);
+                CREATE TABLE task_starts(token TEXT NOT NULL REFERENCES jobs(token),
+                    kind TEXT NOT NULL, unit_index INTEGER NOT NULL, ordinal INTEGER NOT NULL,
+                    record_sha256 TEXT NOT NULL, started_ns INTEGER NOT NULL,
+                    PRIMARY KEY(token,kind,unit_index), UNIQUE(token,ordinal),
+                    FOREIGN KEY(kind,unit_index) REFERENCES units(kind,unit_index));
+                CREATE INDEX task_starts_unit ON task_starts(kind,unit_index);
                 CREATE TRIGGER unit_insert AFTER INSERT ON units BEGIN
                     UPDATE stats SET total=total+1 WHERE kind=NEW.kind;
                 END;
@@ -263,6 +400,9 @@ class ControllerLedger:
                 END;
                 CREATE TRIGGER unit_attempt AFTER UPDATE OF attempts ON units BEGIN
                     UPDATE stats SET attempts=attempts+NEW.attempts-OLD.attempts WHERE kind=NEW.kind;
+                END;
+                CREATE TRIGGER unit_prestart AFTER UPDATE OF prestart_failures ON units BEGIN
+                    UPDATE stats SET prestart_failures=prestart_failures+NEW.prestart_failures-OLD.prestart_failures WHERE kind=NEW.kind;
                 END;
             """)
             db.execute("INSERT INTO metadata VALUES ('schema',?)", (json.dumps(cls.SCHEMA),))
@@ -329,7 +469,8 @@ class ControllerLedger:
         # Counters are a fast status projection, not completion authority.
         self.db.execute("UPDATE stats SET total=(SELECT COUNT(*) FROM units u WHERE u.kind=stats.kind), "
                         "completed=(SELECT COALESCE(SUM(completed),0) FROM units u WHERE u.kind=stats.kind), "
-                        "attempts=(SELECT COALESCE(SUM(attempts),0) FROM units u WHERE u.kind=stats.kind)")
+                        "attempts=(SELECT COALESCE(SUM(attempts),0) FROM units u WHERE u.kind=stats.kind), "
+                        "prestart_failures=(SELECT COALESCE(SUM(prestart_failures),0) FROM units u WHERE u.kind=stats.kind)")
 
     def validate_assignments(self):
         active = "('submission_pending','submission_unknown','live')"
@@ -357,6 +498,21 @@ class ControllerLedger:
             jobs.append(job)
         return jobs
 
+    def ingest_starts(self, job: dict, fingerprint: dict) -> int:
+        records = read_start_ledger(start_ledger_path(job["script"]), job["token"],
+            job["kind"], fingerprint["plan_sha256"], fingerprint["controller_sha256"], job["indices"])
+        known = list(self.db.execute("SELECT ordinal,record_sha256 FROM task_starts WHERE token=? ORDER BY ordinal", (job["token"],)))
+        if len(known) > len(records) or any(row["ordinal"] != i+1 or row["record_sha256"] != records[i][1]
+                                            for i,row in enumerate(known)):
+            raise RuntimeError("Previously counted worker starts were truncated or rewritten")
+        with self.transaction():
+            for value, digest in records[len(known):]:
+                self.db.execute("INSERT INTO task_starts VALUES (?,?,?,?,?,?)",
+                    (job["token"],job["kind"],value["index"],value["ordinal"],digest,value["started_ns"]))
+                self.db.execute("UPDATE units SET attempts=attempts+1 WHERE kind=? AND unit_index=?", (job["kind"],value["index"]))
+                self.event("task_start_counted", dict(ordinal=value["ordinal"],record_sha256=digest),job["token"],job["kind"],value["index"])
+        return len(records)
+
     def snapshot(self, fingerprint: dict) -> dict:
         counts = self.counts()
         live = self.active_jobs()
@@ -368,17 +524,19 @@ class ControllerLedger:
                     ledger_projection_sha256=self.db.execute("SELECT value FROM metadata WHERE key='projection_sha256'").fetchone()[0],
                     complete_counts={kind:x["completed"] for kind,x in counts.items()},
                     planned_counts={kind:x["total"] for kind,x in counts.items()},
-                    confirmed_unit_attempts={kind:x["attempts"] for kind,x in counts.items()},
+                    task_start_intents={kind:x["attempts"] for kind,x in counts.items()},
+                    prestart_infrastructure_failures={kind:x["prestart_failures"] for kind,x in counts.items()},
+                    retry_blockers=json.loads((self.db.execute("SELECT value FROM metadata WHERE key='retry_blockers'").fetchone() or ["{}"]) [0]),
                     jobs={job["token"]:job for job in live},
                     event_sequence=self.db.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0],
                     updated_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()))
 
     def ready(self, kind: str, max_attempts: int, ready_methods: set[str] | None = None,
               priority: bool | None = None, group: tuple[str,str] | None = None,
-              limit: int = 1) -> list[int]:
-        where = ["u.kind=?","u.completed=0","u.active_job IS NULL","u.attempts<?",
+              limit: int = 1, max_prestart_failures: int = 3) -> list[int]:
+        where = ["u.kind=?","u.completed=0","u.active_job IS NULL","u.attempts<?","u.prestart_failures<?",
                  "NOT EXISTS (SELECT 1 FROM cleanup c WHERE c.kind=u.kind AND c.unit_index=u.unit_index AND c.completed=0)"]
-        values: list = [kind,max_attempts]
+        values: list = [kind,max_attempts,max_prestart_failures]
         if kind == "methods":
             if not ready_methods:
                 return []
@@ -395,6 +553,38 @@ class ControllerLedger:
         values.append(limit)
         return [row[0] for row in self.db.execute("SELECT u.unit_index FROM units u WHERE "+
                    " AND ".join(where)+" ORDER BY "+order+" LIMIT ?",values)]
+
+    def report_retry_blockers(self, path: Path, max_attempts: int, max_prestart_failures: int) -> dict:
+        # Most polls have no exhausted units. Avoid walking every dependency
+        # in a full campaign to establish that fact; these two lookups use the
+        # dedicated retry-limit indexes. A blocked prerequisite must itself be
+        # an incomplete, unassigned exhausted unit.
+        exhausted = self.db.execute(
+            "SELECT 1 FROM units WHERE completed=0 AND active_job IS NULL AND attempts>=? "
+            "UNION ALL SELECT 1 FROM units WHERE completed=0 AND active_job IS NULL "
+            "AND prestart_failures>=? LIMIT 1", (max_attempts,max_prestart_failures)).fetchone()
+        failure = "({alias}.attempts>=? OR {alias}.prestart_failures>=?)"
+        own = failure.format(alias="u")
+        original = "(u.kind='methods' AND EXISTS (SELECT 1 FROM units o WHERE o.kind='methods' AND o.unit_index=u.original_index AND o.completed=0 AND o.active_job IS NULL AND "+failure.format(alias="o")+"))"
+        generation = "(u.kind='methods' AND EXISTS (SELECT 1 FROM dependencies d JOIN units g ON g.kind='generation' AND g.unit_index=d.generation_index WHERE d.method_index=u.unit_index AND g.completed=0 AND g.active_job IS NULL AND "+failure.format(alias="g")+"))"
+        sql = "SELECT u.kind,u.unit_index,u.method,u.stage,u.attempts,u.prestart_failures, CASE WHEN u.attempts>=? THEN 'task_start_limit' WHEN u.prestart_failures>=? THEN 'prestart_infrastructure_limit' WHEN "+generation+" THEN 'generation_prerequisite_exhausted' WHEN "+original+" THEN 'original_prerequisite_exhausted' END AS reason FROM units u WHERE u.completed=0 AND u.active_job IS NULL AND ("+own+" OR "+generation+" OR "+original+") ORDER BY u.kind,u.unit_index"
+        bounds = [max_attempts,max_prestart_failures]*6
+        temporary = path.with_name(path.name+f".tmp.{os.getpid()}")
+        counts = {}
+        with temporary.open("w",newline="") as handle:
+            writer = csv.DictWriter(handle,fieldnames=["kind","unit_index","method","stage","attempts","prestart_failures","reason"])
+            writer.writeheader()
+            for row in self.db.execute(sql,bounds) if exhausted else ():
+                writer.writerow(dict(row)); counts[row["reason"]] = counts.get(row["reason"],0)+1
+            handle.flush(); os.fsync(handle.fileno())
+        os.replace(temporary,path)
+        result = dict(counts=counts,total=sum(counts.values()),report=path.name,
+                      report_sha256=sha256(path),max_task_start_intents=max_attempts,
+                      max_prestart_infrastructure_failures=max_prestart_failures)
+        with self.transaction():
+            self.db.execute("INSERT INTO metadata VALUES ('retry_blockers',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(result,sort_keys=True),))
+            self.event("retry_blockers_reported",result)
+        return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -414,6 +604,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-tasks", type=int, default=4)
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--max-attempts", type=int, default=3)
+    parser.add_argument("--max-prestart-failures", type=int, default=3,
+                        help="Separate cap on confirmed terminal worker failures before its first task start")
+    parser.add_argument("--start-python", type=Path, default=Path(sys.executable),
+                        help="Controller-compatible Python executable available on compute nodes for durable start markers")
     parser.add_argument("--rscript", default="Rscript")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -422,10 +616,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if min(args.max_workers,args.max_generation,args.batch_tasks,args.max_attempts,args.poll_seconds) < 1:
+    if min(args.max_workers,args.max_generation,args.batch_tasks,args.max_attempts,args.max_prestart_failures,args.poll_seconds) < 1:
         raise SystemExit("Worker, generation, batch, poll and attempt limits must be positive")
     root,repo = args.plan.resolve().parent,args.repo.resolve()
     bootstrap = args.bootstrap.resolve(strict=True)
+    start_python = args.start_python.resolve(strict=True)
     plan_sha = (root/"plan.sha256").read_text().strip()
     if not re.fullmatch(r"[a-f0-9]{64}",plan_sha):
         raise SystemExit("Missing valid immutable plan commitment")
@@ -447,13 +642,10 @@ def main() -> None:
             priority_path,plan_sha,allowed[0],allowed[1],args.plan.resolve(),dispatch_sha)
     fingerprint = dict(plan_sha256=plan_sha,bootstrap_sha256=sha256(bootstrap),
                        dispatch_manifest_sha256=dispatch_sha,priority_manifest_sha256=priority_sha,
-                       controller_sha256=sha256(Path(__file__)))
+                       controller_sha256=sha256(Path(__file__)),start_python=str(start_python),
+                       start_python_sha256=sha256(start_python))
     control = root/"dispatch"; control.mkdir(exist_ok=True)
-    with (control/"controller.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise SystemExit("Another controller owns this campaign")
+    with exclusive_controller(control):
         state_path,ledger_path = control/"state.json",control/"ledger.sqlite3"
         if state_path.exists() and json.loads(state_path.read_text()).get("schema") != ControllerLedger.SCHEMA:
             raise SystemExit("Legacy JSON scheduler state is not automatically migrated; preserve/archive it explicitly before starting a new ledger")
@@ -521,6 +713,8 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
             raise RuntimeError("Priority manifest changed during dispatch; refusing additional submissions")
         if sha256(bootstrap)!=fingerprint["bootstrap_sha256"] or sha256(Path(__file__))!=fingerprint["controller_sha256"]:
             raise RuntimeError("Bootstrap or controller changed during dispatch; refusing additional submissions")
+        if sha256(Path(fingerprint["start_python"])) != fingerprint["start_python_sha256"]:
+            raise RuntimeError("Task-start Python executable changed during dispatch")
 
     def cleanup_terminal_locks():
         import shutil
@@ -549,7 +743,9 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
                     f"#PBS -o {control}/",f"#PBS -e {control}/","set -euo pipefail",
                     f"source {shlex.quote(str(bootstrap))}",f"cd {shlex.quote(str(repo))}"]
         worker = "generate.R" if kind=="generation" else "run_task.R"
-        for index in indices:
+        for ordinal,index in enumerate(indices,1):
+            commands.append(" ".join(shlex.quote(x) for x in [fingerprint["start_python"],str(Path(__file__).resolve()),
+                "--record-start",str(start_ledger_path(script)),token,kind,str(index),str(ordinal),plan_sha,fingerprint["controller_sha256"]]))
             commands.append(" ".join(shlex.quote(x) for x in [args.rscript,"--vanilla",
                 str(repo/"scripts/campaign"/worker),"--plan",str(args.plan.resolve()),"--index",str(index)]))
         with script.open("w") as handle:
@@ -557,14 +753,19 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
         if args.dry_run:
             print(json.dumps(dict(would_submit=kind,indices=indices,script=str(script))),flush=True)
             return
+        with start_ledger_path(script).open("xb") as handle:
+            handle.flush(); os.fsync(handle.fileno())
+        descriptor = os.open(control, os.O_RDONLY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
         # Reserve all indices and commit intent atomically BEFORE qsub. A crash
         # or ambiguous result cannot make them eligible for another submission.
         with ledger.transaction():
             ledger.db.execute("INSERT INTO jobs(token,name,kind,submitted_epoch,status,script,script_sha256) VALUES (?,?,?,?,?,?,?)",
                               (token,name,kind,time.time(),"submission_pending",str(script),sha256(script)))
             for index in indices:
-                cursor = ledger.db.execute("UPDATE units SET active_job=? WHERE kind=? AND unit_index=? AND completed=0 AND active_job IS NULL AND attempts<?",
-                                           (token,kind,index,args.max_attempts))
+                cursor = ledger.db.execute("UPDATE units SET active_job=? WHERE kind=? AND unit_index=? AND completed=0 AND active_job IS NULL AND attempts<? AND prestart_failures<?",
+                                           (token,kind,index,args.max_attempts,args.max_prestart_failures))
                 if cursor.rowcount!=1: raise RuntimeError("Attempted duplicate or ineligible assignment")
                 ledger.db.execute("INSERT INTO job_units VALUES (?,?,?)",(token,kind,index))
             ledger.event("submission_intent",dict(name=name,indices=indices),token)
@@ -585,8 +786,6 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
             raise RuntimeError("qsub did not return a confirmed handle; inspect qselect -N "+name)
         with ledger.transaction():
             ledger.db.execute("UPDATE jobs SET job_id=?,status='live' WHERE token=?",(result.stdout.strip(),token))
-            for index in indices:
-                ledger.db.execute("UPDATE units SET attempts=attempts+1 WHERE kind=? AND unit_index=?",(kind,index))
             ledger.event("submission_confirmed",dict(job_id=result.stdout.strip(),stdout=result.stdout,stderr=result.stderr),token)
         persist()
         print(json.dumps(dict(submitted=result.stdout.strip(),kind=kind,indices=indices)),flush=True)
@@ -594,7 +793,7 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
     def verified_ready(kind,limit,ready_methods=None,priority=None,group=None):
         selected = []
         while len(selected)<limit:
-            ids = ledger.ready(kind,args.max_attempts,ready_methods,priority,group,limit+len(selected))
+            ids = ledger.ready(kind,args.max_attempts,ready_methods,priority,group,limit+len(selected),args.max_prestart_failures)
             changed = False
             for index in ids:
                 if index in selected: continue
@@ -605,10 +804,20 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
         return selected
 
     cleanup_terminal_locks()
+    def ingest_starts(job):
+        try:
+            return ledger.ingest_starts(job,fingerprint)
+        except RuntimeError as error:
+            with ledger.transaction():
+                ledger.event("worker_start_ledger_error",dict(error=str(error),assignments_retained=True),job["token"])
+            persist()
+            raise RuntimeError("Unverifiable worker start ledger; assignments retained: "+str(error)) from error
+
     while True:
         guard_priority()
         live_counts = dict(generation=0,methods=0)
         for job in ledger.active_jobs():
+            starts = ingest_starts(job)
             if not job.get("job_id"):
                 raise RuntimeError("Unresolved submission: inspect qselect -N "+job["name"])
             raw = observe_job(job["job_id"])
@@ -619,6 +828,10 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
                 ledger.db.execute("UPDATE jobs SET last_observation=? WHERE token=?",(json.dumps(observation),job["token"]))
                 ledger.event("scheduler_observation",dict(raw=raw,effective=observation),job["token"])
             if observation["state"] in {"terminal","missing"}:
+                # A worker can append while qstat is in flight. The terminal
+                # observation now establishes that its final prefix is stable;
+                # account it again before releasing any assignment.
+                starts = ingest_starts(job)
                 outcomes = [(index,completed(job["kind"],index)) for index in job["indices"]]
                 with ledger.transaction():
                     ledger.db.execute("UPDATE jobs SET status=? WHERE token=?",(observation["state"],job["token"]))
@@ -628,7 +841,11 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
                         if cursor.rowcount!=1: raise RuntimeError("Terminal job lost its committed assignment")
                         if not value:
                             ledger.db.execute("INSERT INTO cleanup(token,kind,unit_index) VALUES (?,?,?)",(job["token"],job["kind"],index))
-                    ledger.event("job_authoritatively_finished",observation,job["token"])
+                    if starts==0 and not outcomes[0][1]:
+                        ledger.db.execute("UPDATE units SET prestart_failures=prestart_failures+1 WHERE kind=? AND unit_index=?",(job["kind"],job["indices"][0]))
+                        ledger.event("prestart_infrastructure_failure",dict(first_index=job["indices"][0],observation=observation),job["token"])
+                    ledger.event("job_authoritatively_finished",dict(observation,started_task_count=starts,
+                        start_ledger_sha256=sha256(start_ledger_path(job["script"]))),job["token"])
                 cleanup_terminal_locks()
                 print(json.dumps(dict(finished_handle=job["job_id"],observation=observation)),flush=True)
             else:
@@ -656,14 +873,24 @@ def _dispatch(args,root,repo,bootstrap,control,state_path,ledger,fingerprint,pri
                 if batch: submit("methods",batch); submissions+=1
         persist()
         counts = ledger.counts()
+        blockers = ledger.report_retry_blockers(control/"retry-blockers.csv",args.max_attempts,args.max_prestart_failures)
+        persist()
+        if blockers["total"]:
+            print(json.dumps(dict(incomplete_retry_blockers=blockers)),flush=True)
         print(json.dumps(dict(completed_generation=counts["generation"]["completed"],
               planned_generation=counts["generation"]["total"],completed_methods=counts["methods"]["completed"],
               planned_methods=counts["methods"]["total"],active_before_submission=live_counts)),flush=True)
         if all(x["completed"]==x["total"] for x in counts.values()):
             print("Campaign terminal receipts complete; run the R collector and requirement audit.",flush=True)
             return
+        if blockers["total"] and not ledger.active_jobs() and not args.dry_run:
+            raise RuntimeError("Campaign incomplete: retry-exhausted or dependency-blocked work remains; inspect "+str(control/"retry-blockers.csv"))
         if args.once or args.dry_run: return
         time.sleep(args.poll_seconds)
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv)>1 and sys.argv[1]=="--record-start":
+        if len(sys.argv)!=9: raise SystemExit("Invalid task-start arguments")
+        record_task_start(Path(sys.argv[2]),sys.argv[3],sys.argv[4],int(sys.argv[5]),int(sys.argv[6]),sys.argv[7],sys.argv[8])
+    else:
+        main()
