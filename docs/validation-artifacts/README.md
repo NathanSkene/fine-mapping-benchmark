@@ -12,8 +12,8 @@ hardware comparison. Bootstrap contrasts require their mechanism, paired
 eligibility and small-cluster interpretation.
 
 The native directories preserve integration outputs for official FINEMAP and
-SBayesRC. The SBayesRC short chain is explicitly unconverged for assessment
-purposes; neither native smoke is a genome-wide performance benchmark.
+SBayesRC. Convergence of the SBayesRC short chain has not been established;
+neither native smoke is a genome-wide performance benchmark.
 
 Full per-task predictions, public-input/assessor releases, raw logs and RDS
 objects are retained in the local checkout's ignored `results/` directories.
