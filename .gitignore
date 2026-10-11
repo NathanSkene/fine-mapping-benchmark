@@ -54,6 +54,10 @@ rsconnect/
 # macOS metadata
 .DS_Store
 
+# Local development runtime; not benchmark inputs or release artifacts
+.local-lib/
+.python-env/
+
 # Benchmark outputs
 results/
 

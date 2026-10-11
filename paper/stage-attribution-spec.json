@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "analysis": "regional_stage_attribution_v1",
+  "registered_before_full_campaign_outcomes": true,
+  "development_results_already_seen": true,
+  "inference_source_commit": "0e4a7ead774b2e8d3f8ab2f48bc61eadb31c6e91",
+  "regional_full_plan_sha256": "4c387ecbac622d2c2d3068e219cf99e31192db24d02154b1c26549d88356ddf1",
+  "contrasts": [
+    {
+      "stage_a": "corrected_refit",
+      "stage_b": "original_refit",
+      "type": "implementation_and_acceptance",
+      "fixed": "observed_inputs_and_truth",
+      "scope": "Combined implementation, adapter and acceptance-policy changes; individual fixes require separate ablations"
+    },
+    {
+      "stage_a": "corrected_resimulation",
+      "stage_b": "corrected_refit",
+      "type": "generating_experiment",
+      "fixed": "genotypes_and_design",
+      "scope": "Different phenotype and truth experiments; cannot by itself establish an inference correction or historical ranking reversal"
+    }
+  ],
+  "direction": "stage_a_minus_stage_b",
+  "pair_keys": ["dataset_id", "region_id", "method"],
+  "grouping": "one existing regional design stratum at a time; reference-panel sizes are distinct regimes",
+  "metrics": [
+    "availability",
+    "ap",
+    "ap_observed_positive_attempts_zero_for_failure",
+    "brier",
+    "recall",
+    "cs_distinct_recall"
+  ],
+  "contribution": "Retain finite paired differences separately for each endpoint; undefined scores and absent stages remain explicit denominator counts",
+  "brier": "Assess event-alignment flags on the exact contributing pairs; unqualified alignment permits an operational diagnostic only",
+  "genotype_and_truth_counts": "Use retained candidate counts and audited synthetic GWAS/reference sample sizes, not nominal p as target prevalence or a published GWAS cohort claim",
+  "pooled_methods": ["fb_pooled", "fb_xregion", "polyfun_est", "polyfun_ldsc", "sbayesrc", "paintor"],
+  "cluster": "Whole input panel for pooled methods; frozen panel/region for other methods",
+  "bootstrap": {"draws": 1000, "seed": 20261011, "interval": "percentile 0.025/0.975", "statistic": "mean paired locus difference", "resample": "declared independent clusters with replacement"},
+  "uncertainty_scope": "Conditional on supplied genotype design; fewer than two declared independent clusters gives a point difference without a confidence interval",
+  "limits": {"max_stratum_rows": 100000, "no_all_memory_full_campaign": true},
+  "historical_status": "New-seed original-code reproductions; original historical per-locus results remain unavailable",
+  "publication": "Require complete full-profile sealed collection; integration or partial exports must be explicitly labeled development or incomplete"
+}

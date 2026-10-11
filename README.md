@@ -1,743 +1,207 @@
 # Fine-Mapping Benchmarking Framework
 
-[![R-CMD-check](https://github.com/lucassiu14/fine-mapping-benchmark/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/lucassiu14/fine-mapping-benchmark/actions/workflows/R-CMD-check.yaml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Cite this repository](https://img.shields.io/badge/Cite-CITATION.cff-blue.svg)](CITATION.cff)
+A framework for testing **which fine-mapping conclusions remain reliable when
+LD, genetic architecture, annotations or the available variants change**.
+Originally developed by Lucas Siu; this fork adds a scientific validity review,
+repairs to simulation and scoring, and an executable challenge suite.
 
-Benchmarking framework for evaluating statistical fine-mapping methods using
-simulated genetic data. Supports 13 methods, flexible simulation parameters,
-automatic evaluation (AUPRC, credible set metrics, PIP calibration), and
-multi-page PDF plots with stratified results.
+Start with the [critical review](docs/REVIEW.md). Historical results produced
+before the repairs require reevaluation; passing new tests does not validate
+old method rankings. The [scientific contract](docs/challenge-science.md)
+explains exactly what the new experiments measure.
 
-## Requirements
+The [paired campaign runner](scripts/campaign/README.md) preserves the full
+historical design grids, distinguishes scoring changes from inference changes,
+and adds the stress suite. The [paper draft](paper/manuscript.md) records the
+comparison design and marks results that still require completed runs.
+The separate [resource cost report](docs/resource-cost-reporting.md) keeps
+failed attempts, input rejections and unmeasured worker designs visible when
+planning compute. Its sampled timing envelopes require matching worker designs
+and do not establish full-campaign cost or posterior convergence.
+The separately installable [FineMap RL package](rl_envs/README.md) provides
+inference, experiment allocation, method design and isolated code improvement
+environments, with a [submission dossier](rl_envs/docs/submission-dossier.md).
 
-- R >= 4.1.0
-- [renv](https://rstudio.github.io/renv/) (installed automatically with the project)
+## Two complementary simulation families
 
-Some methods and the reference-data setup have additional system requirements
-(C++ binaries, Python, `htslib`) — see the relevant tier or section below.
+| Family | Inputs and purpose | Boundary |
+|---|---|---|
+| Haplotype/phenotype | sim1000G genotypes, individual phenotypes, marginal OLS summaries; existing regional and shared-phenotype workflows | Population composition and reusable reference loci need explicit provenance |
+| Conditional Gaussian challenge | Declared score likelihood, separated predictor inputs and truth, exact small-model reference, adversarial scoring tests | Synthetic experiments; neither empirical genotype realism nor prospective causal truth |
 
-## Installation
+The new generator supports 22 scenario tracks, including controls: matched-prior calibration, nulls,
+one/two/five sparse effects, correlated opposing effects, sparse plus background,
+finite and shifted LD references, informative/irrelevant/reversed annotations,
+missing causes, identical-LD twins, inconsistent allele flips and consistent
+recoding, discovery-selected nulls and weak signals, variant-wise sample sizes
+with missing or known overlap, and shared or heterogeneous effects across two
+independent cohorts. See the [scenario and input protocol](docs/challenge-protocol.md).
 
-Installation is tiered. **You only need to install what you actually want to
-use.** Most of the experiment — including 7 of the 13 methods, all evaluation,
-and all plotting — works at Tier 1 with just R packages.
+## Run the challenge without genotype downloads
 
-### Clone the repo
+Requirements: R >= 4.1 and `openssl` on PATH for SHA-256 release and pooled-input integrity.
+The generator, exact reference and ABF baseline use base/recommended R packages.
 
 ```bash
-git clone https://github.com/lucassiu14/fine-mapping-benchmark.git
+git clone https://github.com/NathanSkene/fine-mapping-benchmark.git
 cd fine-mapping-benchmark
+git switch codex/challenge-benchmark-suite
+Rscript --vanilla scripts/challenge/run_demo.R \
+  --replicates 10 --variants 24 --out results/development-v1
 ```
 
-### Tier 1 — Pure R (~15 min)
+The script writes separate public/assessor directories, validated predictions,
+per-task and per-mechanism CSVs, paired bootstrap contrasts, a PDF report and run
+provenance. If susieR is installed it also runs SuSiE and SuSiE-inf wrappers.
+Missing support for an input type remains visible in the availability column.
+A larger locus count is needed for a precise performance claim; this example
+is an executed development diagnostic.
 
-Open R in the project directory and restore all R package dependencies:
+There is **no single overall rank**. Read availability, the target definition,
+proper scores and operational recovery together. Methods that return sharp
+PIPs on the loci they complete can still fail the tasks that matter.
 
 ```r
-renv::restore()
+# Source checkout: does not require loading the full package's genotype imports.
+for (f in list.files("R", pattern = "\\.R$", full.names = TRUE)) source(f)
+panel <- generate_challenge(n_replicates = 10, p = 24)
+predictions <- run_challenge(panel$inputs, list(
+  exact = challenge_exact,
+  forced_one = challenge_forced_one,
+  abf = challenge_region_adapter(run_abf_region)
+))
+report <- evaluate_challenge(panel, predictions)
+report$summary
+challenge_compare(report, "exact", "forced_one", "brier", "null")
 ```
 
-> **Note:** CARMA and susieR install from GitHub. A GitHub personal access
-> token is required (even for public repos, unauthenticated installs hit rate
-> limits quickly). Set one before running `renv::restore()`:
->
-> ```r
-> Sys.setenv(GITHUB_PAT = "your_token_here")
-> renv::restore()
-> ```
->
-> Create a token at github.com/settings/tokens — no scopes needed.
->
-> `sim1000G` and `hapsim` are archived from CRAN and are fetched directly
-> from the CRAN archive; this is handled automatically by the lockfile.
-
-Then load the package once per R session (every snippet below assumes this):
-
-```r
-pkgload::load_all()        # load fmbenchmark from the source checkout
-# or, after installing it: library(fmbenchmark)
-```
-
-**Tier 1 unlocks:**
-
-- Methods: **SuSiE**, **SuSiE-inf**, **ABF**, **CARMA**, **marginal_z**,
-  **polyfun_oracle**, **polyfun_est**
-- All of `evaluate_methods()` (AUPRC, CS metrics, PIP calibration)
-- All of `plot_results()` (multi-page PDF output)
-- All simulation (`simulate_genotypes()`, `simulate_phenotypes()`,
-  `run_simulation()`, `simulate_gwfm_data()`)
-
-### Tier 2 — Adds C++ binary methods (~30 min more)
-
-#### FINEMAP
-
-The binary is downloaded automatically the first time you call
-`setup_finemap()`:
-
-```r
-fp <- setup_finemap()   # downloads to R user cache dir; returns path
-```
-
-To disable auto-download and install manually, download the binary for your OS
-from [http://www.christianbenner.com](http://www.christianbenner.com) and put
-it on your PATH. Note: there is no official Windows binary — use WSL on
-Windows.
-
-#### PAINTOR
-
-```bash
-conda install -c bioconda paintor
-```
-
-Then in R:
-
-```r
-pp <- setup_paintor()   # finds PAINTOR on PATH
-```
-
-### Tier 3 — Adds Python methods (~1 hour more)
-
-Funmap, BEATRICE, and Functional BEATRICE all require Python. A single conda
-environment covers all three; an `environment.yml` is included in the repo:
-
-```bash
-conda env create -f environment.yml
-conda activate finemapping-python
-```
-
-> **Apple Silicon:** remove the `cpuonly` line from `environment.yml` before
-> creating the environment — PyTorch has native arm64 support.
-
-> **GPU:** also remove `cpuonly` if you have a CUDA-capable GPU.
-
-BEATRICE additionally requires its own repository (a Python script, not a
-package):
-
-```bash
-git clone https://github.com/sayangsep/Beatrice-Finemapping ~/Beatrice-Finemapping
-```
-
-**Functional BEATRICE** is bundled in this repo (`BEATRICE_annot_sparse/`) and
-needs no separate clone — it uses the same conda env.
-
-Then get the Python path for use in R:
-
-```bash
-conda run -n finemapping-python which python   # copy this path
-```
-
-Pass it via `method_args` in `run_methods()`:
-
-```r
-PYTHON <- "/path/to/envs/finemapping-python/bin/python"   # from above
-
-results <- run_methods(
-  simulation  = sim,
-  methods     = c("funmap", "beatrice", "functional_beatrice"),
-  method_args = list(
-    funmap              = list(python = PYTHON, L = 10),
-    beatrice            = list(python = PYTHON, beatrice_dir = "~/Beatrice-Finemapping"),
-    functional_beatrice = list(python = PYTHON, beatrice_dir = "BEATRICE_annot_sparse")
-  )
-)
-```
-
-## Reference data (optional)
-
-The default genotype simulator can draw from the bundled `sim1000G` example
-VCF (one chr4 region, ~500 SNPs) with no extra setup — useful for quick
-tests. For realistic LD across multiple regions, download the per-locus or
-genome-wide reference VCFs.
-
-**Requires:** `tabix` and `bgzip` from
-[htslib](https://github.com/samtools/htslib).
-
-Install with `brew install htslib` (macOS) or
-`conda install -c bioconda htslib`.
-
-Then either:
-
-```bash
-# 50 diverse 300 kb regions (per-locus benchmark; ~150 MB)
-Rscript inst/scripts/prepare_vcfs.R
-
-# OR 128 genome-wide regions (genome-wide benchmark; ~400 MB)
-Rscript inst/scripts/prepare_gwfm_vcfs.R
-```
-
-Each script streams the requested windows from the 1000 Genomes EBI FTP via
-tabix — no whole-chromosome downloads. Files are saved to `data/vcf/` (or
-`data/gwfm_vcf/`) and `data/genetic_maps/` (all gitignored).
-
-## Quick start
-
-```r
-library(fmbenchmark)   # or pkgload::load_all() from a source checkout
-
-# 1. Simulate genotypes + phenotypes across a parameter grid
-sim <- run_simulation(
-  n_regions     = 20,
-  n             = 500,
-  p             = 400,
-  n_iter        = 20,
-  S             = c(1, 2, 3, 5),
-  phi           = c(0.1, 0.2, 0.4),
-  model         = "sparse",
-  annotations   = "binary",
-  n_annotations = 3,
-  vcf_dir       = "data/vcf",
-  seed          = 42,
-  save          = TRUE,
-  output_dir    = "results/run1"
-)
-
-# 2. Run fine-mapping methods
-results <- run_methods(
-  simulation  = sim,
-  methods     = c("susie", "abf"),
-  method_args = list(
-    susie = list(L = 10, coverage = 0.95),
-    abf   = list(prior_variance = 0.04)
-  ),
-  save       = TRUE,
-  output_dir = "results/run1"
-)
-
-# 3. Evaluate
-eval_out <- evaluate_methods(
-  sim, results,
-  save       = TRUE,
-  output_dir = "results/run1"
-)
-
-# 4. Plot
-plot_results(eval_out, output_dir = "results/run1")
-```
-
-> **Without `prepare_vcfs.R`:** omit `vcf_dir` and the simulator falls back to
-> the small bundled VCF (one chr4 region, ~500 SNPs). Useful for quick tests.
-
-For a longer, commentary-rich walk-through that inspects the simulation,
-methods, and evaluation objects at each stage, see the getting-started
-vignette: [`vignettes/getting-started.Rmd`](vignettes/getting-started.Rmd).
-Knit it with `rmarkdown::render("vignettes/getting-started.Rmd")` from the
-project root.
-
-## Supported methods
-
-| Method | Tier | Type | Dependencies |
-|---|---|---|---|
-| **SuSiE** | 1 | R package | None (installed via renv) |
-| **SuSiE-inf** | 1 | R package | None (installed via renv) |
-| **ABF** | 1 | R (built-in) | None |
-| **CARMA** | 1 | R package | None (installed via renv) |
-| **FINEMAP** | 2 | C++ binary | Auto-downloaded by `setup_finemap()` |
-| **PAINTOR** | 2 | C++ binary | `conda install -c bioconda paintor` |
-| **Funmap** | 3 | Python package | `conda env create -f environment.yml` |
-| **BEATRICE** | 3 | Python script | `conda env create -f environment.yml` + BEATRICE repo |
-| **Functional BEATRICE** | 3 | Python script (in this repo) | Same conda env as BEATRICE; code is bundled in `BEATRICE_annot_sparse/` |
-| **marginal_z** | 1 | R (built-in) | None |
-| **polyfun_oracle** | 1 | R package | susieR (already in renv) |
-| **polyfun_est** | 1 | R package | susieR (already in renv) |
-| **SparsePro** | 3 | Python script (in cloned repo) | Same conda env as BEATRICE + `pip install pandas` if not present |
-
-See [Installation](#installation) for what each tier requires.
-
-Methods that fail (binary not found, Python error, etc.) are skipped gracefully
-and reported in the results summary. They do not crash the pipeline.
-
-## Project structure
-
-```
-fine-mapping-benchmark/
-├── DESCRIPTION                 # R package metadata
-├── NAMESPACE                   # Exported functions
-├── R/
-│   ├── utils.R                 # Shared helpers (%||%, fmb_extdata)
-│   ├── simulate_genotypes.R    # Per-locus genotype simulation (sim1000G + 1000G haplotypes)
-│   ├── simulate_phenotypes.R   # Per-locus phenotype simulation (sparse / sparse+inf)
-│   ├── simulate_gwfm_data.R    # Genome-wide simulation (shared y across regions)
-│   ├── run_simulation.R        # Orchestrates per-locus simulations over a parameter grid
-│   ├── run_methods.R           # Runs fine-mapping methods on a simulation object
-│   ├── evaluate.R              # Computes AUPRC, CS metrics, PIP calibration
-│   ├── plot_results.R          # Generates multi-page PDF plots
-│   └── wrapper_*.R             # One file per method (wrapper_susie.R, wrapper_finemap.R,
-│                               #   wrapper_abf.R, wrapper_carma.R, wrapper_paintor.R,
-│                               #   wrapper_funmap.R, wrapper_beatrice.R,
-│                               #   wrapper_functional_beatrice.R, wrapper_susie_inf.R,
-│                               #   wrapper_marginal_z.R, wrapper_polyfun_oracle.R,
-│                               #   wrapper_polyfun_est.R, wrapper_sparsepro.R)
-├── inst/
-│   ├── CITATION                # Package citation
-│   ├── extdata/                # Bundled region tables (ship with the package)
-│   │   ├── regions.csv                  # 50 per-locus regions (prepare_vcfs.R)
-│   │   ├── gwfm_regions.csv             # 128 genome-wide regions (prepare_gwfm_vcfs.R)
-│   │   └── gwfm_regions_ldetect_EUR.csv # ~1,703 LDetect EUR blocks (download_ldetect_regions.R)
-│   └── scripts/                # Maintainer data-prep utilities
-│       ├── prepare_vcfs.R               # Download VCFs for the 50 per-locus regions
-│       ├── prepare_gwfm_vcfs.R          # Download VCFs for the 128 genome-wide regions
-│       └── download_ldetect_regions.R   # (Optional) fetch LDetect block partition + VCFs
-├── tests/
-│   ├── testthat.R              # testthat entry point (R CMD check)
-│   └── testthat/               # test-pipeline.R, test-evaluate.R, test-comprehensive.R
-├── vignettes/
-│   └── getting-started.Rmd     # Quick-start vignette
-├── BEATRICE_annot_sparse/      # Functional BEATRICE source (Python + training scripts)
-├── data/                       # Working caches (gitignored; not part of the package)
-│   ├── vcf/                    # Downloaded 1000G VCF slices for per-locus regions
-│   ├── gwfm_vcf/               # Downloaded 1000G VCF slices for genome-wide regions
-│   └── genetic_maps/           # Cached HapMap GRCh37 maps (auto-downloaded)
-├── scripts/
-│   └── hpc/                         # SLURM job array for the benchmark
-│       ├── generate_params_grid.R   # Build params_grid.csv (40 jobs)
-│       ├── params_grid.csv          # One row per HPC array task
-│       ├── run_benchmark_job.R      # Worker script: runs one (model, p, annot) combination
-│       ├── collect_results.R        # Combines per-job outputs into one data frame
-│       ├── smoke_test.R             # Per-method smoke test before submitting
-│       └── submit_benchmark.sh      # Submits the SLURM array
-├── docs/
-│   ├── methods.md                       # Method descriptions and wrapper API
-│   ├── evaluation.md                    # Evaluation metrics: formulas and implementation
-│   └── gw_simulation_documentation.md   # Technical spec of genome-wide simulation
-├── LICENSE                     # MIT license
-├── CITATION.cff                # Citation File Format metadata
-├── environment.yml             # conda environment for Funmap + BEATRICE
-├── renv.lock                   # R package lockfile (use renv::restore())
-└── README.md
-```
-
-Results are written to `results/` (gitignored).
-
----
-
-## API Reference
-
-All six main functions share a consistent interface: every function accepts
-`save`, `output_dir`, and `verbose` arguments. Setting `save = TRUE` writes
-output to `output_dir` (which is created automatically if it does not exist).
-Setting `verbose = FALSE` suppresses all progress messages.
-
----
-
-### `simulate_genotypes()`
-
-Simulates genotype matrices from 1000 Genomes haplotypes using sim1000G.
-Returns one matrix per region with realistic LD structure.
-
-```r
-genotypes <- simulate_genotypes(
-  n_regions       = 3,
-  n               = 500,
-  p               = 200,
-  vcf_files       = NULL,
-  min_maf         = 0.01,
-  max_maf         = NA,
-  standardise     = TRUE,
-  genetic_map_dir = "data/genetic_maps",
-  seed            = NULL,
-  save            = FALSE,
-  output_dir      = "results",
-  verbose         = TRUE
-)
-```
-
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `n_regions` | integer ≥ 1 | `3` | Number of independent genomic regions to simulate |
-| `n` | integer ≥ 1 | `500` | Number of unrelated individuals |
-| `p` | integer or integer vector | `200` | Target number of SNPs per region. Scalar = same for all regions; vector of length `n_regions` = per-region targets. Capped at 500 when using the bundled VCF |
-| `vcf_files` | character vector or `NULL` | `NULL` | VCF files to simulate from (one per region, or one path reused for all). `NULL` uses the bundled sim1000G example VCF |
-| `min_maf` | numeric ∈ [0, 0.5] | `0.01` | Minimum minor allele frequency filter |
-| `max_maf` | numeric or `NA` | `NA` | Maximum MAF filter; `NA` = no upper limit |
-| `standardise` | logical | `TRUE` | If `TRUE`, standardise each column to mean 0, variance 1. If `FALSE`, return raw 0/1/2 dosages |
-| `genetic_map_dir` | character or `NULL` | `NULL` | Directory for caching HapMap GRCh37 genetic maps. `NULL` uses `tempdir()` (re-downloaded each session) |
-| `seed` | integer or `NULL` | `NULL` | Random seed for reproducibility |
-| `save` | logical | `FALSE` | If `TRUE`, write the returned list as `genotypes_{n_regions}regions_n{n}_p{p}_{seed}.rds` inside `output_dir` |
-| `output_dir` | character | `"results"` | Directory for saved output; created automatically if absent |
-| `verbose` | logical | `TRUE` | Print progress messages |
-
-**Returns:** A list of length `n_regions`. Each element contains:
-`X` (standardised genotype matrix, n × p), `X_raw` (raw 0/1/2 matrix),
-`n`, `p`, `maf`, `variant_ids`, `region_id`, `vcf_source`.
-
----
-
-### `simulate_phenotypes()`
-
-Takes the output of `simulate_genotypes()` and adds phenotypes, summary
-statistics, LD matrices, and ground truth to each region.
-
-```r
-sim <- simulate_phenotypes(
-  genotypes              = genotypes,
-  S                      = 1,
-  phi                    = 0.1,
-  model                  = "sparse",
-  p_causal               = 0.5,
-  inf_model              = "beatrice",
-  effect_distribution    = "normal",
-  effect_variance        = 0.36,
-  annotations            = "none",
-  n_annotations          = 3,
-  annotation_proportions = NULL,
-  enrichment             = NULL,
-  seed                   = NULL,
-  save                   = FALSE,
-  output_dir             = "results",
-  verbose                = TRUE
-)
-```
-
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `genotypes` | list | — | Output from `simulate_genotypes()` |
-| `S` | integer or integer vector | `1` | Number of causal variants per region. Scalar = same for all; vector of length `n_regions` = per-region |
-| `phi` | numeric or numeric vector | `0.1` | Proportion of variance explained (PVE). Must be in (0, 1). Scalar or per-region vector |
-| `model` | `"sparse"` or `"sparse_inf"` | `"sparse"` | Genetic architecture. `"sparse"` = causal effects only; `"sparse_inf"` = sparse + infinitesimal background |
-| `p_causal` | numeric ∈ (0, 1] | `0.5` | Fraction of total genetic variance from the sparse component. Only used when `model = "sparse_inf"` |
-| `inf_model` | `"beatrice"` or `"susie_inf"` | `"beatrice"` | Infinitesimal formulation: `"beatrice"` draws background effects from non-causal variants only; `"susie_inf"` uses all variants. Only used when `model = "sparse_inf"` |
-| `effect_distribution` | `"normal"` or `"equal"` | `"normal"` | Distribution for causal effect sizes. `"normal"` draws from N(0, `effect_variance`); `"equal"` partitions variance equally |
-| `effect_variance` | numeric > 0 | `0.36` | Variance of the normal effect size distribution (SD ≈ 0.6). Only used when `effect_distribution = "normal"` |
-| `annotations` | `"none"`, `"binary"`, `"continuous"`, or matrix | `"none"` | Functional annotation mode. A user-supplied p × m matrix is also accepted |
-| `n_annotations` | integer ≥ 1 | `3` | Number of annotation columns (for `"binary"` or `"continuous"`) |
-| `annotation_proportions` | numeric, vector, or `NULL` | `NULL` | Proportion of SNPs with value 1 per binary annotation. `NULL` = random from Uniform(0.01, 0.30). Scalar or vector of length `n_annotations` |
-| `enrichment` | numeric, vector, or `NULL` | `NULL` | Fold-enrichment of each annotation for causal variant selection. `NULL` = random from Uniform(2, 10). Scalar or vector of length `n_annotations` |
-| `seed` | integer or `NULL` | `NULL` | Random seed |
-| `save` | logical | `FALSE` | If `TRUE`, write the returned list as `phenotypes_{model}_S{S}_phi{phi}_{seed}.rds` inside `output_dir` |
-| `output_dir` | character | `"results"` | Directory for saved output; created automatically if absent |
-| `verbose` | logical | `TRUE` | Print progress messages |
-
-**Returns:** The input `genotypes` list with additional fields per region:
-`y`, `z`, `beta_hat`, `se`, `LD`, `annotations_matrix`, `truth`.
-The `truth` sub-list records `causal_indices`, `causal_effects`, `beta_true`, `pve`, `S`, `phi`, `model`, and annotation settings.
-
----
-
-### `run_simulation()`
-
-Orchestrates a full benchmarking simulation. Simulates genotypes once, then
-sweeps over all combinations of S, phi (and optionally p_causal), generating
-`n_iter` independent replicates per combination.
-
-```r
-sim <- run_simulation(
-  n_regions              = 3,
-  n                      = 500,
-  p                      = 200,
-  n_iter                 = 5,
-  S                      = c(1, 2, 3, 5),
-  phi                    = c(0.1, 0.2, 0.4, 0.6),
-  model                  = "sparse",
-  p_causal               = c(0.1, 0.2, 0.4),
-  inf_model              = "beatrice",
-  effect_distribution    = "normal",
-  effect_variance        = 0.36,
-  annotations            = "none",
-  n_annotations          = 3,
-  annotation_proportions = NULL,
-  enrichment             = NULL,
-  vcf_dir                = NULL,
-  vcf_files              = NULL,
-  genetic_map_dir        = "data/genetic_maps",
-  min_maf                = 0.01,
-  max_maf                = NA,
-  standardise            = TRUE,
-  seed                   = NULL,
-  save                   = FALSE,
-  output_dir             = "results",
-  verbose                = TRUE
-)
-```
-
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `n_regions` | integer ≥ 1 | `3` | Number of independent genomic regions |
-| `n` | integer ≥ 1 | `500` | Number of individuals |
-| `p` | integer or vector | `200` | Target SNPs per region |
-| `n_iter` | integer ≥ 1 | `5` | Independent replicates per parameter combination |
-| `S` | integer vector | `c(1,2,3,5)` | Causal-variant counts to sweep over |
-| `phi` | numeric vector ∈ (0, 1) | `c(0.1,0.2,0.4,0.6)` | PVE values to sweep over |
-| `model` | `"sparse"` or `"sparse_inf"` | `"sparse"` | Genetic architecture model |
-| `p_causal` | numeric vector ∈ (0, 1] | `c(0.1,0.2,0.4)` | Sparse-component fractions to sweep. Only used when `model = "sparse_inf"` |
-| `inf_model` | `"beatrice"` or `"susie_inf"` | `"beatrice"` | Infinitesimal formulation. Only used when `model = "sparse_inf"` |
-| `effect_distribution` | `"normal"` or `"equal"` | `"normal"` | Effect size distribution |
-| `effect_variance` | numeric > 0 | `0.36` | Variance for normal effect sizes |
-| `annotations` | `"none"`, `"binary"`, `"continuous"`, or matrix | `"none"` | Functional annotation mode |
-| `n_annotations` | integer ≥ 1 | `3` | Number of annotation columns |
-| `annotation_proportions` | numeric, vector, or `NULL` | `NULL` | Proportion of 1s per binary annotation (scalar or per-annotation vector) |
-| `enrichment` | numeric, vector, or `NULL` | `NULL` | Fold-enrichment per annotation for causal selection |
-| `vcf_dir` | character or `NULL` | `NULL` | Directory of VCF files from `inst/scripts/prepare_vcfs.R`. `n_regions` files are sampled at random (reproducibly if `seed` is set) |
-| `vcf_files` | character vector or `NULL` | `NULL` | Explicit VCF paths; overrides `vcf_dir` when supplied |
-| `genetic_map_dir` | character or `NULL` | `"data/genetic_maps"` | Cache directory for HapMap genetic maps |
-| `min_maf` | numeric | `0.01` | Minimum MAF filter |
-| `max_maf` | numeric or `NA` | `NA` | Maximum MAF filter |
-| `standardise` | logical | `TRUE` | Standardise genotype columns |
-| `seed` | integer or `NULL` | `NULL` | Master random seed |
-| `save` | logical | `FALSE` | If `TRUE`, write the full result as an `.rds` file inside `output_dir` |
-| `output_dir` | character | `"results"` | Output directory; created automatically if absent |
-| `verbose` | logical | `TRUE` | Print progress messages |
-
-**Returns:** A list with:
-- `genotypes` — output of `simulate_genotypes()`, with pre-computed LD matrices
-- `scenarios` — list of simulation scenarios, each containing `S`, `phi`, `p_causal`, `iter`, `model`, and `regions` (per-region phenotypes + truth)
-- `params` — all simulation parameters for reproducibility
-
-The total number of scenarios is `length(S) × length(phi) × n_iter` (sparse) or
-`length(S) × length(phi) × length(p_causal) × n_iter` (sparse_inf).
-
----
-
-### `run_methods()`
-
-Applies one or more fine-mapping methods to every scenario × region combination
-in a simulation object.
-
-```r
-results <- run_methods(
-  simulation  = sim,
-  methods     = "susie",
-  method_args = list(),
-  save        = FALSE,
-  output_dir  = "results",
-  verbose     = TRUE
-)
-```
-
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `simulation` | list | — | Output of `run_simulation()` |
-| `methods` | character vector | `"susie"` | Methods to run (case-insensitive). Any combination of the supported methods below |
-| `method_args` | named list | `list()` | Per-method argument overrides. Each entry is a named list passed to that method's region runner. Arguments not listed use the method's own defaults |
-| `save` | logical | `FALSE` | If `TRUE`, write each method's results as `{method}.rds` and a `run_metadata.rds` file inside a sub-directory of `output_dir` |
-| `output_dir` | character | `"results"` | Root output directory; sub-directory is named after simulation parameters |
-| `verbose` | logical | `TRUE` | Print per-fit progress |
-
-**Supported methods and their tuneable arguments (via `method_args`):**
-
-| Method key | Key arguments |
-|-----------|--------------|
-| `"susie"` | `L` (int, default 10), `coverage` (0–1, default 0.95), `min_abs_corr` (default 0.5), `max_iter` (default 100), `estimate_residual_variance` (logical), `estimate_prior_variance` (logical), `prior_variance` (numeric) |
-| `"susie_inf"` | `L` (int, default 10), `coverage` (0–1, default 0.95), `max_iter` (default 100) |
-| `"abf"` | `prior_variance` (default 0.04), `coverage` (0–1, default 0.95) |
-| `"carma"` | `rho.index` (default 0.95), `num.causal` (default 10) |
-| `"finemap"` | `finemap_path` (path to binary), `n_causal` (default 5), `prior_std` (default 0.05) |
-| `"paintor"` | `paintor_path` (path to binary), `max_causal` (default 2) |
-| `"beatrice"` | `beatrice_dir` (path to repo), `python` (Python executable), `max_iter` (default 2000) |
-| `"funmap"` | `python` (Python executable), `L` (default 10), `max_iter` (default 100) |
-
-**Returns:** A named list, one entry per method plus `methods_run`, `simulation_params`, `run_timestamp`.
-Each method entry contains `results` (flat list of per-fit outputs), `n_total`, `n_failed`, `total_runtime_seconds`.
-Each per-fit result has `pip`, `credible_sets`, `method`, `input_type`, `params`, `runtime_seconds`, `additional`, plus scenario metadata (`scenario_id`, `region_id`, `S`, `phi`, `iter`).
-
----
-
-### `evaluate_methods()`
-
-Computes evaluation metrics for each method against the simulation ground truth.
-Results are stratified globally and by S, phi, and p_causal (sparse_inf only).
-
-```r
-eval_out <- evaluate_methods(
-  simulation     = sim,
-  results        = results,
-  pip_thresholds = seq(0, 1, by = 0.005),
-  n_pip_cal_bins = 10L,
-  save           = FALSE,
-  output_dir     = "results",
-  verbose        = TRUE
-)
-```
-
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `simulation` | list | — | Output of `run_simulation()` |
-| `results` | list | — | Output of `run_methods()` |
-| `pip_thresholds` | numeric vector | `seq(0, 1, by = 0.005)` | PIP thresholds at which to compute power and FDR for the precision-recall curve |
-| `n_pip_cal_bins` | integer ≥ 1 | `10` | Number of equal-width bins for the PIP calibration plot |
-| `save` | logical | `FALSE` | If `TRUE`, write `evaluation.rds` (full object) and `evaluation_summary.csv` (per-method global metrics) to `output_dir` |
-| `output_dir` | character | `"results"` | Output directory; created automatically if absent |
-| `verbose` | logical | `TRUE` | Print progress messages |
-
-**Returns:** A named list (one entry per method) containing `global`, `by_S`, `by_phi`, and `by_p_causal` strata.
-Each stratum contains:
-
-| Field | Description |
-|-------|-------------|
-| `fdr_power_curve` | Data frame with columns `threshold`, `tp`, `fp`, `fn`, `fdr`, `power`, `precision`, `recall`, `power_se`, `precision_se` |
-| `auprc` | Area under the precision-recall curve (±`auprc_se`) |
-| `pip_calibration` | Data frame: binned mean PIP vs observed fraction causal (±`frac_causal_se`) |
-| `cs_coverage` | Proportion of reported credible sets containing ≥1 true causal variant (±`cs_coverage_se`) |
-| `cs_power` | Proportion of true causal variants captured by any credible set (±`cs_power_se`) |
-| `cs_size_median` | Median number of variants per credible set (±SE) |
-| `cs_size_mean` | Mean number of variants per credible set (±SE) |
-| `n_cs_reported` | Total credible sets reported across all fits |
-| `runtime_mean` | Mean runtime in seconds across successful fits (±`runtime_mean_se`) |
-| `n_fits` | Total fits attempted |
-| `n_failed` | Fits that errored |
-
-Standard errors are computed across replicates (`n_iter`). SE fields are `NA` when `n_iter < 2`.
-
----
-
-### `plot_results()`
-
-Generates a multi-page PDF with precision-recall curves, PIP calibration plots,
-and summary metric panels — globally and stratified by S, phi, and p_causal.
-
-```r
-plot_results(
-  eval_out    = eval_out,
-  output_file = NULL,
-  output_dir  = "results",
-  save        = TRUE,
-  methods     = NULL,
-  verbose     = TRUE
-)
-```
-
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `eval_out` | list | — | Output of `evaluate_methods()` |
-| `output_file` | character or `NULL` | `NULL` | Full path for the PDF. When specified, takes precedence over `output_dir`. When `NULL`, the file is written as `evaluation.pdf` inside `output_dir` |
-| `output_dir` | character | `"results"` | Directory in which to write `evaluation.pdf` when `output_file` is `NULL`. Created automatically if absent |
-| `save` | logical | `TRUE` | If `FALSE`, skip writing the PDF entirely (useful for dry runs) |
-| `methods` | character vector or `NULL` | `NULL` | Methods to include in the plots. `NULL` = all evaluated methods |
-| `verbose` | logical | `TRUE` | Print section progress |
-
-**Returns:** Invisibly returns the path of the PDF that was (or would have been) written.
-
-**PDF sections:**
-1. **Global** — PR curve (all methods), PIP calibration (faceted by method), summary table with ±SE
-2. **By S** — PR grid, calibration grid, metric line plots vs S with error bars
-3. **By phi** — same structure as By S
-4. **By p_causal** — same structure (sparse_inf model only)
-
----
-
-## Evaluation output
-
-`evaluate_methods()` returns metrics for each method, globally and stratified
-by S, phi, and p_causal (sparse_inf model). Key metrics:
-
-- **AUPRC** — area under the precision-recall curve (PIPs vs causal truth)
-- **CS coverage** — proportion of credible sets containing at least one causal variant
-- **CS power** — proportion of causal variants captured by any credible set
-- **Median CS size** — median number of variants per credible set
-- **PIP calibration** — binned mean PIP vs observed fraction causal
-
-Standard errors are computed across replicates (`n_iter`). With `save = TRUE`,
-results are written as `evaluation.rds` and `evaluation_summary.csv`.
-
-See [`docs/evaluation.md`](docs/evaluation.md) for full details.
-
-## Adding a new method
-
-1. Create `R/wrapper_mymethod.R` with a `run_mymethod_region(region_geno, region_pheno, ...)` function.
-2. Return a named list with at minimum: `pip` (numeric vector, length p), `credible_sets` (list of integer vectors), `method`, `input_type`, `params`, `runtime_seconds`, `additional`.
-3. Register the method in `R/run_methods.R` in `.FM_REGISTRY`.
-4. Add a `setup_mymethod()` function if external dependencies are required.
-
-See [`docs/methods.md`](docs/methods.md) for the full wrapper API specification.
-
-## Testing
-
-The package uses [testthat](https://testthat.r-lib.org/). Tests live under
-`tests/testthat/`:
-
-| File | Coverage |
-|------|----------|
-| `test-comprehensive.R` | Every argument of every public function |
-| `test-evaluate.R` | Evaluation module unit tests |
-| `test-pipeline.R` | End-to-end pipeline (simulate → run → evaluate → plot) |
-
-Run the full suite from the package root. `devtools::test()` is the most
-convenient entry point (it loads the package and sets `NOT_CRAN` so the
-network-backed tests run):
-
-```r
-devtools::test()
-```
-
-Without devtools, load the package and point testthat at the test directory:
+`challenge_exact()` enumerates a declared zero/one/two-effect Gaussian model.
+It is an exact probabilistic reference in the compatible matched-prior track,
+and exact enumeration of a working model in misspecified tracks. It is not a
+universal performance ceiling. An entirely missing causal variant remains in
+total-target recall; no method can recover an ID it was never supplied.
+
+## Use the existing genotype-based pipeline
+
+Restore the pinned R environment with `renv::restore()`, then load the source
+package with `pkgload::load_all()` or install it normally. `sim1000G` and
+`hapsim` are archived dependencies. Some optional methods require external
+binaries, Python environments or GitHub packages; their requirements are in
+[methods.md](docs/methods.md) and [environment.yml](environment.yml).
 
 ```r
 pkgload::load_all()
-Sys.setenv(NOT_CRAN = "true")          # also run the VCF/genetic-map tests
+sim <- run_simulation(n_regions = 2, n = 500, p = 100,
+                      n_iter = 5, S = c(1, 2), phi = c(.05, .2), seed = 42)
+results <- run_methods(sim, methods = c("susie", "abf"))
+evaluation <- evaluate_methods(sim, results)
+evaluation$susie$global$ap         # exact tied-rank average precision
+plot_results(evaluation, output_dir = "results/haplotype-example")
+```
+
+For meaningful locus generalisation, supply multiple documented reference
+VCFs rather than repeatedly using the small bundled example. The genotype
+[getting-started vignette](vignettes/getting-started.Rmd),
+[genome-wide simulation specification](docs/gw_simulation_documentation.md) and
+[HPC instructions](scripts/hpc/README.md) cover those workflows.
+
+`simulate_gwfm_data()` generates one shared phenotype across regions. This
+alone does not make every comparator a faithful genome-wide method. The legacy
+`"sbayesrc"` key is explicitly an **SBayesRC-style surrogate**, and the local
+PolyFun-style variants are not the upstream PolyFun implementation. Compare
+upstream software at its intended information scale before making a claim
+about those named methods. Oracle-prior methods belong in a labelled diagnostic
+track; they must not receive the same competitive rank as deployable methods.
+The separate [official GCTB/SBayesRC interface](docs/native-sbayesrc.md) jointly
+fits a prepared full input panel and records its declared genomic scale,
+allele alignment, upstream version and file commitments. Its small native
+smoke test establishes executable integration; a genome-wide accuracy claim
+requires a genome-wide experiment.
+
+The [tuning contract](docs/tuning-validity.md) requires balanced locus subsets,
+complete scenario grids, attempted macro AP, explicit fit failures and
+fingerprinted studies. Historical unfingerprinted studies cannot be reused
+as if they came from the repaired experiment.
+
+The bundled Functional BEATRICE Python code now caches pure log Bayes factors
+and applies one final learned prior. Historical mixed-prior `res` archives
+must be regenerated. Its posterior remains conditional on explored models,
+and its selected-index training KL is approximate. Dependency-free tests run
+with `python -m unittest discover -s tests/python`; opt-in actual neural tests
+use `FMB_NEURAL_SMOKE=1` in an environment with the documented Python packages.
+The bundled set builder also repairs integer truncation of conditional
+probabilities and stops using conditional union-event probability instead of
+summed marginals. Each set reports its conditioning, attained probability and
+whether the target was reached; these do not establish unconditional coverage.
+Exact candidate-round batching improves expansion cost while preserving the
+corrected eager results. See the [analytical examples and validation](docs/beatrice-batched-reweighting.md).
+
+## What the scores mean
+
+- Exact AP measures ranking; macro and pooled AP answer different questions.
+  The old threshold-grid `auprc` is retained as a labelled legacy quantity.
+- Raw Brier and logarithmic scores evaluate marginal sparse-membership
+  forecasts. Binned reliability diagrams are descriptive, not proof of calibration.
+- Native credible sets, configuration collections and cumulative-PIP candidate
+  lists represent different events. A sum of marginal PIPs is an expected count.
+- Null false calls, missing outputs, invalid predictions, convergence diagnostics
+  and all-attempt recovery are reported explicitly.
+- Shared genotype regions require clustered uncertainty. The new challenge
+  supplies independent locus clusters and paired mechanism-specific bootstrap
+  comparisons; the legacy phenotype-replicate jackknife is conditional on its
+  reference loci.
+
+See [evaluation.md](docs/evaluation.md) for formulas, tie conventions,
+denominators, uncertainty and limitations. Sparse-component membership is the
+primary target in sparse-plus-background simulations; a non-target variant can
+still have a nonzero background effect.
+
+## Test the evaluator and generator
+
+```r
+install.packages("testthat", repos = "https://cloud.r-project.org")
+```
+
+```bash
+Rscript --vanilla scripts/challenge/test_core.R
+```
+
+These scientific invariant tests include hand-computed posterior odds and
+proper scores, independent prior-predictive calibration, singular LD,
+recoding/permutation invariance, missing-target limits, failure denominators,
+input/truth separation, artifact tampering and adversarial submissions.
+The dedicated CI workflow runs them on Linux and macOS.
+
+With the full pinned environment restored, run the existing package suite:
+
+```r
+pkgload::load_all()
+Sys.setenv(NOT_CRAN = "true")
 testthat::test_dir("tests/testthat")
 ```
 
-Some tests skip automatically when a dependency is absent: the FINEMAP and
-PAINTOR binary tests (external binaries) and the SparsePro real-install tests.
-The end-to-end pipeline test skips on CRAN because the simulator may download a
-HapMap genetic map from GitHub on first use.
+External method tests can skip when their dependencies are absent. Report
+those skips; source parsing or mocked wrappers do not establish that a real
+binary ran. Validation results and executed examples are recorded in
+[the validation record](docs/validation.md).
 
-## Genome-wide simulation
+## Towards a community challenge
 
-`simulate_gwfm_data()` replaces the locus-based `run_simulation()` with a
-genome-wide model: a single shared phenotype is generated across all regions
-(as in a real GWAS), causal variants are assigned genome-wide via Bernoulli(π),
-and per-region summary statistics are computed from the shared phenotype.
+The software supports frozen public-input/private-truth releases and distinct
+specification, dataset and run identities. A real blind round additionally
+needs independent custody, concealed fresh targets, prespecified metrics and
+resource budgets, separate development data, and independent assessors.
 
-```r
-library(fmbenchmark)   # or pkgload::load_all() from a source checkout
+A plausible 2027 round would combine a simulation calibration division,
+real-genotype robustness tasks and a prospective endogenous variant-effect
+assay division. Experimental assay effects must keep their own endpoint;
+reporter activity, replication and high PIPs are not complete GWAS causal truth.
+The [scientific contract](docs/challenge-science.md) specifies this proposal
+and the evidence still needed before claiming a CASP-equivalent assessment.
 
-sim <- simulate_gwfm_data(
-  n        = 2000,
-  n_iter   = 3,
-  pi       = c(1e-4, 1e-3),
-  h2       = c(0.1, 0.3),
-  regions  = "representative",   # 128 bundled regions; or "1" for one chromosome
-  vcf_dir  = "data/gwfm_vcf",
-  seed     = 1
-)
-```
+## Reuse and citation
 
-The resulting object is compatible with `run_methods()` and `evaluate_methods()`.
-See [`docs/gw_simulation_documentation.md`](docs/gw_simulation_documentation.md)
-for the full statistical specification.
-
-**Memory:** the simulator holds one dense p×p LD matrix per region in memory.
-A warning is emitted when combined LD storage exceeds ~4 GB. For the full LDetect
-partition (~1,700 blocks), run on a high-memory node or reduce `coverage`.
-
-## Running on an HPC cluster
-
-The `scripts/hpc/` directory contains a self-contained SLURM job array that
-sweeps the benchmark across `(model, p, annotation)` combinations.
-
-```bash
-# 1. (Optional) regenerate the grid
-Rscript scripts/hpc/generate_params_grid.R
-
-# 2. Smoke-test all methods first
-Rscript scripts/hpc/smoke_test.R
-
-# 3. Submit the array (40 jobs)
-bash scripts/hpc/submit_benchmark.sh
-
-# 4. Combine results once jobs complete
-Rscript scripts/hpc/collect_results.R
-```
-
-Edit `submit_benchmark.sh` for your cluster's partition, account, and conda
-environment, and edit `run_benchmark_job.R` for the paths to BEATRICE / PAINTOR
-on your system.
-
-## License
-
-This project is licensed under the MIT License — see the [LICENSE](LICENSE)
-file for the full text. In short: you can use, copy, modify, and redistribute
-the code commercially or non-commercially, as long as you preserve the
-copyright notice.
-
-## Citation
-
-If you use this benchmarking framework in your research, please cite it
-using the metadata in [`CITATION.cff`](CITATION.cff). GitHub renders this
-file as a **"Cite this repository"** button on the repository page, which
-exports BibTeX, APA, and other formats with one click.
-
-A Zenodo DOI will be assigned to the first tagged release (`v0.1.0`); the
-DOI will be added to `CITATION.cff` at that point. Once the framework is
-formally published, the citation will be updated to point at the paper.
+MIT licence: [LICENSE](LICENSE). Preserve Lucas Siu's authorship and cite the
+original framework using [CITATION.cff](CITATION.cff). Source code and benchmark
+specifications can be improved independently; a new code revision does not
+retroactively change the meaning of a frozen dataset or historical run.

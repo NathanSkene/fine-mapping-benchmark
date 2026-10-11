@@ -16,6 +16,8 @@ run_sbayesrc(
   pooled_gamma = NULL,
   seed = NULL,
   variant_ids = NULL,
+  statistic_type = c("marginal_ols_t", "normal_score"),
+  residual_variance = 1,
   ...
 )
 }
@@ -47,6 +49,12 @@ are used as-is.}
 
 \item{variant_ids}{Character or NULL. Passed through unused.}
 
+\item{statistic_type}{Character. \code{marginal_ols_t} (default) uses the
+exact t-to-standardized-slope transform; \code{normal_score} uses z/sqrt(n).}
+
+\item{residual_variance}{Positive scalar. Fixed residual variance on the
+standardized phenotype scale. Default 1 is an approximation.}
+
 \item{...}{Ignored (wrapper compatibility).}
 }
 \value{
@@ -64,6 +72,7 @@ region alone.
 }
 \details{
 When \code{annotations} is NULL, the prior collapses to region-common
-mixture proportions (learned from the Gibbs assignments), and the method
-still runs.
+mixture proportions (fixed at their initial values), and the method runs.
+This fixed-prior path and supplied \code{pooled_gamma} need only base R;
+learning local or scenario-pooled annotation coefficients requires nnet.
 }

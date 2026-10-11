@@ -8,18 +8,19 @@ setup_beatrice(beatrice_dir, python = "python")
 }
 \arguments{
 \item{beatrice_dir}{Character. Path to the cloned Beatrice-Finemapping
-repository root (must contain \code{beatrice.py}).}
+repository root (must contain \code{beatrice_annot.py} or \code{beatrice.py}).}
 
 \item{python}{Character. Path to the Python executable to use.
 Default: \code{"python"} (searches PATH).}
 }
 \value{
 Invisibly returns a named list with \code{beatrice_script} (full
-path to \code{beatrice.py}) and \code{python} (resolved Python path).
+path to the selected script) and \code{python} (resolved Python path).
 }
 \description{
-Verifies that the BEATRICE Python script can be found at \code{beatrice_dir}
-and that the required Python packages (torch, numpy, scipy, pandas) are
+Verifies that a BEATRICE Python script can be found at \code{beatrice_dir}
+(preferring \code{beatrice_annot.py}, as the runner does), and that its
+required Python packages are
 importable by the specified Python executable.
 }
 \details{

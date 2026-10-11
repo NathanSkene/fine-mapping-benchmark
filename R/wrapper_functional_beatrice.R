@@ -30,7 +30,7 @@
 # Output files  (read from temp directory)
 #   pip.csv                 variant_index, pip, variant_names
 #   credible_set.txt        one credible set per line, 0-based indices
-#   feature_importance.csv  annotation importance scores (LassoNet |θ|)
+#   feature_importance.csv  magnitude of the causal-versus-null skip-logit contrast
 #
 # This file provides:
 #   setup_functional_beatrice()          : verify beatrice_annot.py and deps
@@ -92,7 +92,7 @@ setup_functional_beatrice <- function(beatrice_dir, python = "python") {
   }
 
   resolved_python <- if (file.exists(path.expand(python))) {
-    normalizePath(path.expand(python))
+    .fm_python_path(python)
   } else {
     py <- Sys.which(python)
     if (nchar(py) == 0) {
@@ -109,8 +109,7 @@ setup_functional_beatrice <- function(beatrice_dir, python = "python") {
     py
   }
 
-  required_pkgs <- c("torch", "numpy", "pandas", "tqdm", "absl", "imageio",
-                     "seaborn", "matplotlib")
+  required_pkgs <- .beatrice_required_packages(script_path)
   check_pkg <- function(pkg) {
     system2(resolved_python,
             args = c("-c", shQuote(paste0("import ", pkg))),
@@ -147,6 +146,12 @@ setup_functional_beatrice <- function(beatrice_dir, python = "python") {
 #' \code{beatrice_annot.py} via the specified Python executable, parses the
 #' output, and returns results in the standardised format. The temporary
 #' directory is deleted on exit.
+#' Nonzero process exits and malformed, incomplete, or unaligned native
+#' probabilities or credible sets return a failed fit; evidence is never clipped
+#' or repaired. Synthetic tokens serialize variants without changing their IDs.
+#' The declared bundled fork uses conditional union-event stopping within its
+#' explored configuration support. Per-set event probabilities and target
+#' attainment are retained; they do not guarantee unconditional coverage.
 #'
 #' When \code{annotations} is \code{NULL} the method runs without a functional
 #' prior (equivalent to standard BEATRICE with a uniform prior). When
@@ -162,6 +167,8 @@ setup_functional_beatrice <- function(beatrice_dir, python = "python") {
 #'   Pass \code{NULL} to run without annotations (uniform prior).
 #' @param variant_ids Character vector or NULL. Variant identifiers (length p).
 #'   If NULL, set to \code{"rs0", "rs1", …}.
+#'   Original identifiers are retained in \code{additional$variant_ids} and
+#'   \code{additional$variant_alignment}; native files use collision-free tokens.
 #' @param beatrice_dir Character. Path to the directory containing
 #'   \code{beatrice_annot.py}.
 #' @param python Character. Path to the Python executable. Default:
@@ -193,8 +200,13 @@ setup_functional_beatrice <- function(beatrice_dir, python = "python") {
 #'     \describe{
 #'       \item{cs_pip}{List of numeric vectors. Conditional inclusion
 #'         probabilities within each credible set. NULL if not produced.}
+#'       \item{credible_set_diagnostics}{Declared fork's conditional union-event
+#'         probabilities, conditioning indices and target-attainment flags.}
+#'       \item{null_probability}{Empty candidate-configuration probability
+#'         within the explored posterior support, when declared.}
 #'       \item{feature_importance}{Data frame (annotation_index, importance)
-#'         from LassoNet |θ|, sorted descending. NULL if no annotations or
+#'         from the magnitude of the causal-versus-null skip-logit contrast,
+#'         sorted descending. NULL if no annotations or
 #'         file not produced.}
 #'     }
 #'   }
@@ -223,37 +235,30 @@ run_functional_beatrice <- function(z,
   p <- length(z)
 
   stopifnot(
+    "z must contain finite numeric statistics" =
+      is.numeric(z) && p > 0L && all(is.finite(z)),
     "LD must be a p x p matrix" =
-      is.matrix(LD) && nrow(LD) == p && ncol(LD) == p,
+      is.matrix(LD) && is.numeric(LD) && nrow(LD) == p && ncol(LD) == p && all(is.finite(LD)),
     "n must be a positive integer" =
-      is.numeric(n) && length(n) == 1 && n > 0,
+      is.numeric(n) && length(n) == 1 && is.finite(n) && n > 0 && n == floor(n),
     "max_iter must be >= 500" =
       is.numeric(max_iter) && max_iter >= 500
   )
 
   if (!is.null(annotations)) {
-    if (!is.matrix(annotations) || nrow(annotations) != p) {
+    if (!is.matrix(annotations) || !is.numeric(annotations) ||
+        nrow(annotations) != p || any(!is.finite(annotations))) {
       stop("annotations must be a numeric matrix with nrow == length(z).",
            call. = FALSE)
     }
   }
 
-  if (is.null(variant_ids)) variant_ids <- paste0("rs", seq(0, p - 1))
-
-  # CRITICAL: both the .z and .annot files are whitespace-separated, and
-  # trainer_annot.py parses them positionally:
-  #     Z = pd.read_table(z_file, sep=' ', ...).to_numpy()[:,1]
-  #     v = pd.read_table(annot_file, sep=None, ...).to_numpy()[:,1:].astype(float)
-  # VCF-derived variant_ids look like "1 40023356 . A T" - embedded spaces.
-  # Written verbatim they shift the columns, so z becomes the POSITION and
-  # the annotation cast hits the "." rsID ("could not convert string to
-  # float: '.'"), failing every annotated run. Collapse whitespace so each
-  # variant_id is a single token.
-  variant_ids <- gsub("\\s+", "_", variant_ids)
+  identity <- .beatrice_variant_identity(variant_ids, p)
+  variant_ids <- identity$native_ids
 
   beatrice_dir <- normalizePath(path.expand(beatrice_dir), mustWork = FALSE)
   python       <- if (file.exists(path.expand(python))) {
-    normalizePath(path.expand(python))
+    .fm_python_path(python)
   } else {
     python
   }
@@ -272,6 +277,7 @@ run_functional_beatrice <- function(z,
   params <- .fb_params(n, max_iter, n_caus, sigma_sq, gamma_coverage,
                        sparse_concrete, prior_regularisation, lambda_l1,
                        hierarchy_M, beatrice_dir, python, !is.null(annotations))
+  params$beatrice_script <- script_path
 
   # --- Set up temp working directory ------------------------------------------
 
@@ -341,6 +347,10 @@ run_functional_beatrice <- function(z,
   if (inherits(run_output, "fb_error")) {
     return(.fb_error_result(p, params, elapsed, run_output))
   }
+  if (.beatrice_process_failed(run_output)) {
+    return(.fb_error_result(p, params, elapsed,
+      paste(c("Functional BEATRICE exited unsuccessfully.", run_output), collapse = "\n")))
+  }
 
   # --- Check output -----------------------------------------------------------
 
@@ -355,54 +365,17 @@ run_functional_beatrice <- function(z,
     return(.fb_error_result(p, params, elapsed, err_msg))
   }
 
-  # --- Parse pip.csv ----------------------------------------------------------
-
-  pip_df <- tryCatch(
-    utils::read.csv(pip_path, stringsAsFactors = FALSE),
-    error = function(e) NULL
-  )
-
-  if (is.null(pip_df) || !"pip" %in% names(pip_df)) {
-    return(.fb_error_result(
-      p, params, elapsed,
-      "Failed to parse pip.csv or 'pip' column missing."
-    ))
+  # The joint and single-region implementations share one strict native contract.
+  parsed <- tryCatch(.fb_joint_parse_output(out_dir, variant_ids, p,
+                     .fb_joint_requires_cs_diagnostics(beatrice_dir)),
+                     error = function(e) NULL)
+  if (is.null(parsed)) {
+    return(.fb_error_result(p, params, elapsed,
+      "Functional BEATRICE output has invalid variant IDs, finite probabilities, or credible-set evidence."))
   }
-
-  if ("variant_names" %in% names(pip_df)) {
-    ord <- match(variant_ids, pip_df$variant_names)
-    if (anyNA(ord)) ord <- seq_len(p)
-  } else {
-    ord <- seq_len(p)
-  }
-
-  pip <- pmax(0, pmin(1, as.numeric(pip_df$pip[ord])))
-
-  # --- Parse credible_set.txt (0-based → 1-based) ----------------------------
-
-  credible_sets <- list()
-  cs_pip        <- NULL
-
-  if (file.exists(cred_path)) {
-    cred_lines <- readLines(cred_path, warn = FALSE)
-    cred_lines <- cred_lines[nchar(trimws(cred_lines)) > 0]
-    if (length(cred_lines) > 0) {
-      credible_sets <- lapply(cred_lines, function(line) {
-        idx <- suppressWarnings(as.integer(strsplit(trimws(line), "\\s+")[[1]]))
-        sort(idx[!is.na(idx)] + 1L)
-      })
-      credible_sets <- credible_sets[lengths(credible_sets) > 0]
-    }
-  }
-
-  cond_path <- file.path(out_dir, "conditional_credible_variants_probability.txt")
-  if (file.exists(cond_path)) {
-    cond_lines <- readLines(cond_path, warn = FALSE)
-    cond_lines <- cond_lines[nchar(trimws(cond_lines)) > 0]
-    cs_pip <- lapply(cond_lines, function(line) {
-      suppressWarnings(as.numeric(strsplit(trimws(line), "\\s+")[[1]]))
-    })
-  }
+  pip <- parsed$pip
+  credible_sets <- parsed$credible_sets
+  cs_pip <- parsed$cs_pip
 
   # --- Parse feature_importance.csv ------------------------------------------
 
@@ -413,6 +386,20 @@ run_functional_beatrice <- function(z,
       utils::read.csv(fi_path, stringsAsFactors = FALSE),
       error = function(e) NULL
     )
+    m <- if (is.null(annotations)) 0L else ncol(annotations)
+    if (is.null(feature_importance) ||
+        !all(c("annotation_index", "importance") %in% names(feature_importance)) ||
+        nrow(feature_importance) != m || m == 0L ||
+        !is.numeric(feature_importance$annotation_index) ||
+        any(!is.finite(feature_importance$annotation_index)) ||
+        anyDuplicated(feature_importance$annotation_index) ||
+        !setequal(feature_importance$annotation_index, seq_len(m) - 1L) ||
+        !is.numeric(feature_importance$importance) ||
+        any(!is.finite(feature_importance$importance)) ||
+        any(feature_importance$importance < 0)) {
+      return(.fb_error_result(p, params, elapsed,
+        "Functional BEATRICE feature importance has invalid annotation IDs or values."))
+    }
   }
 
   # --- Return -----------------------------------------------------------------
@@ -424,10 +411,12 @@ run_functional_beatrice <- function(z,
     input_type      = "summary",
     params          = params,
     runtime_seconds = elapsed,
-    additional      = list(
+    additional      = c(list(
+      variant_ids = identity$original_ids,
+      variant_alignment = identity$alignment,
       cs_pip             = cs_pip,
       feature_importance = feature_importance
-    )
+    ), .beatrice_posterior_metadata(parsed))
   )
 }
 

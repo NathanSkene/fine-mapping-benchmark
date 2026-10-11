@@ -18,18 +18,18 @@ List with a single element \code{pooled_gamma} = list(alpha, gamma),
 or an empty list.
 }
 \description{
-Runs a short-burn Gibbs on every region with region-local annotation
-refits, pools the resulting per-SNP component assignments across all
+Runs a short-burn Gibbs on every region under a fixed sparse prior,
+pools the resulting per-SNP component assignments across all
 regions, and does one final multinomial regression on the pooled data to
 obtain the shared \code{(alpha, gamma)} - i.e., the annotation-to-prior
-mapping learned genome-wide-style from the whole scenario.
+mapping learned from the whole scenario.
 }
 \details{
 Downstream calls (per region) use those shared coefficients as
 \code{pooled_gamma}, so each region's Gibbs skips the per-region
 annotation refit and its priors are set from the cross-region model. This
-implements the plan's §0.1 requirement that SBayesRC's annotation prior
-be learned jointly across regions and fed back per-block.
+pools information across regions, but does not implement upstream SBayesRC
+joint posterior inference.
 
 Returns an empty list (no forwarding) when there are fewer than 2 regions,
 when annotation matrices are missing/inconsistent, or when the pilot Gibbs

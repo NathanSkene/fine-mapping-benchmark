@@ -18,9 +18,8 @@
 #
 # Standard output format:
 #   pip              Numeric vector (length p). Marginal PIPs.
-#   credible_sets    List of integer vectors. Constructed greedily from PIPs
-#                    (variants sorted by descending PIP, accumulated until
-#                    cumulative sum >= coverage). One credible set returned.
+#   credible_sets    Empty list: PAINTOR does not provide signal-specific sets.
+#                    A greedy PIP-mass selection is kept in additional only.
 #   method           Character. "paintor".
 #   input_type       Character. Always "summary".
 #   params           List. Hyperparameters used.
@@ -123,16 +122,16 @@ setup_paintor <- function(paintor_path = "PAINTOR") {
 #' @param mcmc Logical. If TRUE, use MCMC-based search instead of exact
 #'   enumeration. Recommended for large regions (p > 500) or when
 #'   \code{max_causal > 3}. Default: FALSE.
-#' @param coverage Numeric. Coverage level for constructing credible sets from
-#'   PIPs. Default: 0.95.
+#' @param coverage Numeric. Threshold for the descriptive PIP-mass selection
+#'   stored in \code{additional$pip_mass_set}. Default: 0.95. This selection
+#'   has no signal-specific credible-set coverage interpretation.
 #'
 #' @return A list with the standardised fine-mapping output:
 #' \describe{
 #'   \item{pip}{Numeric vector (length p). Marginal posterior inclusion
 #'     probabilities.}
-#'   \item{credible_sets}{List containing one integer vector: the indices of
-#'     variants in the credible set (ordered by decreasing PIP), constructed
-#'     greedily from PIPs until cumulative PIP >= \code{coverage}.}
+#'   \item{credible_sets}{Empty list. Signal-specific credible sets are not
+#'     provided by this upstream output.}
 #'   \item{method}{Character. Always \code{"paintor"}.}
 #'   \item{input_type}{Character. Always \code{"summary"}.}
 #'   \item{params}{List. Hyperparameters used.}
@@ -143,6 +142,14 @@ setup_paintor <- function(paintor_path = "PAINTOR") {
 #'         (0 if none).}
 #'       \item{log_bayes_factor}{Numeric vector (length p) or NULL. Log Bayes
 #'         factor per variant if present in PAINTOR output, otherwise NULL.}
+#'       \item{posterior_conditioning}{Enumeration excludes the null
+#'         configuration, so PIPs are conditional on at least one modeled
+#'         causal variant. The MCMC search includes the null configuration.}
+#'       \item{null_probability_not_provided}{TRUE. Neither native output
+#'         reports a locus-null posterior; none is inferred from the PIPs.}
+#'       \item{configuration_count}{Number of nonempty configurations in
+#'         enumeration support, or NA for MCMC. With two effects this is
+#'         \code{p + choose(p, 2)}.}
 #'     }
 #'   }
 #'   \item{error}{Character or NULL. Error message if PAINTOR failed.}
@@ -204,12 +211,13 @@ run_paintor <- function(z,
 
   locus_name <- "locus1"
 
-  # --- Write locus file (z-scores only) ---------------------------------------
-  # PAINTOR expects a single-column file with header "Zscore" and one value
-  # per line. Annotations and rsids are NOT placed here.
+  # PAINTOR selects Zscore by header and preserves other columns in output.
+  # Use safe unique row tokens; user IDs can contain VCF whitespace.
 
   locus_path <- file.path(in_dir, locus_name)
-  writeLines(c("Zscore", as.character(z)), locus_path)
+  output_ids <- paste0("variant_", seq_len(p))
+  write.table(data.frame(rsid = output_ids, Zscore = z), locus_path,
+              quote = FALSE, row.names = FALSE, sep = " ")
 
   # --- Write LD file ----------------------------------------------------------
   # Named <locus_name>.LD (matches -LDname LD). Space-separated, no header.
@@ -276,7 +284,8 @@ run_paintor <- function(z,
 
   elapsed <- as.numeric((proc.time() - start_time)["elapsed"])
 
-  if (inherits(run_output, "paintor_error")) {
+  if (inherits(run_output, "paintor_error") ||
+      (!is.null(attr(run_output, "status")) && attr(run_output, "status") != 0L)) {
     return(.paintor_error_result(p, params, elapsed, run_output))
   }
 
@@ -305,19 +314,11 @@ run_paintor <- function(z,
     ))
   }
 
-  # Re-order to match the original variant order (PAINTOR preserves order, but
-  # be defensive in case it doesn't).
-  if ("rsid" %in% names(res_df)) {
-    ord <- match(variant_ids, res_df$rsid)
-    if (anyNA(ord)) ord <- seq_len(p)   # fallback: assume order preserved
-  } else {
-    ord <- seq_len(p)
-  }
-
-  pip <- as.numeric(res_df$Posterior_Prob[ord])
-
-  # Clamp to [0, 1] - floating-point rounding can push values just outside
-  pip <- pmax(0, pmin(1, pip))
+  parsed <- .paintor_parse_probabilities(res_df, output_ids)
+  if (is.null(parsed)) return(.paintor_error_result(
+    p, params, elapsed, "PAINTOR output has damaged row IDs or invalid probabilities."))
+  ord <- parsed$order
+  pip <- parsed$pip
 
   # Log Bayes factor column (present in some PAINTOR versions)
   log_bayes_factor <- if ("log_BF" %in% names(res_df)) {
@@ -326,8 +327,8 @@ run_paintor <- function(z,
     NULL
   }
 
-  # --- Build credible set from PIPs -------------------------------------------
-  # Greedy: sort by descending PIP, accumulate until cumsum >= coverage.
+  # Descriptive PIP-mass selection, kept outside credible_sets. Summing
+  # marginal inclusion probabilities does not define a signal-specific set.
 
   ord_pip    <- order(pip, decreasing = TRUE)
   cumulative <- cumsum(pip[ord_pip])
@@ -335,7 +336,7 @@ run_paintor <- function(z,
   if (is.na(n_in_cs)) n_in_cs <- p    # safety: include all if PIPs don't sum to 1
   cs_indices <- sort(ord_pip[seq_len(n_in_cs)])
 
-  credible_sets <- list(cs_indices)
+  credible_sets <- list()
 
   # --- Return -----------------------------------------------------------------
 
@@ -346,10 +347,12 @@ run_paintor <- function(z,
     input_type      = "summary",
     params          = params,
     runtime_seconds = elapsed,
-    additional      = list(
+    additional      = c(list(
+      pip_mass_set = as.integer(cs_indices),
+      credible_set_semantics = "not_provided",
       annotations_used  = n_annots,
       log_bayes_factor  = log_bayes_factor
-    )
+    ), .paintor_probability_contract(p, max_causal, mcmc))
   )
 }
 
@@ -375,6 +378,7 @@ run_paintor <- function(z,
 #'   containing \code{z} and optionally \code{annotations_matrix}.
 #' @param ... Additional arguments passed to \code{\link{run_paintor}}
 #'   (e.g. \code{max_causal}, \code{mcmc}, \code{paintor_path}).
+#' @param .paintor_cache Internal shared scenario cache supplied by the dispatcher.
 #'
 #' @return The output of \code{\link{run_paintor}}.
 #' @export
@@ -382,11 +386,14 @@ run_paintor_region <- function(region_geno, region_pheno,
                                .paintor_cache = NULL, ...) {
   # Prefer the cross-loci result computed once per scenario by
   # run_paintor_scenario_setup() - that is how PAINTOR is designed to be run
-  # (its EM learns annotation enrichment ACROSS loci). Fall back to a
-  # single-locus run if the pooled call was unavailable or failed.
+  # (its EM learns annotation enrichment ACROSS loci).
   if (!is.null(.paintor_cache)) {
-    hit <- .paintor_cache[[.paintor_fingerprint(region_pheno$z)]]
+    key <- .paintor_fingerprint(region_pheno$z, region_geno$LD,
+      .paintor_extract_annotations(region_geno, region_pheno), region_geno$n, region_geno$variant_ids)
+    hit <- .paintor_cache[[key]]
     if (!is.null(hit)) return(hit)
+    return(.paintor_error_result(length(region_pheno$z), list(), NA_real_,
+      "PAINTOR pooled result missing; no single-locus fallback is permitted."))
   }
   out <- run_paintor(
     z           = region_pheno$z,
@@ -416,15 +423,16 @@ run_paintor_region <- function(region_geno, region_pheno,
 #' This hook is called once per scenario by \code{\link{run_methods}}. It writes
 #' every region as its own locus, lists them all in one \code{input.txt}, makes a
 #' single PAINTOR call, and returns the per-region results keyed by a
-#' fingerprint of the region's z-vector. \code{run_paintor_region()} then looks
+#' digest of the complete ordered region inputs. \code{run_paintor_region()} then looks
 #' up its own region.
 #'
 #' @param genotypes List. \code{simulation$genotypes}.
 #' @param regions List. One scenario's \code{regions}.
 #' @param user_args List. The user's method_args for paintor.
 #'
-#' @return A list with \code{.paintor_cache}, or an empty list if the pooled run
-#'   could not be performed (callers then fall back to per-locus runs).
+#' @return A list with \code{.paintor_cache}; a one-locus input returns an empty
+#'   setup list for the prespecified locus-only call. Failed pooled fits raise
+#'   errors and never substitute a different estimator.
 #' @export
 run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
 
@@ -445,14 +453,16 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
     z  <- regions[[i]]$z
     LD <- genotypes[[i]]$LD
     A  <- .paintor_extract_annotations(genotypes[[i]], regions[[i]])
-    if (is.null(z) || is.null(LD) || nrow(LD) != length(z)) return(list())
+    if (is.null(z) || is.null(LD) || nrow(LD) != length(z))
+      stop("PAINTOR pooled input dimensions are invalid.", call. = FALSE)
     # every locus must expose the same annotation columns for a joint fit
     k <- if (is.null(A)) 0L else ncol(A)
-    if (is.null(n_ann)) n_ann <- k else if (k != n_ann) return(list())
+    if (is.null(n_ann)) n_ann <- k else if (k != n_ann)
+      stop("PAINTOR pooled loci need identical annotation columns.", call. = FALSE)
     ids <- genotypes[[i]]$variant_ids
     if (is.null(ids)) ids <- paste0("SNP_", seq_along(z))
     specs[[i]] <- list(z = z, LD = LD, A = A, ids = ids, p = length(z))
-    keys[i] <- .paintor_fingerprint(z)
+    keys[i] <- .paintor_fingerprint(z, LD, A, genotypes[[i]]$n, genotypes[[i]]$variant_ids)
   }
 
   work_dir <- tempfile(pattern = "paintor_pool_")
@@ -466,7 +476,8 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
 
   for (i in seq_len(n_regions)) {
     s <- specs[[i]]; ln <- locus_names[i]
-    writeLines(c("Zscore", as.character(s$z)), file.path(in_dir, ln))
+    utils::write.table(data.frame(rsid = paste0("variant_", seq_len(s$p)), Zscore = s$z),
+      file.path(in_dir, ln), quote = FALSE, row.names = FALSE, sep = " ")
     utils::write.table(round(s$LD, 8), file.path(in_dir, paste0(ln, ".LD")),
                        quote = FALSE, row.names = FALSE, col.names = FALSE, sep = " ")
     adf <- if (n_ann > 0L) {
@@ -484,9 +495,13 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
   if (n_ann > 0L) args <- c(args, "-annotations", paste(annot_names, collapse = ","))
   args <- if (mcmc) c(args, "-mcmc") else c(args, "-enumerate", as.character(as.integer(max_causal)))
 
+  started <- proc.time()
   run_output <- tryCatch(system2(paintor_path, args = args, stdout = TRUE, stderr = TRUE),
                          error = function(e) structure(conditionMessage(e), class = "paintor_error"))
-  if (inherits(run_output, "paintor_error")) return(list())
+  elapsed <- as.numeric((proc.time() - started)["elapsed"])
+  if (inherits(run_output, "paintor_error") ||
+      (!is.null(attr(run_output, "status")) && attr(run_output, "status") != 0L))
+    stop("PAINTOR pooled execution failed: ", paste(run_output, collapse = "\n"), call. = FALSE)
 
   # ---- parse each locus ------------------------------------------------------
   cache <- list()
@@ -497,27 +512,31 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
                    error = function(e) NULL)
     if (is.null(df) || !"Posterior_Prob" %in% names(df)) next
     s <- specs[[i]]
-    ord <- if ("rsid" %in% names(df)) {
-      o <- match(s$ids, df$rsid); if (anyNA(o)) seq_len(s$p) else o
-    } else seq_len(s$p)
-    pip <- pmax(0, pmin(1, as.numeric(df$Posterior_Prob[ord])))
-    if (length(pip) != s$p) next
+    parsed <- .paintor_parse_probabilities(df, paste0("variant_", seq_len(s$p)))
+    if (is.null(parsed)) next
+    ord <- parsed$order
+    pip <- parsed$pip
     op <- order(pip, decreasing = TRUE)
     n_cs <- which(cumsum(pip[op]) >= coverage)[1L]
     if (is.na(n_cs)) n_cs <- s$p
     cache[[keys[i]]] <- list(
-      pip = pip, credible_sets = list(sort(op[seq_len(n_cs)])),
+      pip = pip, credible_sets = list(),
       method = "paintor", input_type = "summary",
       params = list(max_causal = max_causal, mcmc = mcmc, coverage = coverage,
                     paintor_path = paintor_path, n_annotations = n_ann),
-      runtime_seconds = NA_real_,
-      additional = list(annotations_used = n_ann,
+      runtime_seconds = elapsed / n_regions,
+      additional = c(list(annotations_used = n_ann,
+                        pip_mass_set = as.integer(sort(op[seq_len(n_cs)])),
+                        credible_set_semantics = "not_provided",
                         log_bayes_factor = if ("log_BF" %in% names(df))
                           as.numeric(df$log_BF[ord]) else NULL,
                         pooled_across_loci = TRUE,
-                        n_loci_pooled = n_regions))
+                        pooled_runtime_seconds = elapsed,
+                        n_loci_pooled = n_regions),
+                     .paintor_probability_contract(s$p, max_causal, mcmc)))
   }
-  if (length(cache) == 0L) return(list())
+  if (length(cache) != n_regions)
+    stop("PAINTOR pooled output is incomplete or invalid; no fallback is permitted.", call. = FALSE)
   list(.paintor_cache = cache)
 }
 
@@ -525,6 +544,30 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
 # =============================================================================
 # Internal helpers
 # =============================================================================
+
+.paintor_probability_contract <- function(p, max_causal, mcmc) {
+  # Audited upstream PAINTOR_V3.0 enumeration advances next_combo before
+  # evaluating the all-zero initial state. Its support excludes the null;
+  # the separate MCMC path initializes and samples the null configuration.
+  # This records search conditioning, not a fabricated locus-null posterior.
+  list(posterior_conditioning = if (mcmc) "null_including_model_space" else
+         "at_least_one_modeled_causal_variant",
+       null_model_in_support = isTRUE(mcmc),
+       null_probability = NULL,
+       null_probability_not_provided = TRUE,
+       configuration_count = if (mcmc) NA_real_ else
+         sum(choose(p, seq_len(min(p, max_causal)))))
+}
+
+.paintor_parse_probabilities <- function(data, ids) {
+  if (!all(c("rsid", "Posterior_Prob") %in% names(data)) ||
+      nrow(data) != length(ids) || anyNA(data$rsid) || anyDuplicated(data$rsid)) return(NULL)
+  order <- match(ids, data$rsid)
+  if (anyNA(order)) return(NULL)
+  pip <- suppressWarnings(as.numeric(data$Posterior_Prob[order]))
+  if (any(!is.finite(pip)) || any(pip < 0 | pip > 1)) return(NULL)
+  list(pip = pip, order = order)
+}
 
 # Prefer region_geno$annotations_matrix, falling back to region_pheno's copy.
 # Both simulators populate the geno-side matrix; the locus pipeline additionally
@@ -538,12 +581,11 @@ run_paintor_scenario_setup <- function(genotypes, regions, user_args) {
   A
 }
 
-# Deterministic per-region key from the z vector, used to hand a pooled result
+# Deterministic key from complete ordered inputs, used to hand a pooled result
 # back to the right region. Same construction as R/wrapper_fb_joint.R.
-.paintor_fingerprint <- function(z) {
-  z <- as.numeric(z)
-  paste(length(z), format(sum(z), digits = 15), format(sum(z * z), digits = 15),
-        format(z[1], digits = 15), format(z[length(z)], digits = 15), sep = "|")
+.paintor_fingerprint <- function(z, LD = NULL, annotations = NULL, n = NULL,
+                                  variant_ids = NULL) {
+  .fm_pooled_input_key(z, LD, annotations, n, variant_ids)
 }
 
 .paintor_error_result <- function(p, params, elapsed, error_msg) {

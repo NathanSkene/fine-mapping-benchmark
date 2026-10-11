@@ -4,7 +4,13 @@
 \alias{run_polyfun_ldsc_region}
 \title{Adapter for run_methods() - forwards to run_polyfun_ldsc}
 \usage{
-run_polyfun_ldsc_region(region_geno, region_pheno, pooled_tau = NULL, ...)
+run_polyfun_ldsc_region(
+  region_geno,
+  region_pheno,
+  pooled_tau = NULL,
+  ...,
+  statistic_type = NULL
+)
 }
 \arguments{
 \item{region_geno}{One element of \code{simulation$genotypes}.}
@@ -15,6 +21,9 @@ run_polyfun_ldsc_region(region_geno, region_pheno, pooled_tau = NULL, ...)
 supplied by the scenario_setup hook.}
 
 \item{...}{Forwarded to run_polyfun_ldsc().}
+
+\item{statistic_type}{Optional summary type inherited from the region;
+defaults to \code{marginal_ols_t} when no type is declared.}
 }
 \value{
 Output of run_polyfun_ldsc.

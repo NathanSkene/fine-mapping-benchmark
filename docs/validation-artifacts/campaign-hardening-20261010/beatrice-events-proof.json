@@ -1,0 +1,184 @@
+{
+  "role": "actual native BEATRICE training/expansion and strict R event import; no accuracy claim",
+  "source_sha256": {
+    "R/wrapper_beatrice.R": "7c8ce9a1e1cbc30e000e2e0b1e105ae1e28e0aa788b0adde2007db891277a0ca",
+    "R/wrapper_functional_beatrice.R": "e2e41e50d1dbc168c4dc54ced9f6d12456d05cb57561f3a11bcf1dcf45d41423",
+    "R/wrapper_fb_joint.R": "c73435d9800df3f11c53a946b2830579ba10b95ac8a37ccae8a2d4a5932f7af2",
+    "BEATRICE_annot_sparse/scripts/generate_credible_sets.py": "98f43444c771afb5714ada1440c6c2112c17cd00ff498d11ceaa50a76ed6d6b9",
+    "BEATRICE_annot_sparse/scripts/posterior_memo.py": "23acc27aa72bc21acffa5b88f3e92fa387e123f6c127a5917aedf74d40ddd3a0",
+    "BEATRICE_annot_sparse/scripts/credible_set_contract.json": "a63489453dca8bd225eebbf8dfa0a94e89b9641ff4feead76d7bc58a08cf2263"
+  },
+  "methods": {
+    "beatrice": {
+      "n": 100,
+      "p": 8,
+      "training_iterations": 500,
+      "runtime_seconds": 21.855,
+      "pip": [
+        0.999994625638689,
+        0.043858473338085,
+        0.0447805621399824,
+        0.977817384146852,
+        0.0431344912260592,
+        0.0433143395153013,
+        0.0461041782543847,
+        0.0447805621763004
+      ],
+      "credible_sets": [
+        1,
+        4
+      ],
+      "credible_set_diagnostics": {
+        "format": "beatrice-conditional-credible-set-diagnostics-v1",
+        "index_base": 0,
+        "variant_count": 8,
+        "variant_names": [
+          "variant_1",
+          "variant_2",
+          "variant_3",
+          "variant_4",
+          "variant_5",
+          "variant_6",
+          "variant_7",
+          "variant_8"
+        ],
+        "posterior_memo_format": "beatrice-log-bf-final-prior-v1",
+        "posterior_support_size": 59,
+        "null_probability": 8.23129661267542e-08,
+        "null_probability_conditioning": "explored_support_under_frozen_final_prior",
+        "stopping_rule": "conditional_union",
+        "sets": [
+          {
+            "set_indices_zero_based": [
+              0
+            ],
+            "condition_indices_zero_based": [
+              3
+            ],
+            "event": "at_least_one_set_member_is_causal",
+            "posterior_conditioning": "given_variants_are_causal_within_explored_support",
+            "conditional_union_probability": 0.999994588079441,
+            "target_probability": 0.95,
+            "target_met": true,
+            "legacy_membership_sum": 0.999994588079441,
+            "stopping_rule": "conditional_union",
+            "selection_probability_threshold": 0.05,
+            "purity_threshold": 0,
+            "set_indices": 1,
+            "condition_indices": 4
+          },
+          {
+            "set_indices_zero_based": [
+              3
+            ],
+            "condition_indices_zero_based": [
+              0
+            ],
+            "event": "at_least_one_set_member_is_causal",
+            "posterior_conditioning": "given_variants_are_causal_within_explored_support",
+            "conditional_union_probability": 0.977817347420569,
+            "target_probability": 0.95,
+            "target_met": true,
+            "legacy_membership_sum": 0.977817347420569,
+            "stopping_rule": "conditional_union",
+            "selection_probability_threshold": 0.05,
+            "purity_threshold": 0,
+            "set_indices": 4,
+            "condition_indices": 1
+          }
+        ]
+      },
+      "semantics": "conditional_union_within_explored_support"
+    },
+    "functional_beatrice": {
+      "n": 100,
+      "p": 8,
+      "training_iterations": 500,
+      "runtime_seconds": 14.629,
+      "pip": [
+        0.999999687964075,
+        0.00135058008343407,
+        0.0016372015479785,
+        0.997863287621312,
+        1.33497026233e-05,
+        0.00465422623960138,
+        2.29790788196605e-07,
+        4.38299460670492e-05
+      ],
+      "credible_sets": [
+        1,
+        4
+      ],
+      "credible_set_diagnostics": {
+        "format": "beatrice-conditional-credible-set-diagnostics-v1",
+        "index_base": 0,
+        "variant_count": 8,
+        "variant_names": [
+          "variant_1",
+          "variant_2",
+          "variant_3",
+          "variant_4",
+          "variant_5",
+          "variant_6",
+          "variant_7",
+          "variant_8"
+        ],
+        "posterior_memo_format": "beatrice-log-bf-final-prior-v1",
+        "posterior_support_size": 55,
+        "null_probability": 6.61587122388771e-10,
+        "null_probability_conditioning": "explored_support_under_frozen_final_prior",
+        "stopping_rule": "conditional_union",
+        "sets": [
+          {
+            "set_indices_zero_based": [
+              0
+            ],
+            "condition_indices_zero_based": [
+              3
+            ],
+            "event": "at_least_one_set_member_is_causal",
+            "posterior_conditioning": "given_variants_are_causal_within_explored_support",
+            "conditional_union_probability": 0.99999968795892,
+            "target_probability": 0.95,
+            "target_met": true,
+            "legacy_membership_sum": 0.99999968795892,
+            "stopping_rule": "conditional_union",
+            "selection_probability_threshold": 0.05,
+            "purity_threshold": 0,
+            "set_indices": 1,
+            "condition_indices": 4
+          },
+          {
+            "set_indices_zero_based": [
+              3
+            ],
+            "condition_indices_zero_based": [
+              0
+            ],
+            "event": "at_least_one_set_member_is_causal",
+            "posterior_conditioning": "given_variants_are_causal_within_explored_support",
+            "conditional_union_probability": 0.997863287616168,
+            "target_probability": 0.95,
+            "target_met": true,
+            "legacy_membership_sum": 0.997863287616169,
+            "stopping_rule": "conditional_union",
+            "selection_probability_threshold": 0.05,
+            "purity_threshold": 0,
+            "set_indices": 4,
+            "condition_indices": 1
+          }
+        ]
+      },
+      "semantics": "conditional_union_within_explored_support"
+    }
+  },
+  "runtime": {
+    "R": "4.6.1",
+    "platform": "aarch64-apple-darwin27.0.0",
+    "Python": "3.14.7",
+    "Torch": "2.14.1"
+  },
+  "complete_local_proof_sha256": "11cd4872cf1853a5c29e176688ea7bd6b0c9258a41d1e54e93276a23bd1b99a6",
+  "full_size_cost_claim": false,
+  "interpretation": "Executed 500-iteration training, expansion, native outputs and strict R event import on a tiny synthetic fixture; not an accuracy experiment"
+}

@@ -5,7 +5,7 @@
 # Submit an array of Optuna workers that all tune Functional BEATRICE against
 # ONE shared study. Re-running this script CONTINUES the same study: every
 # worker opens the storage with load_if_exists=True, so completed trials are
-# remembered and the sampler keeps its history. Nothing is recomputed.
+# remembered. Resumed/async sampler trajectories are not guaranteed identical.
 #
 # Each worker is given a --timeout of (walltime - TRIAL_MARGIN) so it stops
 # starting new trials and exits cleanly before PBS would kill it mid-write.
@@ -42,6 +42,12 @@ ROTATE_REGIONS="${ROTATE_REGIONS:-0}"  # 1 = one region per scenario, size rotat
 SCENARIOS="${SCENARIOS:-4}"            # scenarios per trial
 REGIONS="${REGIONS:-4}"                # regions per scenario
 MAX_ITER="${MAX_ITER:-2000}"           # FB max_iter (fixed, never tuned)
+SAMPLER_SEED="${SAMPLER_SEED:-20261010}" # base seed; worker stream uses PBS_ARRAY_INDEX
+if [[ "$ROTATE_REGIONS" != "0" || "$ABORT_QUANTILE" != "0" ]]; then
+  echo "ERROR: rotation and AP-only aborts are rejected by the revised tuning contract." >&2
+  echo "       Use a common region subset and complete Pareto trials." >&2
+  exit 1
+fi
 
 # --- stratum for the tuning sim (used only when SIM has to be built) ---------
 # These must describe the SAME stratum that STUDY names.
@@ -191,6 +197,7 @@ ${PY} scripts/tuning/optuna_fb.py \
     --regions ${REGIONS} \
     --max_iter ${MAX_ITER} \
     --timeout ${TIMEOUT} \
+    --seed ${SAMPLER_SEED} \
     --python "${FB_PY}"
 echo "[worker \${PBS_ARRAY_INDEX}] done \$(date)"
 PBS_EOF

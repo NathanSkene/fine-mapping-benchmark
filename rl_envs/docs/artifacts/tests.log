@@ -1,0 +1,39 @@
+test_failed_code_charged_for_every_attempted_locus (test_environments.DockerTests.test_failed_code_charged_for_every_attempted_locus) ... ok
+test_no_assessor_files_or_network_or_writable_source (test_environments.DockerTests.test_no_assessor_files_or_network_or_writable_source) ... ok
+test_real_source_submission_and_heldout_scoring (test_environments.DockerTests.test_real_source_submission_and_heldout_scoring) ... ok
+test_timeout_output_flood_invalid_json_and_hidden_file_attempts (test_environments.DockerTests.test_timeout_output_flood_invalid_json_and_hidden_file_attempts) ... ok
+test_official_checker_all_numeric_adapters (test_environments.GymTests.test_official_checker_all_numeric_adapters) ... /Users/nathanskene/Projects/fine-mapping-benchmark/.python-env/lib/python3.14/site-packages/gymnasium/utils/env_checker.py:317: UserWarning: [33mWARN: A Box observation space minimum value is -infinity. This is probably too low.[0m
+  logger.warn(
+/Users/nathanskene/Projects/fine-mapping-benchmark/.python-env/lib/python3.14/site-packages/gymnasium/utils/env_checker.py:321: UserWarning: [33mWARN: A Box observation space maximum value is infinity. This is probably too high.[0m
+  logger.warn(
+ok
+test_active_baseline_terminates_after_budget_plus_submission (test_environments.InteractionTests.test_active_baseline_terminates_after_budget_plus_submission) ... ok
+test_assay_budget_repetition_and_determinism (test_environments.InteractionTests.test_assay_budget_repetition_and_determinism) ... ok
+test_bandit_parameters_are_updated_from_actual_reward (test_environments.InteractionTests.test_bandit_parameters_are_updated_from_actual_reward) ... ok
+test_design_uses_disjoint_holdout_and_bounded_queries (test_environments.InteractionTests.test_design_uses_disjoint_holdout_and_bounded_queries) ... ok
+test_final_protocol_rejects_chosen_seeds_caps_and_hides_attributes (test_environments.InteractionTests.test_final_protocol_rejects_chosen_seeds_caps_and_hides_attributes) ... ok
+test_final_task_cannot_be_skipped_by_resetting_while_active (test_environments.InteractionTests.test_final_task_cannot_be_skipped_by_resetting_while_active) ... ok
+test_malformed_action_is_terminal_and_label_independent (test_environments.InteractionTests.test_malformed_action_is_terminal_and_label_independent) ... ok
+test_nonfinite_json_and_oversized_request_fail_closed (test_environments.InteractionTests.test_nonfinite_json_and_oversized_request_fail_closed) ... ok
+test_one_shot_no_truth_in_info_and_no_second_score (test_environments.InteractionTests.test_one_shot_no_truth_in_info_and_no_second_score) ... ok
+test_value_of_information_stops_when_declared_cost_exceeds_gain (test_environments.InteractionTests.test_value_of_information_stops_when_declared_cost_exceeds_gain) ... ok
+test_assay_likelihood_updates_odds_in_correct_direction (test_environments.MathematicalTests.test_assay_likelihood_updates_odds_in_correct_direction) ... ok
+test_configuration_mass_and_null_event (test_environments.MathematicalTests.test_configuration_mass_and_null_event) ... ok
+test_duplicate_missing_nan_and_cross_task_predictions_fail (test_environments.MathematicalTests.test_duplicate_missing_nan_and_cross_task_predictions_fail) ... ok
+test_failed_tasks_remain_in_denominator (test_environments.MathematicalTests.test_failed_tasks_remain_in_denominator) ... ok
+test_missing_generating_target_does_not_force_observed_pip_sum (test_environments.MathematicalTests.test_missing_generating_target_does_not_force_observed_pip_sum) ... ok
+test_perfect_ld_twins_receive_exchangeable_probabilities (test_environments.MathematicalTests.test_perfect_ld_twins_receive_exchangeable_probabilities) ... ok
+test_permutation_and_consistent_sign_recoding (test_environments.MathematicalTests.test_permutation_and_consistent_sign_recoding) ... ok
+test_positive_weighted_brier_is_proper_in_expectation (test_environments.MathematicalTests.test_positive_weighted_brier_is_proper_in_expectation) ... ok
+test_sessions_use_independent_private_keys (test_environments.OpenEnvTests.test_sessions_use_independent_private_keys) ... ok
+test_typed_adapter_and_persistent_websocket (test_environments.OpenEnvTests.test_typed_adapter_and_persistent_websocket) ... ok
+test_annotation_mechanisms_have_declared_direction (test_environments.TaskTests.test_annotation_mechanisms_have_declared_direction) ... ok
+test_private_label_copy_is_immutable (test_environments.TaskTests.test_private_label_copy_is_immutable) ... ok
+test_private_seed_and_split_namespaces (test_environments.TaskTests.test_private_seed_and_split_namespaces) ... ok
+test_public_schema_rejects_latent_metadata_and_invalid_ld (test_environments.TaskTests.test_public_schema_rejects_latent_metadata_and_invalid_ld) ... ok
+test_release_round_trip_integrity_and_custody (test_environments.TaskTests.test_release_round_trip_integrity_and_custody) ... ok
+
+----------------------------------------------------------------------
+Ran 30 tests in 16.161s
+
+OK

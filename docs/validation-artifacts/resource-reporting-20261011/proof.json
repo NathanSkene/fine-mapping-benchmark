@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "role": "resource_reporter_software_validation",
+  "validated_utc": "2026-10-11T15:45:38.635102+00:00",
+  "inference_source_commit": "0e4a7ead774b2e8d3f8ab2f48bc61eadb31c6e91",
+  "frozen_files": {
+    "scripts/reporting/resource_cost_report.R": "6a17a41f6ee36a8c4b7b40de57879191af319aa70b3e36c4c55c912955fa1024",
+    "scripts/reporting/test_resource_cost_report.R": "a5f685243e238aac767ad0919317c435cd0bb6bf56f69ee45ee6ca2c1e951fbe",
+    "docs/resource-cost-reporting.md": "cd8707277e7a1849216262c008898c469644ccac72b59db86c253820a8b9ee55"
+  },
+  "root_execution": {
+    "command": "RENV_CONFIG_AUTOLOADER_ENABLED=false R_LIBS_USER=.local-lib Rscript --vanilla scripts/reporting/test_resource_cost_report.R",
+    "exit_status": 0,
+    "passing_assertions": 135,
+    "log_sha256": "c02e61db77434abb35adb1f11a93beec0fc715c7e6f70b33af9325bc1d0c773f"
+  },
+  "worker_execution": {
+    "exit_status": 0,
+    "passing_assertions": 135,
+    "log_sha256": "93ad71227f24850325d2a90d72e8d2dfacbea75dab2be701276eb5cc27b4d920"
+  },
+  "independent_code_reviews": 2,
+  "scientific_source_and_campaign_scripts_unchanged_from_inference_commit": true,
+  "synthetic_repeated_metadata_fixture": {
+    "planned_tasks": 649220,
+    "distinct_groups": 5,
+    "root_elapsed_seconds": 0.401,
+    "scope": "metadata census only; not an actual full-plan or inference runtime measurement"
+  },
+  "inference_run": false,
+  "scheduler_calls": false,
+  "assessor_payload_deserialized": false,
+  "full_campaign_cost_established": false,
+  "full_campaign_feasibility_cleared": false,
+  "published_GWAS_selected": false,
+  "twentythreeandme": "not_applicable"
+}

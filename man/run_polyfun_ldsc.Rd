@@ -18,6 +18,8 @@ run_polyfun_ldsc(
   estimate_residual_variance = TRUE,
   estimate_prior_variance = TRUE,
   variant_ids = NULL,
+  statistic_type = "marginal_ols_t",
+  residual_variance = 1,
   ...
 )
 }
@@ -55,6 +57,10 @@ Automatically forwarded by \code{run_polyfun_ldsc_region()}.}
 \item{estimate_prior_variance}{Logical. Default: TRUE.}
 
 \item{variant_ids}{Character or NULL. Optional variant labels.}
+
+\item{statistic_type}{\code{marginal_ols_t} (default) or \code{normal_score}.}
+
+\item{residual_variance}{Specified Gaussian score noise variance; default 1.}
 
 \item{...}{Ignored (for wrapper compatibility).}
 }

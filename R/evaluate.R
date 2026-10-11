@@ -83,6 +83,14 @@ evaluate_methods <- function(simulation,
     "results must contain 'methods_run'"  = !is.null(results$methods_run)
   )
 
+  if (!is.numeric(pip_thresholds) || !length(pip_thresholds) ||
+      any(!is.finite(pip_thresholds)) || any(pip_thresholds < 0 | pip_thresholds > 1))
+    stop("pip_thresholds must be finite probabilities in [0, 1].", call. = FALSE)
+  if (!is.numeric(n_pip_cal_bins) || length(n_pip_cal_bins) != 1L ||
+      !is.finite(n_pip_cal_bins) || n_pip_cal_bins < 1 ||
+      n_pip_cal_bins != as.integer(n_pip_cal_bins))
+    stop("n_pip_cal_bins must be a positive integer.", call. = FALSE)
+
   methods <- intersect(results$methods_run, names(results))
   if (length(methods) == 0) {
     stop("No recognised methods found in results.", call. = FALSE)
@@ -93,7 +101,7 @@ evaluate_methods <- function(simulation,
   for (method in methods) {
     if (verbose) message(sprintf("Evaluating %s...", method))
 
-    fits_raw <- results[[method]]$results
+    fits_raw <- .complete_fit_grid(results[[method]]$results, simulation, method)
     fits     <- .annotate_fits_with_truth(fits_raw, simulation)
 
     output[[method]] <- list(
@@ -110,6 +118,8 @@ evaluate_methods <- function(simulation,
   output$methods_evaluated   <- methods
   output$simulation_params   <- simulation$params
   output$pip_thresholds_used <- pip_thresholds
+  output$evaluation_version <- "2.0"
+  output$uncertainty <- "delete-one-iter cluster jackknife, conditional on simulated loci"
 
   # --- Save to disk -----------------------------------------------------------
 
@@ -134,6 +144,23 @@ evaluate_methods <- function(simulation,
         method              = m,
         auprc               = g$auprc,
         auprc_se            = g$auprc_se,
+        ap                  = g$ap,
+        ap_se               = g$ap_se,
+        ap_macro            = g$ap_macro,
+        ap_macro_se         = g$ap_macro_se,
+        ap_macro_attempted  = g$ap_macro_attempted,
+        ap_macro_attempted_se = g$ap_macro_attempted_se,
+        success_rate        = g$success_rate,
+        n_invalid           = g$n_invalid,
+        n_missing           = g$n_missing,
+        brier_score         = g$brier_score,
+        log_loss            = g$log_loss,
+        cs_power_attempted  = g$cs_power_attempted,
+        cs_matched_precision = g$cs_matched_precision,
+        cs_matched_power    = g$cs_matched_power,
+        cs_duplicate_sets   = g$cs_duplicate_sets,
+        null_region_false_call_rate = g$null_region_false_call_rate,
+        null_region_cs_rate = g$null_region_cs_rate,
         cs_coverage         = g$cs_coverage,
         cs_coverage_se      = g$cs_coverage_se,
         cs_power            = g$cs_power,
@@ -165,12 +192,82 @@ evaluate_methods <- function(simulation,
 # Internal: annotate fits with ground truth
 # =============================================================================
 
+# Complete the simulation design before scoring: a missing output is an
+# unsuccessful attempt, not permission to drop a hard locus from the denominator.
+.complete_fit_grid <- function(fits, simulation, method) {
+  expected <- unlist(lapply(seq_along(simulation$scenarios), function(sc) {
+    paste(sc, seq_along(simulation$scenarios[[sc]]$regions), sep = ":")
+  }), use.names = FALSE)
+  keys <- vapply(fits, function(f) {
+    ids <- c(f$scenario_id, f$region_id)
+    if (length(ids) != 2L || !is.numeric(ids) || any(!is.finite(ids)) ||
+        any(ids != floor(ids)) || any(ids < 1L))
+      stop("Each result needs valid scenario_id and region_id indices.", call. = FALSE)
+    paste(ids, collapse = ":")
+  }, character(1))
+  if (anyDuplicated(keys))
+    stop("Duplicate scenario/region result: attempts cannot be counted twice.", call. = FALSE)
+  if (any(!keys %in% expected))
+    stop("Result references a scenario/region outside the simulation.", call. = FALSE)
+  lapply(expected, function(key) {
+    j <- match(key, keys)
+    if (!is.na(j)) return(fits[[j]])
+    ids <- as.integer(strsplit(key, ":", fixed = TRUE)[[1L]])
+    sc <- simulation$scenarios[[ids[1L]]]
+    list(scenario_id = ids[1L], region_id = ids[2L], method = method,
+         S = sc$S, phi = sc$phi, iter = sc$iter, p_causal = sc$p_causal,
+         pip = numeric(), credible_sets = list(), runtime_seconds = NA_real_,
+         error = "Missing method result", missing_result = TRUE)
+  })
+}
+
+# Invalid method outputs become explicit failures. Never silently clip PIPs,
+# remove nonfinite variants or infer the variant count from a truncated output.
+.validate_evaluation_fit <- function(f) {
+  if (!is.null(f$error)) return(f)
+  issue <- NULL
+  if (!is.numeric(f$pip) || !is.null(dim(f$pip)) ||
+      length(f$pip) != f$n_variants || any(!is.finite(f$pip)) ||
+      any(f$pip < 0 | f$pip > 1)) {
+    issue <- "PIPs must be a finite [0,1] vector matching the simulated variant count"
+  } else if (!is.null(f$credible_sets) && !is.list(f$credible_sets)) {
+    issue <- "credible_sets must be a list of variant-index vectors"
+  } else if (any(vapply(f$credible_sets, function(cs) {
+    !is.numeric(cs) || !length(cs) || any(!is.finite(cs)) ||
+      any(cs != floor(cs) | cs < 1 | cs > f$n_variants)
+  }, logical(1)))) {
+    issue <- "Every reported credible set needs nonempty in-range integer indices"
+  }
+  if (!is.null(issue)) {
+    f$validation_error <- issue
+    f$error <- paste("Invalid method output:", issue)
+  }
+  f
+}
+
 .annotate_fits_with_truth <- function(fits, simulation) {
   lapply(fits, function(f) {
     sc    <- simulation$scenarios[[f$scenario_id]]
     truth <- sc$regions[[f$region_id]]$truth
     f$causal_indices <- truth$causal_indices
-    f$n_variants     <- length(f$pip)
+    # The variant universe comes from the simulation, not the submitted PIPs.
+    geno <- simulation$genotypes[[f$region_id]]
+    f$n_variants <- if (!is.null(geno$LD)) nrow(geno$LD) else if (!is.null(geno$X)) {
+      ncol(geno$X)
+    } else if (!is.null(geno$p)) as.integer(geno$p) else if (!is.null(truth$beta_true)) {
+      length(truth$beta_true)
+    } else if (!is.null(simulation$params$p_actual)) {
+      as.integer(simulation$params$p_actual[f$region_id])
+    } else length(f$pip)
+    if (length(f$n_variants) != 1L || !is.finite(f$n_variants) || f$n_variants < 1L ||
+        any(!is.finite(f$causal_indices)) || any(f$causal_indices != floor(f$causal_indices)) ||
+        any(f$causal_indices < 1L | f$causal_indices > f$n_variants) ||
+        anyDuplicated(f$causal_indices))
+      stop("Simulation has an invalid variant universe or causal indices.", call. = FALSE)
+    # Scenario labels are authoritative; submitted labels cannot move a hard fit
+    # into a more favourable stratum or change the uncertainty clusters.
+    for (nm in c("S", "phi", "p_causal", "iter"))
+      if (!is.null(sc[[nm]])) f[[nm]] <- sc[[nm]]
 
     # Nominal region length (the requested per-region p, NOT the realised
     # post-MAF-filter count in params$p_actual). Fine-mapping difficulty scales
@@ -213,7 +310,7 @@ evaluate_methods <- function(simulation,
     } else {
       NA_character_
     }
-    f
+    .validate_evaluation_fit(f)
   })
 }
 
@@ -342,157 +439,148 @@ evaluate_methods <- function(simulation,
 # =============================================================================
 
 .metrics_for_fits <- function(fits, pip_thresholds, n_pip_cal_bins) {
-
-  n_fits   <- length(fits)
-  valid    <- Filter(function(f) is.null(f$error), fits)
+  n_fits <- length(fits)
+  valid <- Filter(function(f) is.null(f$error), fits)
+  total_causal <- sum(vapply(fits, function(f) length(f$causal_indices), integer(1)))
   n_failed <- n_fits - length(valid)
-
-  if (length(valid) == 0) {
-    return(list(
-      fdr_power_curve = NULL,
-      auprc           = NA_real_,
-      ap              = NA_real_,
-      pip_calibration = NULL,
-      cs_coverage     = NA_real_,
-      cs_power        = NA_real_,
-      cs_size_median  = NA_real_,
-      cs_size_mean    = NA_real_,
-      n_cs_reported   = NA_integer_,
-      runtime_mean    = NA_real_,
-      runtime_sd      = NA_real_,
-      n_fits          = n_fits,
-      n_failed        = n_failed
-    ))
+  labels <- function(f) {
+    y <- logical(f$n_variants); y[f$causal_indices] <- TRUE; y
   }
-
-  # Pool (pip, is_causal) pairs across all valid fits
-  pip_vals  <- unlist(lapply(valid, function(f) f$pip))
-  is_causal <- unlist(lapply(valid, function(f) {
-    v <- logical(f$n_variants)
-    v[f$causal_indices] <- TRUE
-    v
-  }))
-
-  # Power / FDR curve
-  fdr_power <- .fdr_power_curve(pip_vals, is_causal, pip_thresholds)
-
-  # AUPRC (trapezoid, legacy) + AP (correct estimator)
-  auprc <- .compute_auprc(fdr_power$precision, fdr_power$recall)
-  ap    <- .compute_ap(fdr_power$precision, fdr_power$recall)
-
-  # PIP calibration
-  pip_cal <- .pip_calibration(pip_vals, is_causal, n_pip_cal_bins)
-
-  # Credible set metrics
+  pip_vals <- as.numeric(unlist(lapply(valid, function(f) f$pip), use.names = FALSE))
+  is_causal <- as.logical(unlist(lapply(valid, labels), use.names = FALSE))
+  curve <- if (length(valid)) .fdr_power_curve(pip_vals, is_causal, pip_thresholds) else NULL
+  attempted <- .fdr_power_curve(pip_vals, is_causal, pip_thresholds,
+                                total_causal = total_causal)
+  ap_fit <- vapply(valid, function(f) .compute_ap_exact(f$pip, labels(f)), numeric(1))
+  signal_fits <- sum(vapply(fits, function(f) length(f$causal_indices) > 0L, logical(1)))
+  ap_macro <- if (any(!is.na(ap_fit))) mean(ap_fit, na.rm = TRUE) else NA_real_
+  cal <- if (length(valid)) .pip_calibration(pip_vals, is_causal, n_pip_cal_bins) else NULL
   cs <- .cs_metrics(valid)
-
-  # Runtime
-  rts <- Filter(function(x) !is.na(x),
-                sapply(valid, function(f) f$runtime_seconds))
-
+  cs_attempted <- .cs_metrics(lapply(fits, function(f) {
+    if (!is.null(f$error)) f$credible_sets <- list()
+    f
+  }))
+  rts <- vapply(valid, function(f) {
+    rt <- f$runtime_seconds
+    if (is.numeric(rt) && length(rt) == 1L && is.finite(rt) && rt >= 0) rt else NA_real_
+  }, numeric(1))
+  rts <- rts[!is.na(rts)]
+  null_fits <- Filter(function(f) !length(f$causal_indices), valid)
+  # The null operating point is predeclared and reported alongside its denominator.
+  null_any_call <- vapply(null_fits, function(f) any(f$pip >= 0.5), logical(1))
+  invalid <- Filter(function(f) !is.null(f$validation_error), fits)
+  validation_errors <- if (length(invalid)) do.call(rbind, lapply(invalid, function(f) {
+    data.frame(scenario_id = f$scenario_id, region_id = f$region_id,
+               error = f$validation_error, stringsAsFactors = FALSE)
+  })) else data.frame(scenario_id = integer(), region_id = integer(), error = character())
+  y <- as.integer(is_causal)
+  brier <- if (length(y)) mean((pip_vals - y)^2) else NA_real_
+  prevalence <- if (length(y)) mean(y) else NA_real_
+  log_loss <- if (length(y)) {
+    # No clipping: a confidently impossible observed event has infinite loss.
+    loss <- numeric(length(y))
+    loss[y == 1L] <- -log(pip_vals[y == 1L])
+    loss[y == 0L] <- -log1p(-pip_vals[y == 0L])
+    mean(loss)
+  } else NA_real_
   list(
-    fdr_power_curve = fdr_power,
-    auprc           = auprc,
-    ap              = ap,
-    pip_calibration = pip_cal,
-    cs_coverage     = cs$coverage,
-    cs_power        = cs$power,
-    cs_size_median  = cs$size_median,
-    cs_size_mean    = cs$size_mean,
-    n_cs_reported   = cs$n_cs,
-    runtime_mean    = if (length(rts) > 0) mean(rts) else NA_real_,
-    runtime_sd      = if (length(rts) > 1) sd(rts)   else NA_real_,
-    n_fits          = n_fits,
-    n_failed        = n_failed
+    fdr_power_curve = curve,
+    fdr_power_curve_attempted = attempted,
+    auprc = if (is.null(curve)) NA_real_ else .compute_auprc(curve$precision, curve$recall),
+    ap = .compute_ap_exact(pip_vals, is_causal),
+    ap_macro = ap_macro,
+    ap_macro_attempted = if (signal_fits) sum(ap_fit, na.rm = TRUE) / signal_fits else NA_real_,
+    ap_n_fits = sum(!is.na(ap_fit)),
+    pip_calibration = cal,
+    brier_score = brier,
+    brier_skill_score = if (!is.na(prevalence) && prevalence > 0 && prevalence < 1)
+      1 - brier / (prevalence * (1 - prevalence)) else NA_real_,
+    log_loss = log_loss,
+    ece = if (is.null(cal)) NA_real_ else
+      sum(cal$n * abs(cal$mean_pip - cal$frac_causal), na.rm = TRUE) / sum(cal$n),
+    cs_coverage = cs$coverage,
+    cs_power = cs$power,
+    cs_power_attempted = cs_attempted$power,
+    cs_matched_precision = cs$matched_precision,
+    cs_matched_power = cs$matched_power,
+    cs_duplicate_sets = cs$duplicate_sets,
+    cs_size_median = cs$size_median,
+    cs_size_mean = cs$size_mean,
+    n_cs_reported = cs$n_cs,
+    runtime_mean = if (length(rts)) mean(rts) else NA_real_,
+    runtime_sd = if (length(rts) > 1L) stats::sd(rts) else NA_real_,
+    n_fits = n_fits,
+    n_failed = n_failed,
+    n_invalid = length(invalid),
+    n_missing = sum(vapply(fits, function(f) isTRUE(f$missing_result), logical(1))),
+    success_rate = if (n_fits) length(valid) / n_fits else NA_real_,
+    validation_errors = validation_errors,
+    n_null_fits = length(null_fits),
+    null_region_false_call_rate = if (length(null_fits)) mean(null_any_call) else NA_real_,
+    null_region_cs_rate = if (length(null_fits))
+      mean(vapply(null_fits, function(f) length(f$credible_sets) > 0L, logical(1))) else NA_real_
   )
 }
 
-
 # =============================================================================
-# Internal: per-replicate SE wrapper around .metrics_for_fits
-#
-# Groups fits by iter value, computes .metrics_for_fits for each iter, then
-# adds SE fields:
-#   <metric>_se            — SE of each scalar metric across iters
-#   fdr_power_curve$power_se, $precision_se — pointwise SE across iters
-#   pip_calibration$frac_causal_se          — per-bin SE across iters
-#
-# When n_iter < 2 all SE fields are NA.
+# Internal: delete-one-replicate cluster jackknife for the actual aggregate
+# estimator. Variants in LD and fits sharing one iter are never independent
+# resampling units. Undefined delete-one statistics yield an undefined SE.
 # =============================================================================
 
 .metrics_with_se <- function(fits, pip_thresholds, n_pip_cal_bins) {
-
   main <- .metrics_for_fits(fits, pip_thresholds, n_pip_cal_bins)
-
-  .se <- function(x) {
-    n <- sum(!is.na(x))
-    if (n > 1L) stats::sd(x, na.rm = TRUE) / sqrt(n) else NA_real_
+  scalar_fields <- c("auprc", "ap", "ap_macro", "ap_macro_attempted",
+                     "cs_coverage", "cs_power", "cs_power_attempted",
+                     "cs_matched_precision", "cs_matched_power",
+                     "cs_size_median", "cs_size_mean", "runtime_mean",
+                     "brier_score", "ece", "success_rate",
+                     "null_region_false_call_rate", "null_region_cs_rate")
+  cluster <- vapply(fits, function(f) {
+    if (is.null(f$iter) || length(f$iter) != 1L || is.na(f$iter)) NA_character_ else as.character(f$iter)
+  }, character(1))
+  iter_vals <- sort(unique(cluster[!is.na(cluster)]))
+  K <- length(iter_vals)
+  main$n_replicate_clusters <- K
+  main$se_method <- "delete-one-iter cluster jackknife"
+  main$se_conditioning <- "simulated loci/genotypes and scenario grid fixed"
+  # Missing cluster identifiers make the assumed resampling unit ambiguous.
+  can_estimate <- K >= 2L && !anyNA(cluster)
+  deleted <- if (can_estimate) lapply(iter_vals, function(it) {
+    .metrics_for_fits(fits[cluster != it], pip_thresholds, n_pip_cal_bins)
+  }) else list()
+  .jackknife_se <- function(x) {
+    # Dropping undefined leave-one-out statistics would change the estimand.
+    if (length(x) != K || K < 2L || any(!is.finite(x))) return(NA_real_)
+    sqrt((K - 1) / K * sum((x - mean(x))^2))
   }
-
-  scalar_fields <- c("auprc", "cs_coverage", "cs_power",
-                     "cs_size_median", "cs_size_mean", "runtime_mean")
-
-  # Identify unique iter values present in these fits
-  iter_vals <- sort(unique(vapply(fits, function(f) {
-    v <- f$iter
-    if (is.null(v) || length(v) == 0L) NA_integer_ else as.integer(v[[1L]])
-  }, integer(1L))))
-  iter_vals <- iter_vals[!is.na(iter_vals)]
-
-  if (length(iter_vals) < 2L) {
-    # Cannot compute SE — attach NA placeholders
-    for (fld in scalar_fields)
-      main[[paste0(fld, "_se")]] <- NA_real_
-    if (!is.null(main$fdr_power_curve)) {
-      main$fdr_power_curve$power_se     <- NA_real_
-      main$fdr_power_curve$precision_se <- NA_real_
-    }
-    if (!is.null(main$pip_calibration))
-      main$pip_calibration$frac_causal_se <- NA_real_
-    return(main)
-  }
-
-  # Per-iter metrics (pooling across regions / S / phi within each iter)
-  per_iter <- lapply(iter_vals, function(it) {
-    sub <- Filter(function(f) {
-      !is.null(f$iter) && !is.na(f$iter) && f$iter == it
-    }, fits)
-    .metrics_for_fits(sub, pip_thresholds, n_pip_cal_bins)
-  })
-
-  # Scalar SEs
   for (fld in scalar_fields) {
-    vals <- vapply(per_iter, function(m) {
-      v <- m[[fld]]; if (is.null(v) || length(v) == 0L) NA_real_ else as.numeric(v[[1L]])
-    }, numeric(1L))
-    main[[paste0(fld, "_se")]] <- .se(vals)
+    vals <- vapply(deleted, function(m) as.numeric(m[[fld]]), numeric(1))
+    main[[paste0(fld, "_se")]] <- .jackknife_se(vals)
   }
-
-  # Pointwise SE on fdr_power_curve
-  if (!is.null(main$fdr_power_curve)) {
-    n_t <- nrow(main$fdr_power_curve)
-    pow_mat <- vapply(per_iter, function(m) {
-      if (is.null(m$fdr_power_curve)) rep(NA_real_, n_t) else m$fdr_power_curve$power
-    }, numeric(n_t))
-    prec_mat <- vapply(per_iter, function(m) {
-      if (is.null(m$fdr_power_curve)) rep(NA_real_, n_t) else m$fdr_power_curve$precision
-    }, numeric(n_t))
-    main$fdr_power_curve$power_se     <- apply(pow_mat,  1L, .se)
-    main$fdr_power_curve$precision_se <- apply(prec_mat, 1L, .se)
+  for (name in c("fdr_power_curve", "fdr_power_curve_attempted")) {
+    if (is.null(main[[name]])) next
+    for (fld in c("power", "precision")) {
+      n <- nrow(main[[name]])
+      if (can_estimate) {
+        mat <- matrix(vapply(deleted, function(m) {
+          if (is.null(m[[name]])) rep(NA_real_, n) else m[[name]][[fld]]
+        }, numeric(n)), nrow = n)
+        main[[name]][[paste0(fld, "_se")]] <- apply(mat, 1L, .jackknife_se)
+      } else main[[name]][[paste0(fld, "_se")]] <- rep(NA_real_, n)
+    }
   }
-
-  # Per-bin SE on pip_calibration
   if (!is.null(main$pip_calibration)) {
-    n_b <- nrow(main$pip_calibration)
-    frac_mat <- vapply(per_iter, function(m) {
-      if (is.null(m$pip_calibration)) rep(NA_real_, n_b) else m$pip_calibration$frac_causal
-    }, numeric(n_b))
-    main$pip_calibration$frac_causal_se <- apply(frac_mat, 1L, .se)
+    n <- nrow(main$pip_calibration)
+    if (can_estimate) {
+      mat <- matrix(vapply(deleted, function(m) {
+        if (is.null(m$pip_calibration)) rep(NA_real_, n) else m$pip_calibration$frac_causal
+      }, numeric(n)), nrow = n)
+      main$pip_calibration$frac_causal_se <- apply(mat, 1L, .jackknife_se)
+    } else main$pip_calibration$frac_causal_se <- rep(NA_real_, n)
   }
-
   main
 }
-
 
 # =============================================================================
 # Internal: power / FDR curve
@@ -501,16 +589,17 @@ evaluate_methods <- function(simulation,
 # Pools all variants across all fits in the supplied collection.
 # =============================================================================
 
-.fdr_power_curve <- function(pip_vals, is_causal, thresholds) {
+.fdr_power_curve <- function(pip_vals, is_causal, thresholds,
+                             total_causal = sum(is_causal)) {
 
-  total_causal <- sum(is_causal)
   N            <- length(pip_vals)
 
-  if (N == 0 || total_causal == 0) {
+  if (N == 0) {
     return(data.frame(
       threshold = thresholds,
-      tp = 0L, fp = 0L, fn = 0L,
-      fdr = 0, power = 0, precision = 1, recall = 0
+      tp = 0L, fp = 0L, fn = total_causal,
+      fdr = 0, power = if (total_causal > 0) 0 else NA_real_,
+      precision = 1, recall = if (total_causal > 0) 0 else NA_real_
     ))
   }
 
@@ -538,9 +627,9 @@ evaluate_methods <- function(simulation,
     fp        = fp,
     fn        = fn,
     fdr       = ifelse(n_sel > 0L, fp / n_sel,          0),
-    power     = tp / total_causal,
+    power     = if (total_causal > 0) tp / total_causal else NA_real_,
     precision = ifelse(n_sel > 0L, tp / n_sel,          1),
-    recall    = tp / total_causal
+    recall    = if (total_causal > 0) tp / total_causal else NA_real_
   )
 }
 
@@ -550,7 +639,8 @@ evaluate_methods <- function(simulation,
 # =============================================================================
 
 .compute_auprc <- function(precision, recall) {
-  if (length(recall) < 2) return(NA_real_)
+  if (length(recall) < 2 || any(!is.finite(recall)) ||
+      any(!is.finite(precision))) return(NA_real_)
 
   # Sort by increasing recall; at recall ties keep the higher precision
   ord   <- order(recall, -precision)
@@ -558,30 +648,24 @@ evaluate_methods <- function(simulation,
   rec   <- recall[ord]
 
   # Trapezoidal rule: sum of trapezoids.
-  # NOTE: linear interpolation in PR space is not valid (Davis & Goadrich
-  # 2006) - the segment between two PR points is not achievable by any
-  # classifier. This estimator is RETAINED for backwards comparability with
-  # earlier runs, but .compute_ap() below is the correct one and is what
-  # downstream analysis should use. Empirically the trapezoid understates by
-  # ~29% in the weak-signal regime and ~0% at strong signal, i.e. the error
-  # is signal-dependent, not a constant offset.
+  # Legacy threshold-grid trapezoid retained for numerical comparison only.
+  # Its interpolation and missing endpoints can bias in either direction;
+  # use exact AP for new ranking comparisons.
   sum(diff(rec) * (head(prec, -1) + tail(prec, -1)) / 2)
 }
 
 
-#' Average precision (the correct PR-curve summary)
+#' Average precision on an already supplied precision-recall grid
 #'
-#' Step-function integral of precision over recall - no interpolation, so it
-#' avoids the invalid linear interpolation the trapezoidal rule performs in
-#' PR space. Computed from the same (precision, recall) grid as
-#' \code{.compute_auprc}, which recovers the exact ranking-based AP to
-#' within ~1-5%.
+#' This compatibility helper is exact only when the grid contains every
+#' distinct score operating point. evaluate_methods() uses .compute_ap_exact().
 #'
 #' @param precision,recall Numeric vectors from the FDR/power curve.
 #' @return Scalar average precision, or NA if the curve is degenerate.
 #' @keywords internal
 .compute_ap <- function(precision, recall) {
-  if (length(recall) < 2) return(NA_real_)
+  if (length(recall) < 2 || any(!is.finite(recall)) ||
+      any(!is.finite(precision))) return(NA_real_)
   ord  <- order(recall, -precision)
   prec <- precision[ord]
   rec  <- recall[ord]
@@ -624,7 +708,11 @@ evaluate_methods <- function(simulation,
     n           = ns,
     n_causal    = n_causal,
     mean_pip    = mean_pip,
-    frac_causal = frac_causal
+    frac_causal = frac_causal,
+    sum_pip = vapply(seq_len(n_bins), function(b) sum(pip_vals[bin_ids == b]), numeric(1)),
+    sum_pip_sq = vapply(seq_len(n_bins), function(b) sum(pip_vals[bin_ids == b]^2), numeric(1)),
+    sum_causal_pip = vapply(seq_len(n_bins), function(b)
+      sum(pip_vals[bin_ids == b] * is_causal[bin_ids == b]), numeric(1))
   )
 }
 
@@ -638,41 +726,56 @@ evaluate_methods <- function(simulation,
 # =============================================================================
 
 .cs_metrics <- function(valid_fits) {
-
-  cs_hits  <- logical(0)   # per-CS: did it contain a causal?
-  cs_sizes <- integer(0)   # per-CS: how many variants?
-  causal_captured <- logical(0)  # per-causal-variant: was it in any CS?
-
+  cs_hits <- logical()
+  cs_sizes <- integer()
+  causal_captured <- logical()
+  n_matched <- 0L
+  duplicate_sets <- 0L
   for (f in valid_fits) {
-    n_causal <- length(f$causal_indices)
-
-    if (length(f$credible_sets) == 0) {
-      # No CSs: no causal variants captured
-      causal_captured <- c(causal_captured, rep(FALSE, n_causal))
-      next
-    }
-
-    # Variants covered by any CS in this fit
-    all_cs_variants <- unique(unlist(f$credible_sets))
-
-    for (cs in f$credible_sets) {
-      cs_hits  <- c(cs_hits,  any(cs %in% f$causal_indices))
-      cs_sizes <- c(cs_sizes, length(cs))
-    }
-
-    causal_captured <- c(
-      causal_captured,
-      f$causal_indices %in% all_cs_variants
-    )
+    # Count distinct variants inside each set; retain repeated reported sets in
+    # the denominator so duplicate reporting cannot improve matched precision.
+    sets <- lapply(f$credible_sets, function(cs) sort(unique(as.integer(cs))))
+    keys <- vapply(sets, function(cs) paste(cs, collapse = ","), character(1))
+    duplicate_sets <- duplicate_sets + sum(duplicated(keys))
+    all_cs_variants <- unique(unlist(sets))
+    cs_hits <- c(cs_hits, vapply(sets, function(cs) any(cs %in% f$causal_indices), logical(1)))
+    cs_sizes <- c(cs_sizes, lengths(sets))
+    causal_captured <- c(causal_captured, f$causal_indices %in% all_cs_variants)
+    n_matched <- n_matched + .maximum_cs_matching(sets, f$causal_indices)
   }
-
   n_cs <- length(cs_hits)
+  n_causal <- length(causal_captured)
+  list(coverage = if (n_cs) mean(cs_hits) else NA_real_,
+       power = if (n_causal) mean(causal_captured) else NA_real_,
+       matched_precision = if (n_cs) n_matched / n_cs else NA_real_,
+       matched_power = if (n_causal) n_matched / n_causal else NA_real_,
+       duplicate_sets = duplicate_sets,
+       size_median = if (n_cs) stats::median(cs_sizes) else NA_real_,
+       size_mean = if (n_cs) mean(cs_sizes) else NA_real_, n_cs = n_cs)
+}
 
-  list(
-    coverage    = if (n_cs > 0L)                   mean(cs_hits)       else NA_real_,
-    power       = if (length(causal_captured) > 0L) mean(causal_captured) else NA_real_,
-    size_median = if (n_cs > 0L)                   median(cs_sizes)    else NA_real_,
-    size_mean   = if (n_cs > 0L)                   mean(cs_sizes)      else NA_real_,
-    n_cs        = n_cs
-  )
+# Maximum bipartite matching: each reported set may recover one distinct causal
+# and each causal may be credited once. A greedy matching is not sufficient when
+# overlapping sets contain multiple signals.
+.maximum_cs_matching <- function(sets, causal_indices) {
+  if (!length(sets) || !length(causal_indices)) return(0L)
+  edges <- lapply(sets, function(cs) which(causal_indices %in% cs))
+  owner <- integer(length(causal_indices))
+  augment <- function(i) {
+    for (j in edges[[i]]) {
+      if (seen[j]) next
+      seen[j] <<- TRUE
+      if (owner[j] == 0L || augment(owner[j])) {
+        owner[j] <<- i
+        return(TRUE)
+      }
+    }
+    FALSE
+  }
+  matched <- 0L
+  for (i in seq_along(sets)) {
+    seen <- rep(FALSE, length(causal_indices))
+    if (augment(i)) matched <- matched + 1L
+  }
+  matched
 }

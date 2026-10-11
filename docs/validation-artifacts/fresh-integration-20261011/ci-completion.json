@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "source_commit": "c58ea6e62442bfc6a995f01755baaeddb94aa837",
+  "status": "passed",
+  "total_actual_jobs": 6,
+  "scope": "Linux/macOS scientific-invariant and package CI; inference source remains frozen0e",
+  "runs": [
+    {
+      "id": 38149606350,
+      "url": "https://github.com/NathanSkene/fine-mapping-benchmark/actions/runs/38149606350",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 114500114409,
+          "name": "invariants (macos-latest)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 114500114500,
+          "name": "invariants (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "id": 38149606365,
+      "url": "https://github.com/NathanSkene/fine-mapping-benchmark/actions/runs/38149606365",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 114500114396,
+          "name": "ubuntu-latest (release)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 114500114588,
+          "name": "macos-latest (release)",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "id": 38149603431,
+      "url": "https://github.com/NathanSkene/fine-mapping-benchmark/actions/runs/38149603431",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 114500105461,
+          "name": "invariants (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 114500105634,
+          "name": "invariants (macos-latest)",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ],
+  "prior_failed_run_ids": [
+    38148857747,
+    38148854002
+  ],
+  "fix": "Explicit posterior setup dependency with bounded installation retries; no inference or scientific-score change"
+}

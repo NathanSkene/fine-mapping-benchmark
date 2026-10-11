@@ -1,32 +1,20 @@
 # =============================================================================
 # polyfun_oracle.R
 #
-# Wrapper for PolyFun-oracle: PolyFun-style fine-mapping with **true** per-SNP
-# priors recovered from the simulator. Serves as the methodological upper
-# bound for any annotation-aware method.
+# Annotation-enrichment oracle comparator built on SuSiE-RSS. It reads the
+# simulator's enrichment coefficients. This is an information-advantaged
+# diagnostic comparator, not the upstream PolyFun method or a strict ceiling.
 #
-# Canonical PolyFun (Weissbrod 2020) is a two-stage method: (1) estimate
-# per-SNP heritability h2(j) by stratified LDSC on a pre-computed UKB
-# annotation matrix; (2) feed those priors into SuSiE. Stage 1 depends on
-# real human SNP coordinates, reference LD scores tuned to a specific GWAS
-# population, and a ~25 GB pre-computed annotation file — none of which apply
-# to simulated benchmark data.
+# Weights exp(A %*% log(enrichment)) are sequential weighted-sampling weights
+# for a fixed causal count, not marginal inclusion probabilities. In the
+# genome-wide Bernoulli generator, saturation and global calibration also
+# change the selection probabilities. Passing normalized enrichment weights
+# to SuSiE does not reproduce either full generative prior exactly.
 #
-# polyfun_oracle skips Stage 1 entirely by using the **true** per-SNP causal
-# probability that the simulator used to assign causal variants:
-#
-#   pi_j ∝ exp(A_j' log gamma)
-#
-# where A is the region's annotation matrix and gamma is the enrichment
-# vector. Both are stored by the simulator (truth$enrichment and
-# region_geno$annotations_matrix), so we can reconstruct pi_j exactly.
-# These per-SNP priors are then passed to susieR::susie_rss() via
-# prior_weights.
-#
-# Because the prior is exact, polyfun_oracle defines the ceiling: no
-# annotation-aware method should outperform it on a non-degenerate setting.
-# If one does, either the comparator is cheating or the simulator is leaking
-# information through some other channel.
+# Even a Bayes-optimal posterior for the true generative model minimizes only
+# its corresponding expected Bayes loss. It need not maximize AUPRC in every
+# finite replicate; approximate inference, backbone restrictions and LD
+# mismatch can also make another method outperform this comparator.
 #
 # When no annotations were simulated (annotations = "none"), there is no
 # per-SNP signal to reconstruct. The wrapper falls back to plain SuSiE with
@@ -79,11 +67,10 @@ setup_polyfun_oracle <- function() {
 
 #' Run PolyFun-oracle fine-mapping on a single region
 #'
-#' Reconstructs the true per-SNP causal probability from the supplied
-#' annotation matrix and enrichment vector, then runs
-#' \code{susieR::susie_rss} with those probabilities as
-#' \code{prior_weights}. Defines an upper bound for annotation-aware
-#' fine-mapping on the benchmark.
+#' Constructs normalized annotation-enrichment weights and runs
+#' \code{susieR::susie_rss} with them as \code{prior_weights}. This
+#' information-advantaged diagnostic is not an exact generative posterior
+#' or a strict performance ceiling.
 #'
 #' If \code{annotations} is \code{NULL} or \code{enrichment} is \code{NULL},
 #' the method falls back to a uniform prior — i.e. plain SuSiE-RSS — and
@@ -107,6 +94,8 @@ setup_polyfun_oracle <- function() {
 #' @param estimate_prior_variance Logical. Default: TRUE.
 #' @param verbose_susie Logical. Print SuSiE's own progress messages.
 #'   Default: FALSE.
+#' @param statistic_type \code{marginal_ols_t} (default) or \code{normal_score}.
+#' @param residual_variance Specified Gaussian score noise variance; default 1.
 #'
 #' @return A list with the standardised fine-mapping output. The
 #'   \code{additional} sub-list contains:
@@ -141,7 +130,8 @@ run_polyfun_oracle <- function(z,
                                 max_iter    = 100,
                                 estimate_residual_variance = TRUE,
                                 estimate_prior_variance    = TRUE,
-                                verbose_susie = FALSE) {
+                                verbose_susie = FALSE,
+                                statistic_type = "marginal_ols_t", residual_variance = 1) {
 
   # --- Validate ---------------------------------------------------------------
 
@@ -196,16 +186,20 @@ run_polyfun_oracle <- function(z,
                                     estimate_residual_variance,
                                     estimate_prior_variance,
                                     prior_source = prior_source)
+  params$statistic_type <- statistic_type
+  params$score_residual_variance <- residual_variance
+  params$effective_estimate_residual_variance <- if (statistic_type == "normal_score") FALSE else estimate_residual_variance
 
   # --- Run SuSiE-RSS with the per-SNP priors ---------------------------------
 
   start_time <- proc.time()
 
   fit <- tryCatch({
-    susieR::susie_rss(
+    .fm_susie_rss(
       z = z,
       R = LD,
       n = n,
+      statistic_type = statistic_type, residual_variance = residual_variance,
       L = L,
       prior_weights = prior_weights,
       estimate_residual_variance = estimate_residual_variance,
@@ -244,8 +238,11 @@ run_polyfun_oracle <- function(z,
     prior_source    = prior_source,
     prior_weights   = prior_weights,
     enrichment_used = enrichment_used,
+    oracle_access = "simulator_enrichment",
+    strict_performance_ceiling = FALSE,
+    implementation = "annotation_enrichment_oracle_susie",
     alpha           = fit$alpha,
-    posterior_mean  = colSums(fit$alpha * fit$mu),
+    posterior_mean  = .fm_susie_posterior_mean(fit),
     lbf             = if (!is.null(fit$lbf)) fit$lbf else rep(NA_real_, L),
     cs_purity       = cs_purity,
     converged       = fit$converged,
@@ -288,10 +285,12 @@ run_polyfun_oracle <- function(z,
 #'   accepted as a fallback location for the matrix.
 #' @param ... Additional arguments passed to \code{\link{run_polyfun_oracle}}
 #'   (e.g. \code{L}, \code{coverage}, \code{min_abs_corr}).
+#' @param statistic_type Optional summary type inherited from the region;
+#'   defaults to \code{marginal_ols_t} when no type is declared.
 #'
 #' @return The output of \code{\link{run_polyfun_oracle}}.
 #' @export
-run_polyfun_oracle_region <- function(region_geno, region_pheno, ...) {
+run_polyfun_oracle_region <- function(region_geno, region_pheno, ..., statistic_type = NULL) {
 
   # Annotation matrix is stored on either side depending on pipeline path:
   # - run_simulation() places it on region_geno (shared across scenarios)
@@ -310,6 +309,7 @@ run_polyfun_oracle_region <- function(region_geno, region_pheno, ...) {
     n           = region_geno$n,
     annotations = A,
     enrichment  = enrich,
+    statistic_type = statistic_type %||% region_pheno$statistic_type %||% "marginal_ols_t",
     ...
   )
 }
@@ -330,7 +330,9 @@ run_polyfun_oracle_region <- function(region_geno, region_pheno, ...) {
     max_iter                   = max_iter,
     estimate_residual_variance = estimate_residual_variance,
     estimate_prior_variance    = estimate_prior_variance,
-    prior_source               = prior_source
+    prior_source               = prior_source,
+    oracle_access              = "simulator_enrichment",
+    strict_performance_ceiling  = FALSE
   )
 }
 

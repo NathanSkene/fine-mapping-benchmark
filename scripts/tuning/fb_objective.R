@@ -13,8 +13,8 @@
 # Metrics are computed with the SAME formulas as scripts/hpc/collect_results.R
 # (which were audited in Iteration 002) so tuning optimises exactly the
 # quantities the benchmark reports - not a re-implementation that could drift:
-#   ap                    step-integral average precision (macro over the
-#                         scenario's fits, as evaluate_methods computes it)
+#   ap                    exact tie-aware average precision, averaged over
+#                         every attempted non-null locus (failures score zero)
 #   max_fdr_violation_n20 max over thresholds of (FDR(t) - (1-t)), restricted to
 #                         thresholds selecting >= 20 variants (tail-noise guard)
 #   total_mass_ratio      sum(PIP) / #causal        (1.0 = calibrated)
@@ -29,16 +29,6 @@
 #       --max_iter 2000 --lambda_l1 0.01 --prior_regularisation 1.0 --n_caus 5 \
 #       --sigma_sq 0.05 --sparse_concrete 50 --hierarchy_M 10
 # =============================================================================
-
-suppressWarnings(suppressMessages({
-  if (requireNamespace("fmbenchmark", quietly = TRUE)) {
-    library(fmbenchmark)
-  } else if (requireNamespace("pkgload", quietly = TRUE) && file.exists("DESCRIPTION")) {
-    pkgload::load_all(".", quiet = TRUE)
-  } else {
-    stop("fmbenchmark not installed and pkgload/DESCRIPTION unavailable")
-  }
-}))
 
 # `%||%` is an internal helper in the package; define it locally so this script
 # works whether fmbenchmark is installed (not exported) or loaded via pkgload.
@@ -62,44 +52,38 @@ geti <- function(k, d) if (!is.null(opt[[k]])) as.integer(as.numeric(opt[[k]])) 
 gets <- function(k, d) if (!is.null(opt[[k]])) opt[[k]] else d
 
 SIM_PATH  <- gets("sim", "")
-SCENARIO  <- geti("scenario", 1L)
-N_REGIONS <- geti("regions", 0L)          # 0 = use all regions in the sim
+SCENARIO  <- getn("scenario", 1L)
+N_REGIONS <- getn("regions", 0L)          # 0 = use all regions in the sim
 if (!nzchar(SIM_PATH) || !file.exists(SIM_PATH)) {
   stop("--sim must point at an existing tuning sim .rds (see make_tuning_sim.R)")
 }
 
 sim <- readRDS(SIM_PATH)
 n_sc <- length(sim$scenarios)
-if (SCENARIO < 1L || SCENARIO > n_sc) {
+if (!is.finite(SCENARIO) || SCENARIO < 1L || SCENARIO > n_sc) {
   stop(sprintf("--scenario %d out of range (sim has %d scenarios)", SCENARIO, n_sc))
 }
 
-# --- subset to one scenario (and optionally fewer regions) -------------------
-# evaluate_methods() indexes simulation$scenarios[[fit$scenario_id]] as a LIST
-# INDEX, so after subsetting the single scenario must be renumbered to 1.
-mini <- sim
-mini$scenarios <- sim$scenarios[SCENARIO]
-mini$scenarios[[1]]$scenario_id <- 1L
+# The preflight reads only the immutable dataset and dependency-free helpers.
+# It runs before package/Python loading and before any expensive model fit.
+file_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+helper <- file.path(dirname(sub("^--file=", "", file_arg[1])), "tuning_contract.R")
+source(helper)
 ROTATE <- identical(toupper(gets("rotate_regions", "FALSE")), "TRUE")
-if (ROTATE) {
-  # One region per scenario, with the region (and hence the region SIZE) rotating
-  # across scenarios. Cost is quadratic in p, so scoring every scenario on every
-  # region size is unaffordable once the sim spans p = 2000; rotating keeps all
-  # sizes represented across the grid at a third of the cost.
-  #
-  # No aliasing: run_simulation builds scenarios with expand.grid(S, phi, iter),
-  # so S cycles fastest with period length(S) = 5, while the rotation has period
-  # length(genotypes) = 3. gcd(5, 3) = 1, so region size spreads evenly over both
-  # the S and the phi axis rather than pairing with either.
-  n_reg <- length(mini$genotypes)
-  keep  <- ((SCENARIO - 1L) %% n_reg) + 1L
-  mini$genotypes <- mini$genotypes[keep]
-  mini$scenarios[[1]]$regions <- mini$scenarios[[1]]$regions[keep]
-} else if (N_REGIONS > 0L && N_REGIONS < length(mini$genotypes)) {
-  keep <- seq_len(N_REGIONS)
-  mini$genotypes <- mini$genotypes[keep]
-  mini$scenarios[[1]]$regions <- mini$scenarios[[1]]$regions[keep]
+mini <- subset_tuning_scenario(sim, SCENARIO, N_REGIONS, ROTATE)
+if (identical(toupper(gets("describe", "FALSE")), "TRUE")) {
+  cat(sprintf("status=ok\nn_scenarios=%d\nn_regions=%d\n", n_sc, length(mini$genotypes)))
+  quit(status = 0)
 }
+
+# Load the checkout whose source is fingerprinted by the driver. Preferencing an
+# installed package could silently score a different evaluator or wrapper.
+repo_path <- normalizePath(file.path(dirname(helper), "../.."), mustWork = TRUE)
+suppressWarnings(suppressMessages({
+  if (!requireNamespace("pkgload", quietly = TRUE))
+    stop("Install pkgload to evaluate the fingerprinted repository checkout")
+  pkgload::load_all(repo_path, quiet = TRUE)
+}))
 
 # --- hyperparameters under test ---------------------------------------------
 fb_args <- list(
@@ -138,7 +122,7 @@ if (is.null(g)) {
 }
 
 # --- metrics: identical formulas to collect_results.R ------------------------
-ap <- g$ap %||% NA_real_
+ap <- tuning_attempted_ap(g)
 
 max_fdr_violation_n20 <- NA_real_
 fdr_at_90 <- NA_real_
@@ -174,8 +158,9 @@ ece_hi           <- NA_real_
 pc <- g$pip_calibration
 if (!is.null(pc) && nrow(pc) > 0) {
   sp <- pc$n * pc$mean_pip                       # sum of PIPs in the bin
-  denom <- max(sum(pc$n_causal, na.rm = TRUE), 1)
-  total_mass_ratio <- sum(sp, na.rm = TRUE) / denom
+  denom <- sum(pc$n_causal, na.rm = TRUE)
+  # A null task has no causal-count ratio; do not invent a denominator of one.
+  if (denom > 0) total_mass_ratio <- sum(sp, na.rm = TRUE) / denom
   top <- nrow(pc)                                # highest PIP bin ([0.9, 1.0])
   if (isTRUE(pc$n[top] > 0)) hi_pip_reliab <- pc$n_causal[top] / pc$n[top]
 
@@ -197,7 +182,7 @@ if (!is.null(pc) && nrow(pc) > 0) {
   }
 }
 
-n_failed <- res[["functional_beatrice"]]$n_failed %||% NA_integer_
+n_failed <- g$n_failed %||% res[["functional_beatrice"]]$n_failed %||% NA_integer_
 elapsed  <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 
 cat(sprintf(

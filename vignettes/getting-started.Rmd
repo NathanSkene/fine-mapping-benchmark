@@ -19,7 +19,8 @@ knitr::opts_chunk$set(
   echo       = TRUE,
   message    = FALSE,
   warning    = FALSE,
-  cache      = TRUE,
+  cache      = FALSE,
+  eval       = identical(Sys.getenv("FMB_RUN_HAPLOTYPE_VIGNETTE"), "1"),
   fig.align  = "center",
   fig.width  = 6,
   fig.height = 4
@@ -46,18 +47,35 @@ on simulated data with known ground truth. It supports:
   SuSiE, SuSiE-inf, FINEMAP, CARMA, ABF, PAINTOR, Funmap, BEATRICE, Functional
   BEATRICE, plus baselines (`marginal_z`) and PolyFun-style comparators
   (`polyfun_oracle`, `polyfun_est`).
-- **Evaluation** via AUPRC, credible-set coverage/power/size, PIP calibration,
+- **Evaluation** via exact AP, proper probability scores, fit availability and
+  native credible-set recovery,
   with stratification by S (causal count), φ (heritability), p_causal,
   causal-variant MAF, and the simulation's annotation regime.
 - **Plotting** of stratified results to a multi-page PDF.
 
-This vignette walks you through a small end-to-end run that uses only Tier 1
-(pure R) methods and the sim1000G example VCF bundled with the
-`sim1000G` package — so you don't need to download anything beyond R packages.
+This vignette documents a small end-to-end R run with the sim1000G example
+VCF. Haplotype chunks run when `FMB_RUN_HAPLOTYPE_VIGNETTE=1`; ordinary
+documentation builds leave them unevaluated because the genetic-map cache
+can require a network download. The example reuses one reference window,
+and cannot establish generalisation across distinct genomic loci.
 
 If you want to use the external methods (FINEMAP, PAINTOR, Funmap, BEATRICE),
 see the
-[`README` installation tiers](../README.md#installation).
+[`README` genotype pipeline](https://github.com/NathanSkene/fine-mapping-benchmark#use-the-existing-genotype-based-pipeline).
+
+The conditional Gaussian challenge provides a separate executable example
+without haplotype downloads. Its scores are known-residual Gaussian scores,
+with a declared zero/one/two-effect reference model. These six tiny tasks
+illustrate the interface, not an adequately powered method comparison.
+
+```{r challenge-example, eval = TRUE}
+library(fmbenchmark)
+panel <- generate_challenge(scenarios = c("matched_prior", "null"),
+                            n_replicates = 3, p = 12, seed = 42)
+pred <- run_challenge(panel$inputs)
+evaluate_challenge(panel, pred)$summary[, c("method", "scenario", "success_rate",
+                                           "brier_successful", "recall_all_attempts")]
+```
 
 ---
 
@@ -75,8 +93,7 @@ The Tier 1 dependencies (`susieR`, `sim1000G`, `ggplot2`, `gridExtra`,
 `CARMA`) are declared in the package's `Imports`/`Suggests` and install with
 it. If you are working from a source checkout managed by `renv`, run
 `renv::restore()` first. See
-[README §Installation](../README.md#installation) for the external-method
-tiers.
+[method requirements](https://github.com/NathanSkene/fine-mapping-benchmark/blob/codex/challenge-benchmark-suite/docs/methods.md).
 
 ---
 
@@ -87,11 +104,12 @@ tiers.
 parameter combinations to produce one phenotype + summary-statistic set per
 combination.
 
-We use small parameters so this knits in under a minute:
+Use small parameters for this workflow demonstration; time depends on the
+genetic-map download and environment:
 
 ```{r simulate}
 sim <- run_simulation(
-  n_regions = 2,        # 2 independent genomic regions
+  n_regions = 2,        # 2 simulated panels, reusing the example reference window
   n         = 200,      # 200 simulated individuals
   p         = 80,       # ~80 SNPs per region
   n_iter    = 2,        # 2 phenotype replicates per parameter combination
@@ -153,7 +171,8 @@ The ground truth for one (scenario × region) sits in `truth`:
 truth <- sim$scenarios[[1]]$regions[[1]]$truth
 truth$causal_indices    # which variants are causal
 truth$causal_effects    # their true effect sizes
-truth$pve               # realised proportion of variance explained
+truth$pve               # Var(genetic signal) / Var(realised phenotype)
+truth$pve_expected      # calibrated target using residual distribution variance
 ```
 
 ### `sim$params`
@@ -233,9 +252,11 @@ head(sort(fit$pip, decreasing = TRUE), 5)   # top-5 variants
 ### Credible sets
 
 `fit$credible_sets` is a list of integer vectors. Each vector contains the
-1-based indices of variants in one credible set. SuSiE can return multiple
-credible sets (one per "single-effect component"); ABF and `marginal_z` return
-just one per region.
+1-based indices of variants in one native credible set. SuSiE can return
+multiple sets (one per retained single-effect component); ABF returns a
+single-effect set. `marginal_z` reports only a cumulative-mass candidate list
+in `additional`, because normalised z-based scores do not confer a Bayesian
+credible-set probability.
 
 ```{r out-cs}
 fit$credible_sets
@@ -263,9 +284,10 @@ fit$additional$n_iter_run
 
 # 7. Evaluate
 
-`evaluate_methods()` computes AUPRC, credible-set coverage/power/size, PIP
-calibration, and runtime — pooled globally and stratified along several
-axes.
+`evaluate_methods()` computes exact tied-rank AP, probability scores, native
+set diagnostics and runtime. Pooled and locus-macro AP answer different
+ranking questions; successful-fit scores must be read alongside availability
+and recovery over all attempted fits.
 
 ```{r evaluate}
 eval <- evaluate_methods(
@@ -292,9 +314,12 @@ do.call(rbind, lapply(eval$methods_evaluated, function(m) {
   g <- eval[[m]]$global
   data.frame(
     method        = m,
-    auprc         = fmt(g$auprc),
+    pooled_ap     = fmt(g$ap),
+    macro_ap_attempted = fmt(g$ap_macro_attempted),
+    availability  = fmt(g$success_rate),
+    raw_brier     = fmt(g$brier_score),
     cs_coverage   = fmt(g$cs_coverage),
-    cs_power      = fmt(g$cs_power),
+    cs_recovery_attempted = fmt(g$cs_power_attempted),
     cs_size_med   = fmt(g$cs_size_median, 1),
     runtime_s     = fmt(g$runtime_mean, 2),
     stringsAsFactors = FALSE
@@ -302,8 +327,9 @@ do.call(rbind, lapply(eval$methods_evaluated, function(m) {
 }))
 ```
 
-You should see SuSiE and ABF appreciably above `marginal_z` — that's the
-expected ordering, since `marginal_z` does no modelling at all.
+No ordering is guaranteed on a small panel. Native set hit rates are also
+different from recovery of distinct sparse causes; repeated sets must not
+receive repeated credit for the same signal.
 
 ### Stratified metrics
 
@@ -311,16 +337,16 @@ Several axes are computed automatically. By number of causal variants:
 
 ```{r eval-by-S}
 names(eval$susie$by_S)
-cat("\nAUPRC by S, SuSiE:\n")
-sapply(eval$susie$by_S, function(x) round(x$auprc, 3))
+cat("\nExact pooled AP by S, SuSiE:\n")
+sapply(eval$susie$by_S, function(x) round(x$ap, 3))
 ```
 
 By minimum causal MAF:
 
 ```{r eval-by-maf}
 names(eval$susie$by_causal_maf)
-cat("\nAUPRC by causal MAF bin, SuSiE:\n")
-sapply(eval$susie$by_causal_maf, function(x) round(x$auprc, 3))
+cat("\nExact pooled AP by causal MAF bin, SuSiE:\n")
+sapply(eval$susie$by_causal_maf, function(x) round(x$ap, 3))
 ```
 
 > **Why only one bin here?** The bundled `sim1000G` VCF contains only common
@@ -347,7 +373,7 @@ The PDF has, in order:
 
 1. **Global PR curves** for all methods on one panel
 2. **Global PIP calibration** faceted by method
-3. **Global summary table** with means ± SE across replicates
+3. **Global summary table** with conditional replicate-cluster uncertainty
 4. **By-S grids** — PR curves, calibration, and metric line plots vs S
 5. **By-φ grids** — same structure
 6. **By-p_causal grids** (if `model = "sparse_inf"`)
@@ -359,14 +385,15 @@ every metric and the structure of every plot.
 
 # 9. Where to go next
 
-You now have a working end-to-end pipeline. Common next steps:
+Further experiments need a documented scientific target and independent
+reference loci. Common next steps:
 
 - **Larger simulations.** Use `inst/scripts/prepare_vcfs.R` to download 50 real 1000G
   regions, then pass `vcf_dir = "data/vcf"` to `run_simulation()`. See
-  [README §Reference data](../README.md#reference-data-optional).
+  [reference-data instructions](https://github.com/NathanSkene/fine-mapping-benchmark/blob/codex/challenge-benchmark-suite/inst/scripts/prepare_vcfs.R).
 - **More methods.** Tier 2 adds FINEMAP and PAINTOR (C++ binaries); Tier 3
   adds the Python-based methods (Funmap, BEATRICE, Functional BEATRICE).
-  See [README §Installation](../README.md#installation).
+  See the method requirements above; optional integrations need actual runtime tests.
 - **Annotation-aware methods.** Re-run with `annotations = "binary"` and
   add `polyfun_oracle`, `polyfun_est`, `funmap`, or `paintor` to the methods
   list. See [`docs/methods.md`](../docs/methods.md) for per-method details.
@@ -376,9 +403,9 @@ You now have a working end-to-end pipeline. Common next steps:
   [`docs/gw_simulation_documentation.md`](../docs/gw_simulation_documentation.md).
 - **HPC runs.** For large parameter sweeps, the `scripts/hpc/` directory has
   a SLURM job array template. See
-  [README §Running on an HPC cluster](../README.md#running-on-an-hpc-cluster).
+  [HPC instructions](https://github.com/NathanSkene/fine-mapping-benchmark/blob/codex/challenge-benchmark-suite/scripts/hpc/README.md).
 - **Evaluation internals.** For the precise definition of every metric and
-  the SE-across-replicates machinery, see
+  the uncertainty conditional on reused reference loci, see
   [`docs/evaluation.md`](../docs/evaluation.md).
 
 ---

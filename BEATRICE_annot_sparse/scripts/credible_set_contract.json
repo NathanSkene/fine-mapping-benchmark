@@ -1,0 +1,5 @@
+{
+  "format": "beatrice-conditional-credible-set-diagnostics-v1",
+  "default_stopping_rule": "conditional_union",
+  "index_base": 0
+}

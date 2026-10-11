@@ -8,6 +8,16 @@
 # so wrappers can rely on it without redefining.
 `%||%` <- function(x, y) if (!is.null(x)) x else y
 
+# Preserve the executable's final symlink: Python uses its invoked location to
+# discover pyvenv.cfg. Dereferencing bin/python can silently select the base
+# interpreter and discard the requested virtual environment's dependencies.
+.fm_python_path <- function(python) {
+  expanded <- path.expand(python)
+  if (file.exists(expanded)) {
+    file.path(normalizePath(dirname(expanded), mustWork = TRUE), basename(expanded))
+  } else python
+}
+
 
 # -----------------------------------------------------------------------------
 # fmb_extdata(): locate a file shipped under inst/extdata/

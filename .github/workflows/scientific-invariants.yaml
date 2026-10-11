@@ -1,0 +1,62 @@
+name: Scientific-invariants
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  invariants:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RENV_CONFIG_AUTOLOADER_ENABLED: false
+      # fs >= 2 defaults to system libuv; use its portable bundled build when
+      # Ubuntu runners lack libuv development headers.
+      USE_BUNDLED_LIBUV: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+      - name: Install scientific and reporting test dependencies
+        run: |
+          Rscript --vanilla - <<'RSCRIPT'
+          options(timeout = max(300, getOption("timeout")))
+          # setup-r supplies Posit's Linux binary repository through RSPM.
+          # --vanilla skips R profiles, so select that repository explicitly.
+          repo <- Sys.getenv("RSPM", unset = "")
+          if (!nzchar(repo)) repo <- "https://cloud.r-project.org"
+          required <- c("testthat", "jsonlite", "posterior", "digest")
+          available <- function() vapply(required, requireNamespace, TRUE, quietly = TRUE)
+          for (attempt in seq_len(3L)) {
+            if (all(available())) break
+            missing <- required[!available()]
+            message("Installing ", paste(missing, collapse = ", "), ": attempt ", attempt, "/3 from ", repo)
+            tryCatch(install.packages(missing, repos = repo),
+                     error = function(e) message(conditionMessage(e)))
+            if (all(available())) break
+            if (attempt < 3L) Sys.sleep(5L * attempt)
+          }
+          if (!all(available()))
+            stop("Test dependency installation failed after three attempts: ", paste(required[!available()], collapse = ", "))
+          for (package in required) message("Verified ", package, " ", packageVersion(package))
+          RSCRIPT
+      - name: Test scoring, generative invariants and blinded-input contracts
+        run: Rscript --vanilla scripts/challenge/test_core.R
+      - name: Test publication denominators and specified stage contrasts
+        run: |
+          Rscript --vanilla paper/test_csv_reader.R
+          Rscript --vanilla paper/test_native_publication.R
+          Rscript --vanilla paper/test_regional_publication.R
+          Rscript --vanilla paper/test_stage_attribution.R
+          Rscript --vanilla paper/test_stage_publication.R
+      - name: Test resource dimensions, support and custody
+        run: Rscript --vanilla scripts/reporting/test_resource_cost_report.R
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test final-prior posterior mathematics
+        run: python -m unittest discover -s tests/python -v

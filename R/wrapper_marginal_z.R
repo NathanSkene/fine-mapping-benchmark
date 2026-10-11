@@ -8,16 +8,12 @@
 #
 #   pip_j = |z_j| / sum_k |z_k|
 #
-# The PIPs sum to 1, consistent with a single-causal-variant assumption. A
-# credible set is constructed greedily: variants are sorted by descending PIP
-# and accumulated until the cumulative PIP reaches `coverage`. This is the
-# same CS construction used by ABF and PAINTOR for fairness across baselines.
-#
-# Why include it: it is the "are you better than the raw z-scores?" baseline.
-# No real fine-mapping method should be appreciably worse than marginal_z on
-# any setting; if it is, the method is mis-tuned or actively harmful. The gap
-# between marginal_z and ABF is informative — it shows what shrinkage adds
-# under a single-causal model.
+# These normalized scores sum to one but are not posterior probabilities.
+# They support a ranking baseline; calibration, Bayesian credible-set coverage
+# and PIP-threshold discovery claims do not apply to them. A score-mass set is
+# provided separately for descriptive use, never as a posterior credible set.
+# A fitted method can legitimately rank worse in a finite sample or under
+# model mismatch; there is no universal dominance guarantee.
 #
 # No external packages or binaries are required.
 #
@@ -33,30 +29,27 @@
 
 #' Run the marginal-z baseline on a single region
 #'
-#' Computes PIPs as the normalised absolute z-scores
-#' (\code{pip_j = |z_j| / sum_k |z_k|}) and derives a single credible set
-#' greedily from the ranking until cumulative PIP reaches \code{coverage}.
+#' Computes normalized absolute z ranking scores in the legacy \code{pip}
+#' field. A descriptive score-mass set appears in \code{additional}; posterior
+#' credible sets are not provided.
 #'
 #' This is a model-free baseline — no LD matrix, sample size, or prior
-#' assumption is used. Its purpose is to anchor reported AUPRC numbers: any
-#' real fine-mapping method should outperform it on a non-degenerate setting.
+#' assumption is used. Its purpose is to anchor reported ranking performance.
 #'
 #' @param z Numeric vector. Marginal z-scores (length p).
-#' @param coverage Numeric. Coverage level for the credible set. Default: 0.95.
+#' @param coverage Numeric. Descriptive score-mass threshold. Default: 0.95.
 #'
 #' @return A list with the standardised fine-mapping output:
 #' \describe{
 #'   \item{pip}{Numeric vector (length p). Normalised |z|-based PIPs that sum
 #'     to 1.}
-#'   \item{credible_sets}{List containing one integer vector: the indices of
-#'     variants in the credible set (sorted ascending), constructed greedily
-#'     from PIPs until cumulative PIP \eqn{\ge} \code{coverage}.}
+#'   \item{credible_sets}{Empty list: this ranking model has no posterior credible sets.}
 #'   \item{method}{Character. Always \code{"marginal_z"}.}
 #'   \item{input_type}{Character. Always \code{"summary"}.}
 #'   \item{params}{List. Hyperparameters used (\code{coverage}).}
 #'   \item{runtime_seconds}{Numeric. Wall-clock time in seconds (effectively
 #'     zero — included for interface consistency with the other methods).}
-#'   \item{additional}{Empty list (no method-specific outputs).}
+#'   \item{additional}{Score semantics and a descriptive score-mass set.}
 #' }
 #'
 #' @export
@@ -68,7 +61,7 @@ run_marginal_z <- function(z, coverage = 0.95) {
 
   stopifnot(
     "z must be a non-empty numeric vector" =
-      is.numeric(z) && p >= 1,
+      is.numeric(z) && p >= 1 && all(is.finite(z)),
     "coverage must be a single number in (0, 1)" =
       is.numeric(coverage) && length(coverage) == 1 &&
       coverage > 0 && coverage < 1
@@ -102,12 +95,17 @@ run_marginal_z <- function(z, coverage = 0.95) {
 
   list(
     pip             = pip,
-    credible_sets   = list(cs_indices),
+    credible_sets   = list(),
     method          = "marginal_z",
     input_type      = "summary",
     params          = list(coverage = coverage),
     runtime_seconds = elapsed,
-    additional      = list()
+    additional      = list(
+      score_semantics = "normalized_absolute_z_rank_score",
+      is_posterior_probability = FALSE,
+      credible_set_semantics = "not_provided",
+      pip_mass_set = as.integer(cs_indices)
+    )
   )
 }
 

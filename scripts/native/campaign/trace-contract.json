@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "role": "observed_release_binary",
+  "layout": "one_raw_row_per_iteration_without_iter",
+  "model_mode": "RC",
+  "gamma": [0, 0.001, 0.01, 0.1, 1],
+  "declared_fixed_constants": {"Vg1": 0},
+  "executable_sha256": "649123c2fefacc23aa71c6537c9226b5a69f06f6045863672118009cbe680346",
+  "columns": ["NnzSnp", "SigmaSq", "hsq", "ResVar", "NumSnp1", "NumSnp2", "NumSnp3", "NumSnp4", "NumSnp5", "Vg1", "Vg2", "Vg3", "Vg4", "Vg5"],
+  "iteration_origin": "one-based raw data-row position after the sole header",
+  "retention_rule": "Iter > burn_in and Iter modulo thin == 0",
+  "evidence": {
+    "pbs_job": "4310409",
+    "n_iter": 150,
+    "burn_in": 50,
+    "thin": 5,
+    "retained_count": 20,
+    "raw_core_sha256": "24e3ed5b9809a2eebb2a7a616b38be2bde2a3f9522eb538e39f8dd868b4811a1",
+    "same_seed_text_and_no_text_final_snpres_sha256": "e7aded27f5031a88f7fd5ea766bd2c9c4e51858acaf7a3691adfcff8dcdee282",
+    "same_seed_all_and_core_retained_trace_sha256": "c5f4053d5d94a84a815ba3fc4fdf66e5f4fbd402b0da20389714524dd1e5c6fe",
+    "retention_equivalence_pbs_job": "4310472",
+    "retention_equivalence": "all/core/no-text snpRes, parRes, parSetRes and enrich bytes identical; all/core retained core draws identical",
+    "fixed_constant_evidence": "actual retained Vg1 values all exactly zero; actual log confirms Gamma: 0 0.001 0.01 0.1 1; pinned source computes genetic variance only for nonzero components",
+    "source_audit_commit": "cc7fa7d765c83a89c6375946cf77fe50ba1a317e",
+    "source_identity": "source audit reference, not proof that the later release binary was compiled from this commit",
+    "purpose": "trace layout and write-only output check; no accuracy or convergence result"
+  }
+}

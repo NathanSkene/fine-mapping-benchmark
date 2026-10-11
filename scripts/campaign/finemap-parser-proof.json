@@ -1,0 +1,33 @@
+{
+  "role": "actual native execution and rounded-posterior parser validation; no scientific accuracy claim",
+  "pbs_job_id": "4310528.pbs-7",
+  "exit_status": 0,
+  "actual_version_banner": "1.4.2",
+  "binary_sha256": "41e0af31c18e2e92d2a5fd1fbf35c9832d62ae737746ecd0aa4629a5925c9bcc",
+  "tested_wrapper_sha256": "a21ab31a463075e5f2a2b14faceb6b848e3a7382df5613c55d5029483b757729",
+  "source_role": "source-afd7624 with only repaired wrapper override; subsequent source requires fresh preflights",
+  "n_loci": 2,
+  "n": 200,
+  "p": 24,
+  "maximum_causal": 5,
+  "search_iterations_limit": 100000,
+  "native_prior": [0, 0.587, 0.294, 0.0937, 0.0214, 0.00372],
+  "native_null_support": "excluded_by_prior",
+  "posterior_conditioning": "at_least_one_modeled_cause",
+  "loci": [
+    {
+      "reported_posterior": [0, 0.548, 0.404, 0.0476, 0, 0],
+      "reported_sum": 0.9996,
+      "renormalized": false,
+      "log_sha256": "a4eebbddf032d9fbda035820b9a6862d759f35951d920735917bb3bd9d9a77ee",
+      "snp_sha256": "235c6233a000d1c1462bdd2c6224b8fc848dafc50aaad759d3f5258c95f71594"
+    },
+    {
+      "reported_posterior": [0, 0.536, 0.32, 0.145, 0.00012, 0],
+      "reported_sum": 1.00112,
+      "renormalized": false,
+      "log_sha256": "6745137722485f664bd9227823639c85d101f0d8bb21eb0bae9e1bdca13d61cf",
+      "snp_sha256": "2b4cd28257433ef80308bf955a4e3a1fa789ec6b57b8af0258974d61d5780b03"
+    }
+  ]
+}

@@ -3,31 +3,18 @@
 #
 # Wrapper for PolyFun-style fine-mapping with **estimated** per-SNP priors.
 #
-# Provides a fair, "no-cheating" annotation-aware comparator to Funmap,
-# PAINTOR, Functional BEATRICE, etc. The methodology is:
+# Experimental annotation-regression comparator. It regresses each variant's
+# chi-squared statistic on its own annotation, clamps OLS coefficients, and
+# passes normalized fitted weights to SuSiE. This is not stratified LDSC or
+# the upstream PolyFun workflow: under LD, tagging inflates other variants'
+# chi-squared values, and a null/confounding intercept is not heritability.
+# Keep this comparator to quantify the consequences of a simplified prior
+# estimator, alongside the LD-aware polyfun_ldsc surrogate.
 #
-#   1. Estimate per-annotation contributions tau_k by regressing the
-#      observed chi-squared statistics on the annotation matrix:
-#
-#          chi2_j = tau_0 + sum_k tau_k * A_{j,k} + noise
-#
-#      Non-negative coefficients are kept (negative heritability
-#      contributions are not physical). This is "LDSC-lite" — much
-#      simpler than canonical stratified LDSC, which would also account
-#      for LD scores and reference-panel calibration. Those steps are
-#      unnecessary on simulated benchmark data and would tie us to
-#      pretrained UKB infrastructure that does not apply here.
-#
-#   2. Convert estimated coefficients into per-SNP prior variances:
-#
-#          sigma2(j) = max(tau_0 + sum_k tau_k * A_{j,k}, floor)
-#
-#      Normalised so the resulting vector sums to 1, then passed to
-#      susieR::susie_rss(..., prior_weights = ...).
-#
-# Compared to polyfun_oracle (which uses the simulator's true per-SNP
-# causal probabilities), polyfun_est pays the realistic "cost of
-# estimation". The gap between the two is informative.
+# Its scenario pooling uses the same regions subsequently fine-mapped. This
+# is transductive empirical-prior estimation, not a held-out learned predictor.
+# A gap to the enrichment oracle mixes prior and inference effects and is not
+# an isolated estimate of the cost of prior learning.
 #
 # Pooling across regions
 # ----------------------
@@ -113,6 +100,8 @@ setup_polyfun_est <- function() {
 #' @param estimate_prior_variance Logical. Default: TRUE.
 #' @param verbose_susie Logical. Print SuSiE's own progress messages.
 #'   Default: FALSE.
+#' @param statistic_type \code{marginal_ols_t} (default) or \code{normal_score}.
+#' @param residual_variance Specified Gaussian score noise variance; default 1.
 #'
 #' @return A list with the standardised fine-mapping output. The
 #'   \code{additional} sub-list contains:
@@ -142,7 +131,8 @@ run_polyfun_est <- function(z,
                              max_iter    = 100,
                              estimate_residual_variance = TRUE,
                              estimate_prior_variance    = TRUE,
-                             verbose_susie = FALSE) {
+                             verbose_susie = FALSE,
+                             statistic_type = "marginal_ols_t", residual_variance = 1) {
 
   # --- Validate ---------------------------------------------------------------
 
@@ -206,16 +196,20 @@ run_polyfun_est <- function(z,
                                  estimate_residual_variance,
                                  estimate_prior_variance,
                                  prior_source = prior_source)
+  params$statistic_type <- statistic_type
+  params$score_residual_variance <- residual_variance
+  params$effective_estimate_residual_variance <- if (statistic_type == "normal_score") FALSE else estimate_residual_variance
 
   # --- Run SuSiE-RSS ----------------------------------------------------------
 
   start_time <- proc.time()
 
   fit <- tryCatch({
-    susieR::susie_rss(
+    .fm_susie_rss(
       z = z,
       R = LD,
       n = n,
+      statistic_type = statistic_type, residual_variance = residual_variance,
       L = L,
       prior_weights = prior_weights,
       estimate_residual_variance = estimate_residual_variance,
@@ -252,8 +246,11 @@ run_polyfun_est <- function(z,
     prior_source   = prior_source,
     prior_weights  = prior_weights,
     tau_hat        = tau_hat,
+    tau            = tau_hat,  # compatibility alias
+    implementation = "annotation_regression_susie_surrogate",
+    prior_training_scope = if (prior_source == "estimated_pooled") "same_scenario" else "same_region",
     alpha          = fit$alpha,
-    posterior_mean = colSums(fit$alpha * fit$mu),
+    posterior_mean = .fm_susie_posterior_mean(fit),
     lbf            = if (!is.null(fit$lbf)) fit$lbf else rep(NA_real_, L),
     cs_purity      = cs_purity,
     converged      = fit$converged,
@@ -287,11 +284,13 @@ run_polyfun_est <- function(z,
 #'   Typically supplied automatically by
 #'   \code{run_polyfun_est_scenario_setup()}. Default: NULL.
 #' @param ... Additional arguments passed to \code{\link{run_polyfun_est}}.
+#' @param statistic_type Optional summary type inherited from the region;
+#'   defaults to \code{marginal_ols_t} when no type is declared.
 #'
 #' @return The output of \code{\link{run_polyfun_est}}.
 #' @export
 run_polyfun_est_region <- function(region_geno, region_pheno,
-                                    pooled_tau = NULL, ...) {
+                                    pooled_tau = NULL, ..., statistic_type = NULL) {
 
   A <- region_geno$annotations_matrix
   if (is.null(A)) A <- region_pheno$annotations_matrix
@@ -302,6 +301,7 @@ run_polyfun_est_region <- function(region_geno, region_pheno,
     n           = region_geno$n,
     annotations = A,
     pooled_tau  = pooled_tau,
+    statistic_type = statistic_type %||% region_pheno$statistic_type %||% "marginal_ols_t",
     ...
   )
 }

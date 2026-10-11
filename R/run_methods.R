@@ -168,7 +168,10 @@ run_methods <- function(simulation,
 
   # --- Validate inputs --------------------------------------------------------
 
-  methods <- tolower(trimws(methods))
+  if (!is.character(methods) || length(methods) == 0L || anyNA(methods)) {
+    stop("methods must be a nonempty character vector.", call. = FALSE)
+  }
+  methods <- unique(tolower(trimws(methods)))
 
   unknown <- setdiff(methods, names(.FM_REGISTRY))
   if (length(unknown) > 0) {
@@ -213,7 +216,7 @@ run_methods <- function(simulation,
 
   for (method in methods) {
 
-    run_fn    <- match.fun(.FM_REGISTRY[[method]])
+    run_fn    <- get(.FM_REGISTRY[[method]], mode = "function", inherits = TRUE)
     user_args <- if (!is.null(method_args[[method]])) method_args[[method]] else list()
 
     if (verbose) {
@@ -242,7 +245,7 @@ run_methods <- function(simulation,
     scenario_setup_name <- paste0("run_", method, "_scenario_setup")
     has_scenario_setup  <- exists(scenario_setup_name, mode = "function")
     if (has_scenario_setup) {
-      scenario_setup_fn <- match.fun(scenario_setup_name)
+      scenario_setup_fn <- get(scenario_setup_name, mode = "function", inherits = TRUE)
     }
 
     batch_start    <- proc.time()
@@ -255,14 +258,18 @@ run_methods <- function(simulation,
 
       # Run the scenario-level setup hook (if any) to obtain extra args.
       effective_args <- user_args
+      setup_error <- NULL
+      scenario_regions <- if (method == "polyfun_oracle") scenario$regions else
+        lapply(scenario$regions, function(region) { region$truth <- NULL; region })
       if (has_scenario_setup) {
         extra_args <- tryCatch(
           scenario_setup_fn(
             genotypes = simulation$genotypes,
-            regions   = scenario$regions,
+            regions   = scenario_regions,
             user_args = user_args
           ),
           error = function(e) {
+            setup_error <<- paste("Scenario setup failed:", conditionMessage(e))
             if (verbose) {
               message(sprintf(
                 "    WARNING: scenario_setup for %s failed (scenario %d): %s",
@@ -281,32 +288,37 @@ run_methods <- function(simulation,
         idx <- idx + 1L
 
         if (verbose) {
-          message(sprintf(
-            "  [%d/%d] Scenario %d (S=%d, phi=%.2f, iter=%d), Region %d",
-            idx, n_total,
-            scenario$scenario_id, scenario$S, scenario$phi, scenario$iter, rg
-          ))
+          architecture <- if (!is.null(scenario$S)) {
+            sprintf("S=%d, phi=%.2f", scenario$S, scenario$phi)
+          } else sprintf("pi=%.3g, h2=%.2f", scenario$pi, scenario$h2)
+          message(sprintf("  [%d/%d] Scenario %d (%s, iter=%d), Region %d",
+                          idx, n_total, scenario$scenario_id, architecture, scenario$iter, rg))
         }
 
-        region_geno  <- simulation$genotypes[[rg]]
-        region_pheno <- scenario$regions[[rg]]
-
-        fit <- tryCatch(
-          do.call(run_fn, c(
-            list(region_geno = region_geno, region_pheno = region_pheno),
-            effective_args
-          )),
-          error = function(e) list(
-            pip             = rep(NA_real_, nrow(region_geno$LD)),
-            credible_sets   = list(),
-            method          = method,
-            input_type      = NA_character_,
-            params          = effective_args,
-            runtime_seconds = NA_real_,
-            additional      = list(),
-            error           = conditionMessage(e)
-          )
-        )
+        region_geno <- simulation$genotypes[[rg]]
+        region_pheno <- scenario_regions[[rg]]
+        fit <- tryCatch({
+          if (!is.null(setup_error)) stop(setup_error, call. = FALSE)
+          candidate <- do.call(run_fn, c(
+            list(region_geno = region_geno, region_pheno = region_pheno), effective_args
+          ))
+          if (is.null(candidate$error)) {
+            if (!is.list(candidate) || !is.numeric(candidate$pip) ||
+                length(candidate$pip) != region_geno$p ||
+                any(!is.finite(candidate$pip)) || any(candidate$pip < 0 | candidate$pip > 1)) {
+              stop("Method returned invalid or misaligned PIPs.", call. = FALSE)
+            }
+            if (!is.list(candidate$credible_sets) || any(vapply(candidate$credible_sets, function(cs) {
+              !is.numeric(cs) || any(!is.finite(cs)) || any(cs != floor(cs)) ||
+                any(cs < 1L | cs > region_geno$p) || anyDuplicated(cs) > 0L
+            }, logical(1)))) stop("Method returned invalid credible-set indices.", call. = FALSE)
+          }
+          candidate
+        }, error = function(e) list(
+          pip = rep(NA_real_, region_geno$p), credible_sets = list(),
+          method = method, input_type = NA_character_, params = effective_args,
+          runtime_seconds = NA_real_, additional = list(), error = conditionMessage(e)
+        ))
 
         if (!is.null(fit$error)) {
           n_failed <- n_failed + 1L
@@ -320,6 +332,9 @@ run_methods <- function(simulation,
         fit$region_id   <- rg
         fit$S           <- scenario$S
         fit$phi         <- scenario$phi
+        fit$pi          <- scenario$pi
+        fit$h2          <- scenario$h2
+        fit$benchmark_access <- if (method == "polyfun_oracle") "oracle_enrichment" else "observed_data"
         fit$p_causal    <- scenario$p_causal
         fit$iter        <- scenario$iter
 
@@ -364,7 +379,7 @@ run_methods <- function(simulation,
         is.character(output_dir) && length(output_dir) == 1
     )
 
-    sim_label <- .make_sim_label(simulation$params)
+    sim_label <- .make_sim_label(simulation$params, method_args)
     run_dir   <- file.path(output_dir, sim_label)
 
     if (!dir.exists(run_dir)) {
@@ -398,22 +413,17 @@ run_methods <- function(simulation,
 
 # Build a human-readable label from simulation params for use as a directory
 # name. Mirrors the filename convention used in run_simulation().
-.make_sim_label <- function(params) {
+.make_sim_label <- function(params, method_args = list()) {
   seed_tag <- if (!is.null(params$seed)) paste0("seed", params$seed) else "noseed"
-  p_vals   <- params$p %||% "p?"
-  p_tag    <- if (length(unique(p_vals)) == 1) as.character(p_vals[1]) else
-                paste(p_vals, collapse = "-")
-  S_tag    <- paste(params$S_values, collapse = "-")
-
-  sprintf(
-    "%s_n%d_p%s_S%s_iter%d_%s",
-    params$model %||% "model",
-    params$n     %||% 0L,
-    p_tag,
-    S_tag,
-    params$n_iter %||% 0L,
-    seed_tag
-  )
+  # Include all recorded simulation parameters and method overrides: the old
+  # S/n/p-only label overwrote experiments differing in phi, LD or annotations.
+  fingerprint_path <- tempfile("fmbenchmark_config_")
+  on.exit(unlink(fingerprint_path), add = TRUE)
+  saveRDS(list(simulation = params, method_args = method_args), fingerprint_path,
+          compress = FALSE, version = 2)
+  fingerprint <- substr(unname(tools::md5sum(fingerprint_path)), 1, 12)
+  sprintf("%s_n%d_iter%d_%s_%s", params$model %||% "model", params$n %||% 0L,
+          params$n_iter %||% 0L, seed_tag, fingerprint)
 }
 
 # %||% is defined in R/utils.R.

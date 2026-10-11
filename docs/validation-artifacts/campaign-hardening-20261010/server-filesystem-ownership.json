@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "status": "PASS_for_current_ownership_helper",
+  "scope": "Executed shared-filesystem and production controller ownership integration; no fine-mapping inference",
+  "same_login_host": {
+    "proof": {
+      "role": "Actual server filesystem journal and same-host controller-lock check; no inference or PBS submissions",
+      "sqlite_version": "3.50.1",
+      "journal_mode": "delete",
+      "synchronous": 2,
+      "foreign_keys": 1,
+      "concurrent_lock_refused": true,
+      "released_lock_reacquired": true,
+      "committed_intent_survived_reopen": true,
+      "uncommitted_update_rolled_back": true,
+      "quick_check": "ok",
+      "proof_script_sha256": "6f46cee8dcbdee91d940a813db55f3a8970953a0e636531fb50c8b8b5679fd38",
+      "platform": "linux",
+      "limits": "Same login host only; does not prove durability after storage failure or cross-node lock behavior"
+    },
+    "raw_proof_sha256": "2daeb7c6bedda4649a236704138e2b9cd7ef1a33aeb93e6dedcb676e368213a2"
+  },
+  "failed_cross_node_flock_only": {
+    "status": "FAIL_preserved",
+    "pbs_job_id": "4311453.pbs-7",
+    "pbs_exit_status": 1,
+    "parent_host": "login-c",
+    "child_host": "cx3-3-6",
+    "failure": "Compute node acquired fcntl.flock while login parent held identical shared file",
+    "script_sha256": "42281e516fbdf80126f3905ffef5a89b73eadc9d4227a3eb143e82d09181756a",
+    "stderr_sha256": "fb09bf95949d0b30e05a961610945ed7b61a0f44f786678c6ed433b2e82405f7",
+    "resolution": "Both controllers now claim an atomic directory with durable owner metadata before scheduler state access; existing or incomplete claims are refused"
+  },
+  "atomic_directory_primitive": {
+    "proof": {
+      "status": "PASS",
+      "pbs_job_id": "4311472.pbs-7",
+      "parent_host": "login-c",
+      "child_host": "cx3-3-22",
+      "sqlite_version": "3.50.1",
+      "cross_node_directory_claim_refused": true,
+      "released_directory_claim_acquired_on_compute": true,
+      "released_directory_claim_reacquired_on_login": true,
+      "commits_visible_in_both_directions": true,
+      "fcntl_flock_cross_node_enforced": false,
+      "journal_mode": "delete",
+      "synchronous": 2,
+      "foreign_keys": 1,
+      "script_sha256": "f2a2f0a5bc24375692f3533706393514c3633d7f5bf43fa1b3f32d4bde13e24c",
+      "role": "Actual login/compute atomic-directory primitive and serialized SQLite commit check",
+      "limitations": "This tests the filesystem primitive rather than the production ownership helper; it does not simulate a storage outage or establish crash durability; no simultaneous database writers are permitted"
+    },
+    "raw_proof_sha256": "963f71d54cb52053b4d8a6dd44e8ae3a791cdcb4505fce6e4085cf53ef878c62"
+  },
+  "production_helper": {
+    "proof": {
+      "status": "PASS",
+      "pbs_job_id": "4311477.pbs-7",
+      "parent_host": "login-c",
+      "child_host": "cx3-4-4",
+      "sqlite_version": "3.50.1",
+      "production_claim_refused_cross_node": true,
+      "production_claim_acquired_after_release": true,
+      "production_claim_reacquired_on_login": true,
+      "graceful_claim_release": true,
+      "synced_owner_metadata": true,
+      "commits_visible_in_both_directions": true,
+      "journal_mode": "delete",
+      "synchronous": 2,
+      "foreign_keys": 1,
+      "helper_sha256": "cc2da80c47856fba3aeff5b0817ec63ad13990c168d34e052a35f8caec957510",
+      "script_sha256": "5452a10cfffaadf842012f01e2646ea3102676cbab56e65bc345544679b280e5",
+      "role": "Actual frozen production ownership helper on login and PBS compute hosts",
+      "limitations": "No storage-outage or killed-owner simulation; no simultaneous database writers are permitted"
+    },
+    "raw_proof_sha256": "af004af59dc846fed7f6a60c36f83c19818745a4b9205cf9599484c48185b401",
+    "source": "scripts/campaign/dispatch.py",
+    "reproduction_script": "probe-controller-ownership-cross-node.py",
+    "scheduler_observation": {
+      "job_state": "F",
+      "Exit_status": 0,
+      "queue": "v1_small24",
+      "resources_used.walltime": "00:00:30",
+      "resources_used.mem": "139044kb",
+      "source": "Actual qstat -x -f 4311477.pbs-7, recorded in ignored raw pbs-status.txt"
+    }
+  },
+  "limitations": "This establishes the observed locking primitive and actual graceful ownership helper across two machines. It does not simulate storage outages, prove SQLite durability after hardware failure or automatically reconcile killed-owner claims. No simultaneous database writers are permitted."
+}

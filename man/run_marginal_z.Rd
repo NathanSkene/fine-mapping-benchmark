@@ -9,31 +9,28 @@ run_marginal_z(z, coverage = 0.95)
 \arguments{
 \item{z}{Numeric vector. Marginal z-scores (length p).}
 
-\item{coverage}{Numeric. Coverage level for the credible set. Default: 0.95.}
+\item{coverage}{Numeric. Descriptive score-mass threshold. Default: 0.95.}
 }
 \value{
 A list with the standardised fine-mapping output:
 \describe{
 \item{pip}{Numeric vector (length p). Normalised |z|-based PIPs that sum
 to 1.}
-\item{credible_sets}{List containing one integer vector: the indices of
-variants in the credible set (sorted ascending), constructed greedily
-from PIPs until cumulative PIP \eqn{\ge} \code{coverage}.}
+\item{credible_sets}{Empty list: this ranking model has no posterior credible sets.}
 \item{method}{Character. Always \code{"marginal_z"}.}
 \item{input_type}{Character. Always \code{"summary"}.}
 \item{params}{List. Hyperparameters used (\code{coverage}).}
 \item{runtime_seconds}{Numeric. Wall-clock time in seconds (effectively
 zero — included for interface consistency with the other methods).}
-\item{additional}{Empty list (no method-specific outputs).}
+\item{additional}{Score semantics and a descriptive score-mass set.}
 }
 }
 \description{
-Computes PIPs as the normalised absolute z-scores
-(\code{pip_j = |z_j| / sum_k |z_k|}) and derives a single credible set
-greedily from the ranking until cumulative PIP reaches \code{coverage}.
+Computes normalized absolute z ranking scores in the legacy \code{pip}
+field. A descriptive score-mass set appears in \code{additional}; posterior
+credible sets are not provided.
 }
 \details{
 This is a model-free baseline — no LD matrix, sample size, or prior
-assumption is used. Its purpose is to anchor reported AUPRC numbers: any
-real fine-mapping method should outperform it on a non-degenerate setting.
+assumption is used. Its purpose is to anchor reported ranking performance.
 }

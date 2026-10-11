@@ -16,7 +16,9 @@ run_polyfun_oracle(
   max_iter = 100,
   estimate_residual_variance = TRUE,
   estimate_prior_variance = TRUE,
-  verbose_susie = FALSE
+  verbose_susie = FALSE,
+  statistic_type = "marginal_ols_t",
+  residual_variance = 1
 )
 }
 \arguments{
@@ -48,6 +50,10 @@ Default: 0.5.}
 
 \item{verbose_susie}{Logical. Print SuSiE's own progress messages.
 Default: FALSE.}
+
+\item{statistic_type}{\code{marginal_ols_t} (default) or \code{normal_score}.}
+
+\item{residual_variance}{Specified Gaussian score noise variance; default 1.}
 }
 \value{
 A list with the standardised fine-mapping output. The
@@ -72,11 +78,10 @@ correlation per credible set.}
 }
 }
 \description{
-Reconstructs the true per-SNP causal probability from the supplied
-annotation matrix and enrichment vector, then runs
-\code{susieR::susie_rss} with those probabilities as
-\code{prior_weights}. Defines an upper bound for annotation-aware
-fine-mapping on the benchmark.
+Constructs normalized annotation-enrichment weights and runs
+\code{susieR::susie_rss} with them as \code{prior_weights}. This
+information-advantaged diagnostic is not an exact generative posterior
+or a strict performance ceiling.
 }
 \details{
 If \code{annotations} is \code{NULL} or \code{enrichment} is \code{NULL},

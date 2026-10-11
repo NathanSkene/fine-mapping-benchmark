@@ -36,7 +36,7 @@ The simulation proceeds in four stages, each performed once per call to `simulat
 1. **Genotype simulation** — genotype matrices are drawn from real 1000 Genomes haplotypes and standardised. LD matrices are pre-computed. This is done **once** and shared across all scenarios.
 2. **Annotation simulation** — functional annotation matrices are drawn. Also done **once** and shared across all scenarios.
 3. **Scenario loop** — for each combination of $(\pi, h^2, \text{iter})$, causal variants are assigned genome-wide, effect sizes drawn, the shared phenotype simulated, and per-region summary statistics computed from that shared phenotype.
-4. **Output packaging** — results are stored in a format compatible with `run_gwfm_methods()` and `evaluate_methods()`.
+4. **Output packaging** — results are stored in a format compatible with `run_methods()` and `evaluate_methods()`.
 
 The key structural difference from the locus-based pipeline (`run_simulation`) is that **a single phenotype vector $\mathbf{y}$ is shared across all $K$ regions within each scenario**, rather than generating independent phenotypes per region. This reflects how a real GWAS works: one phenotype is measured in $n$ individuals, and marginal associations are computed for every variant in the genome against that same $\mathbf{y}$.
 
@@ -174,7 +174,9 @@ independently for all variants $j$. The proportion $q_k$ is either:
 - **User-specified** via `annotation_proportions[k]`
 - **Randomly drawn** from $q_k \sim \text{Uniform}(0.01, 0.30)$ if `annotation_proportions = NULL`
 
-The same $q_k$ is used for all regions (annotation $k$ has the same marginal density genome-wide), but the actual indicator values differ across variants and regions due to independent sampling.
+With supplied proportions, the same $q_k$ is used across regions. When proportions
+are omitted, each region draws its own proportions independently. Annotation
+matrices are then fixed across scenario replicates.
 
 ### 5.2 Continuous annotations (`annotations = "continuous"`)
 
@@ -203,13 +205,19 @@ For variant $j$ in region $i$, the unnormalised log-weight is:
 
 $$\log w_{ij} = \sum_{k=1}^{m} A_{i,jk} \log \gamma_k$$
 
-and the weight is $w_{ij} = \exp(\log w_{ij} - \max_{j'} \log w_{ij'})$ (the subtraction of the maximum is for numerical stability and does not affect the relative weights). The per-variant causal probability is then:
+Weights are normalized over **all variants in the selected genome**, rather
+than independently inside each region. Selection probabilities are
 
-$$\pi_{ij} = \pi \cdot \frac{w_{ij}}{\bar{w}_i}, \quad \text{where } \bar{w}_i = \frac{1}{p_i} \sum_{j=1}^{p_i} w_{ij}$$
+$$\pi_{ij} = \min(1, \lambda w_{ij}),\qquad
+\frac{1}{p_{\text{total}}}\sum_{i,j}\pi_{ij}=\pi.$$
 
-This normalisation ensures that $\frac{1}{p_i}\sum_j \pi_{ij} = \pi$ within each region, so the **expected number of causal variants per region is $\pi \cdot p_i$**, and the **expected total number of causal variants is $\pi \cdot p_{\text{total}}$**, regardless of annotation structure.
-
-**Numerical clamping caveat.** Before sampling, $\pi_{ij}$ is clamped to $[10^{-10}, 1-10^{-10}]$ for safety. When `enrichment` is large and an annotation is sparse, a small number of variants can have $\pi_{ij}$ that would exceed 1 under the rescaling; the clamp shaves off that excess and breaks the $\bar{\pi}_i = \pi$ guarantee. The realised expected number of causals can then fall slightly below $\pi \cdot p_{\text{total}}$. The realised total $S_{\text{total}}$ is always recorded in `scenarios[[s]]$S_total`, so downstream analysis should use that rather than $\pi \cdot p_{\text{total}}$ when comparing.
+The code solves for $\lambda$ in log space, including saturation in the
+normalization. The expected total number of sparse variants is therefore
+$\pi p_{\text{total}}$ even for strong enrichment. Annotated regions can have
+higher local polygenicity than unannotated regions. Fold-enrichment describes
+probability ratios for unsaturated variants; it cannot remain a literal
+probability ratio after the probability ceiling is reached. Each region's
+`truth$causal_probabilities` records the actual Bernoulli probabilities.
 
 When no annotations are present, $\pi_{ij} = \pi$ for all variants.
 
@@ -267,7 +275,18 @@ By construction, $\widehat{\text{Var}}(\mathbf{g}) = h^2$.
 
 **Residual noise**: The residual variance is fixed at $\sigma^2_\varepsilon = 1 - h^2$, so that $\widehat{\text{Var}}(\mathbf{y}) \approx h^2 + (1 - h^2) = 1$ in expectation. The noise vector is:
 
-$$\boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0},\ (1 - h^2)\mathbf{I}_n)$$
+$$V_g = \widehat{\mathrm{Var}}(\mathbf g_{\mathrm{sparse}} + \mathbf g_{\mathrm{inf}})
+= V_{\mathrm{sparse}} + V_{\mathrm{inf}} + 2 C_{\mathrm{sparse,inf}},$$
+
+$$\boldsymbol\varepsilon \sim \mathcal N(0,\ V_g(1-h^2)/h^2\,\mathbf I_n).$$
+
+This preserves the covariance caused by LD. `p_causal` controls the ratio of
+marginal component variances before including covariance; it is not an
+additive allocation of total variance. At `p_causal = 1`, no infinitesimal
+component is generated. If no sparse causal variants are drawn, the background
+is still generated when requested; the realized sparse fraction is then zero.
+A completely zero genetic draw is retained as a null replicate with expected
+heritability zero instead of falsely claiming the target was achieved.
 
 **Phenotype**:
 
@@ -281,13 +300,14 @@ This differs from the target $h^2$ by a finite-sample fluctuation that shrinks a
 
 ### 8.2 Sparse + infinitesimal model (`model = "sparse_inf"`)
 
-The phenotype is decomposed into three independent components:
+The phenotype has sparse, infinitesimal, and residual components. The drawn
+sparse and infinitesimal signals need not have zero sample covariance:
 
 $$\mathbf{y} = \mathbf{g}_{\text{sparse}} + \mathbf{g}_{\text{inf}} + \boldsymbol{\varepsilon}$$
 
 where the target variances are:
 
-$$\widehat{\text{Var}}(\mathbf{g}_{\text{sparse}}) = \rho \cdot h^2, \qquad \widehat{\text{Var}}(\mathbf{g}_{\text{inf}}) = (1-\rho) \cdot h^2, \qquad \sigma^2_\varepsilon = 1 - h^2$$
+$$\widehat{\text{Var}}(\mathbf{g}_{\text{sparse}}) = \rho \cdot h^2, \qquad \widehat{\text{Var}}(\mathbf{g}_{\text{inf}}) = (1-\rho) \cdot h^2, \qquad \sigma^2_\varepsilon = V_g (1-h^2)/h^2$$
 
 and $\rho$ = `p_causal` $\in (0, 1]$.
 
@@ -299,9 +319,19 @@ $$c_{\text{sparse}} = \sqrt{\frac{\rho \cdot h^2}{\widetilde{V}_g}}, \qquad \mat
 
 $$c_{\text{inf}} = \sqrt{\frac{(1-\rho) \cdot h^2}{\widetilde{V}_{\text{inf}}}}, \qquad \mathbf{g}_{\text{inf}} = c_{\text{inf}} \cdot \tilde{\mathbf{g}}_{\text{inf}}$$
 
-**Residual**:
+**Residual calibration** includes covariance:
 
-$$\boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0},\ (1 - h^2)\mathbf{I}_n)$$
+$$V_g = \widehat{\mathrm{Var}}(\mathbf g_{\mathrm{sparse}} + \mathbf g_{\mathrm{inf}})
+= V_{\mathrm{sparse}} + V_{\mathrm{inf}} + 2 C_{\mathrm{sparse,inf}},$$
+
+$$\boldsymbol\varepsilon \sim \mathcal N(0,\ V_g(1-h^2)/h^2\,\mathbf I_n).$$
+
+`p_causal` controls the ratio of marginal component variances before covariance
+is included; it is not an additive allocation of total variance. At
+`p_causal = 1`, no background component is generated. A zero sparse draw
+retains the requested background when present, so its realized sparse fraction
+is zero. A completely zero genetic draw is a valid null replicate with
+expected heritability zero, rather than an achieved positive target.
 
 ### 8.3 Infinitesimal component
 
@@ -319,7 +349,7 @@ independently. The raw infinitesimal signal is:
 
 $$\tilde{\mathbf{g}}_{\text{inf}} = \sum_{i=1}^{K} \mathbf{X}_{i,\mathcal{C}_i^c}\, \boldsymbol{\alpha}_{\mathcal{C}_i^c}$$
 
-The choice of variance $1/p_{\text{total}}$ follows BEATRICE (Kadie & Heckerman, 2021). Under this parameterisation, with standardised genotypes and independent effects, $\mathbb{E}[\widehat{\text{Var}}(\tilde{\mathbf{g}}_{\text{inf}})] \approx (p_{\text{total}} - S_{\text{total}}) / p_{\text{total}} \approx 1 - \pi$. The signal is then rescaled to $(1-\rho) h^2$ using the sample-based scale factor $c_{\text{inf}}$ above.
+The simulator uses raw coefficient variance $1/p_{\text{total}}$. Under this parameterisation, with standardised genotypes and independent effects, $\mathbb{E}[\widehat{\text{Var}}(\tilde{\mathbf{g}}_{\text{inf}})] \approx (p_{\text{total}} - S_{\text{total}}) / p_{\text{total}} \approx 1 - \pi$. The signal is then rescaled to $(1-\rho) h^2$ using the sample-based scale factor $c_{\text{inf}}$ above.
 
 #### SuSiE-inf formulation (`inf_model = "susie_inf"`)
 
@@ -331,7 +361,9 @@ The raw infinitesimal signal is:
 
 $$\tilde{\mathbf{g}}_{\text{inf}} = \sum_{i=1}^{K} \mathbf{X}_i\, \boldsymbol{\alpha}_i$$
 
-This follows the SuSiE-inf formulation (Karber et al., 2024), in which every variant has a small polygenicity background in addition to any sparse effect.
+This simulation convention puts a background coefficient on every variant
+in addition to any sparse effect. The simulator label does not establish that
+its generative distribution exactly matches an upstream method's inferential model.
 
 ---
 
@@ -351,7 +383,11 @@ The standard error and $z$-score are:
 
 $$\widehat{\text{se}}_{ij} = \sqrt{\frac{\hat{\sigma}^2_{ij}}{\mathbf{x}_{ij}^\top \mathbf{x}_{ij}}}, \qquad z_{ij} = \frac{\hat{\beta}_{ij}}{\widehat{\text{se}}_{ij}}$$
 
-These are computed independently for all $j$ (no joint model). The critical point is that $\mathbf{y}$ is the same vector for all regions: the $z$-score of a variant in region $i$ is influenced by the genetic signal from all other regions through the shared residual.
+The field named `z` contains **OLS t statistics with $n-2$ degrees of freedom**,
+not exact Gaussian scores. `statistic_type` and `degrees_of_freedom` record
+this distinction. Centering is applied to genotype columns as well as $y$,
+including when `standardise = FALSE`. These are computed independently for
+all $j$ (no joint model). The critical point is that $\mathbf{y}$ is the same vector for all regions: the $z$-score of a variant in region $i$ is influenced by the genetic signal from all other regions through the shared residual.
 
 In contrast, the locus-based pipeline computes $\hat{\beta}_{ij}$ by regressing each region's own independently-simulated phenotype $\mathbf{y}_i = \mathbf{X}_i \boldsymbol{\beta}_i + \boldsymbol{\varepsilon}_i$ against $\mathbf{x}_{ij}$, so the summary statistics for region $i$ carry no information about other regions.
 
@@ -377,7 +413,10 @@ Within each scenario:
 - Genotypes $\{\mathbf{X}_i\}$ and annotations $\{\mathbf{A}_i\}$ are **fixed** (shared from the single pre-simulation).
 - Causal indices $\{\mathcal{C}_i\}$, effect sizes $\{\boldsymbol{\beta}_i\}$, and phenotype $\mathbf{y}$ are **freshly drawn** from their respective distributions.
 
-The iteration index $t$ thus provides $T$ independent realisations of the genetic architecture and phenotype for each $(\pi, h^2)$ parameter combination, enabling stable estimation of mean metrics and their standard errors across replicates.
+The iteration index $t$ thus provides $T$ independent realisations of the genetic architecture and phenotype for each $(\pi, h^2)$ parameter combination, supporting Monte Carlo uncertainty conditional on this fixed set of genotypes
+and annotations. It does not measure generalization across loci, source
+populations or annotation datasets; that requires independent region and
+population splits.
 
 ---
 
@@ -567,3 +606,45 @@ Users may supply any data frame of regions meeting the format in Section 14.2. O
 - **GCTB LD blocks** — used by SBayesRC and the GWFM paper (Wu et al., 2026). Available alongside the GCTB software at [https://cnsgenomics.com/software/gctb](https://cnsgenomics.com/software/gctb). Coordinates must be converted from their format to our CSV format.
 - **1000 Genomes LD blocks** — any custom partition of the 1000G reference panel is valid, provided VCF data are available for each window.
 - **Custom loci** — for targeted simulation around specific GWAS loci, supply a hand-curated data frame with the relevant windows.
+
+
+## Scientific scope and truth audit
+
+The shared phenotype makes this a multi-region simulation, not a validation
+of whole-genome LD, ancestry, family structure, or a genome-wide method's
+upstream workflow. Genotypes are generated in separate regional sim1000G
+sessions. The prepared VCFs contain the source samples provided by 1000
+Genomes; no population-specific sample filtering occurs here. Consequently
+these inputs must not be described as a verified EUR reference. Sample-size
+LD mismatch from the same source is distinct from ancestry mismatch. The
+standard region set excludes the MHC and other difficult regions, so it
+cannot establish performance in those settings. Dropping variants absent
+from the reference panel also excludes missing-causal-variant cases.
+
+Sparse-component membership is the default scoring estimand. Under
+`sparse_inf`, non-sparse variants can have nonzero background effects and
+are not biological zero-effect controls. Legacy `truth$beta_true` retains
+its sparse-only meaning for compatibility; `beta_sparse`,
+`beta_infinitesimal`, and `beta_total` explicitly record the full decomposition.
+`truth$estimand = "sparse_component_membership"` prevents conflating sparse
+component identification with discovering every nonzero coefficient.
+
+`h2_expected` is `Var(g) / (Var(g) + sigma2)` conditional on the drawn
+signals. `h2_realised` is `Var(g) / Var(y)` for the sampled phenotype. The
+latter can exceed 1 in a finite sample because genetic and residual signals
+can have negative sample covariance; it is not an R-squared. The
+`variance_components` ledger retains sparse and background variance, their
+covariance, total genetic variance, expected and sampled noise variance,
+genetic-noise covariance and phenotype variance. These quantities obey the
+sample variance identity exactly. Never relabel the target as achieved
+sample heritability or assume local variance ratios sum to the genome-wide
+ratio when regional signals have finite-sample covariance.
+
+
+With target PVE fixed, `effect_variance` changes the initial normal coefficient
+scale rather than signal strength: global calibration removes this common
+scale. In the local sparse model the residual scale changes with it, leaving
+OLS t statistics unchanged as well. Sweep sample size, target PVE, effect
+shape, unequal signal strength and frequency dependence for substantive
+architecture comparisons. Equal absolute coefficients with random signs
+also do not allocate equal marginal variance when LD is present.

@@ -1,0 +1,33 @@
+{
+  "figure_input_output_helper_hashes_verified": true,
+  "full_memory_vs_streamed_rendered_pages": 10,
+  "large_fixture_rows": 150000,
+  "large_fixture_selected_rows": 10,
+  "native_fixture_role": "Synthetic formatting fixture, development/incomplete, native accuracy eligibility unavailable",
+  "parser_checks_passed": 11,
+  "parser_chunk_rows": 10000,
+  "render_agreement": "Identical PNG bytes at 72 dpi under the same plotting code; full-memory reader is the diagnostic reference",
+  "rendered_page_sha256": {
+    "paired-1.png": "84ab142b517f1fe8c0dfbf44b28d175353b79d1a8ecaf262f12b93bbc12e1504",
+    "paired-2.png": "a18dbec2d1debd9bfe455f07349a21a0bf3a38ebd20ec85d6dd6424d98d0a3a1",
+    "paired-3.png": "4c3f53423980cbef41fe5e3b8335e66605fc051cbb2a0f515331b439d9431c1e",
+    "paired-4.png": "fa4ad1e7b1615e74ad85ce16ba9473cc560bea68b7b2ba5f7e9fe034b426e08b",
+    "paired-5.png": "29173bfefde45c3e86a174c70c75de652990696dfe4eb3f35f36a055c4d3236d",
+    "paired-6.png": "a7357f4337e5b159cbf5bdb995f867caef0b6845f22a0199509bd6b11ff59d3e",
+    "paired-7.png": "9e3662e81acbb094a3ba823059eb259e5dc3d001955e53997a056c31fe10ad1c",
+    "paired-8.png": "03c6b2c2a20d0c5a1a781b74579c1655cc15f456759657d678c484a62361615e",
+    "settings-1.png": "b395eb9f13b9cb03f98b0e62fac45ad040e43c3487b520ed3cbe49e5579f355c",
+    "settings-2.png": "a77195f0fb6aa3c0042ff60129b28ae371175fca236064edfbbf615822f65553"
+  },
+  "role": "Bounded paper CSV parsing and diagnostic figure equivalence; no inference or scientific ranking",
+  "scientific_full_profile": false,
+  "sealed_integration_plan_sha256": "b5fb5a34993a53436a655d128e4f61ceeca3e5f6431e323d0c9a51da2907d0de",
+  "selected_paired_rows": 8,
+  "selected_summary_rows": 4,
+  "selected_value_agreement": "Zero-tolerance numeric/string equality; integer/double storage may differ",
+  "source_sha256": {
+    "paper/plot_results.R": "3d7cb31d98adb180e243087e3942014b208e3826ce459efed9a4867547f1db83",
+    "paper/read_selected_csv.R": "52ac0cf60b56fa594aee27df34ccc1beb5a3a6c7d93e2315f395b0c7db5336a3",
+    "paper/test_csv_reader.R": "e20732fb5c8477edf35d41ffe585a74d8cf95c3c7e50e6afdd2707d7490d942b"
+  }
+}

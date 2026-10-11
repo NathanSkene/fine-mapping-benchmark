@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.29,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "finemap-rl"
+version = "0.1.0"
+description = "Verifiable fine-mapping inference, experiment allocation and method-design environments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Fine-mapping benchmark contributors"}]
+dependencies = ["numpy>=1.26,<3"]
+
+[project.optional-dependencies]
+gym = ["gymnasium==1.3.0"]
+openenv = ["openenv-core==0.3.0"]
+test = ["gymnasium==1.3.0"]
+
+[project.scripts]
+finemap-rl = "finemap_rl.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["finemap_rl"]
+
+[tool.hatch.build.targets.sdist]
+include = ["finemap_rl/", "README.md", "LICENSE", "pyproject.toml", "docs/", "tests/", "openenv.yaml", "Dockerfile.predictor"]
+exclude = ["docs/artifacts/build-provenance.json"]

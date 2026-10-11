@@ -17,7 +17,7 @@
 #   pip              Numeric vector (length p). Marginal PIPs.
 #   credible_sets    List of integer vectors (variant indices). Credible sets
 #                    from the most probable number of causal variants k*.
-#                    Empty list if k* = 0 or no credible set file found.
+#                    Empty list if k* = 0; invalid/missing native sets fail.
 #   method           Character. "finemap".
 #   input_type       Character. Always "summary".
 #   params           List. Hyperparameters used.
@@ -214,6 +214,216 @@ download_finemap <- function() {
 # Run FINEMAP on a single region
 # =============================================================================
 
+# This is an executable-specific serialization contract, not a version-label
+# or manual guarantee. The author download called 1.4.2 has a stale 1.4.1 log
+# header; its executable console reports 1.4.2. Neither label selects bounds.
+# Inspection of these exact executable bytes verified SNPs::writeLine(prob)
+# -> floatToString(double, 6), a fresh default-format stringstream. The active
+# floating-point rounding mode was not established, so retain a full adjacent
+# decimal last place on each side, covering nearest and directed rounding.
+.finemap_probability_writer_contract <- function() list(
+  schema = 1L, method = "finemap", source = "native_snp_prob_literal",
+  executable_sha256 = "41e0af31c18e2e92d2a5fd1fbf35c9832d62ae737746ecd0aa4629a5925c9bcc",
+  writer = "SNPs::writeLine.prob -> floatToString(double,6)",
+  significant_digits = 6L, numeric_format = "default_general",
+  rounding_mode = "not_verified",
+  envelope = "one_adjacent_decimal_last_place_nearest_or_directed",
+  null_basis = "structural_zero_excluded_by_prior",
+  null_event = "empty_configuration_in_nonnull_conditioned_support")
+
+.finemap_binary_sha256 <- function(path) {
+  resolved <- if (file.exists(path)) path else unname(Sys.which(path))
+  if (!length(resolved) || !nzchar(resolved) || !file.exists(resolved)) return(NULL)
+  .challenge_sha256(resolved)
+}
+
+.finemap_probability_token_bounds <- function(tokens, significant_digits = 6L) {
+  if (!is.character(tokens) || !length(tokens) || anyNA(tokens) ||
+      any(!grepl("^(0|[1-9][0-9]*)([.][0-9]+)?(e[+-]?[0-9]+)?$", tokens)))
+    stop("Invalid native probability literal tokens")
+  value <- suppressWarnings(as.numeric(tokens))
+  if (any(!is.finite(value)) || any(value < 0 | value > 1))
+    stop("Invalid native probability literal values")
+  mantissa <- sub("e.*$", "", tokens)
+  digits <- sub("^0+", "", gsub("[.]", "", mantissa))
+  # General formatting suppresses trailing zeros but cannot create more than
+  # the declared significant precision. A serialized zero is an exact double
+  # zero; nonzero doubles have a nonzero general-format scientific token.
+  if (any(nchar(digits) > significant_digits) ||
+      any(value == 0 & tokens != "0")) stop("Native probability token exceeds its writer precision")
+  lower_step <- upper_step <- rep(0, length(value))
+  nonzero <- value > 0
+  # Determine the decimal order and exact powers from the literal, avoiding
+  # log10 boundary error and binary comparisons to an approximate power.
+  for (i in which(nonzero)) {
+    exponent <- if (grepl("e", tokens[i], fixed = TRUE))
+      as.integer(sub("^.*e", "", tokens[i])) else 0L
+    before <- strsplit(mantissa[i], ".", fixed = TRUE)[[1L]][1L]
+    raw <- gsub("[.]", "", mantissa[i])
+    first <- regexpr("[1-9]", raw)[1L]
+    order <- nchar(before) - first + exponent
+    is_power <- grepl("^10*$", substring(raw, first))
+    upper_step[i] <- 10^(order - significant_digits + 1L)
+    lower_step[i] <- 10^(order - significant_digits + if (is_power) 0L else 1L)
+    # Decimal spacings may underflow for subnormal tokens. At those scales
+    # one binary subnormal quantum is a conservative representable bound.
+    quantum <- .Machine$double.xmin * .Machine$double.eps
+    lower_step[i] <- max(lower_step[i], quantum)
+    upper_step[i] <- max(upper_step[i], quantum)
+  }
+  list(value = value, lower = pmax(0, value - lower_step),
+       upper = pmin(1, value + upper_step))
+}
+
+.finemap_precision_record_sha <- function(record) {
+  path <- tempfile("finemap_precision_")
+  on.exit(unlink(path), add = TRUE)
+  saveRDS(record, path, version = 2L)
+  .challenge_sha256(path)
+}
+
+.finemap_probability_precision <- function(tokens, variant_ids, native_variant_ids,
+                                          executable_sha256, k_prior, k_posterior) {
+  basis <- .finemap_probability_writer_contract()
+  if (!identical(executable_sha256, basis$executable_sha256) ||
+      is.null(k_prior) || !identical(unname(k_prior["0"]), 0) ||
+      !identical(unname(k_posterior["0"]), 0)) return(NULL)
+  bounds <- .finemap_probability_token_bounds(tokens, basis$significant_digits)
+  record <- c(basis, list(variant_ids = variant_ids, native_variant_ids = native_variant_ids,
+    tokens = tokens, probability_lower = bounds$lower, probability_upper = bounds$upper))
+  record$record_sha256 <- .finemap_precision_record_sha(record)
+  record
+}
+
+# Validate all provenance before applying any envelope. Metadata is an audited
+# adapter declaration, sealed by campaign artifacts; it is not authentication
+# of arbitrary public submissions. Bounds are never substituted for PIPs.
+.finemap_validate_probability_precision <- function(pred) {
+  record <- pred[["native_probability_precision"]]
+  if (is.null(record)) return(NULL)
+  basis <- .finemap_probability_writer_contract()
+  fields <- c(names(basis), "variant_ids", "native_variant_ids", "tokens",
+              "probability_lower", "probability_upper", "record_sha256")
+  if (!is.list(record) || !identical(names(record), fields) ||
+      !identical(pred$implementation, "finemap") ||
+      !all(vapply(names(basis), function(k) identical(record[[k]], basis[[k]]), TRUE)))
+    stop("Invalid native probability precision basis")
+  declared_sha <- record$record_sha256
+  plain <- record; plain$record_sha256 <- NULL
+  if (!is.character(declared_sha) || length(declared_sha) != 1L ||
+      is.na(declared_sha) || !identical(declared_sha, .finemap_precision_record_sha(plain)))
+    stop("Native probability precision record changed")
+  ids <- record$variant_ids
+  if (!is.character(ids) || length(ids) != length(pred$pip) || anyNA(ids) ||
+      anyDuplicated(ids) || !setequal(ids, pred$variant_id) ||
+      !identical(record$native_variant_ids, paste0("variant_", seq_along(ids))))
+    stop("Native probability precision variant IDs do not match")
+  diagnostic <- pred[["native_diagnostics"]]
+  if (!is.list(diagnostic) ||
+      !identical(diagnostic[["variant_ids"]], ids) ||
+      !identical(diagnostic[["native_variant_ids"]], record$native_variant_ids) ||
+      !identical(diagnostic[["native_executable_sha256"]], basis$executable_sha256) ||
+      !identical(diagnostic[["snp_probability_tokens"]], record$tokens) ||
+      !identical(diagnostic[["native_probability_precision"]], record) ||
+      !identical(diagnostic[["native_null_support"]], "excluded_by_prior") ||
+      !identical(diagnostic[["posterior_conditioning"]], "at_least_one_modeled_cause") ||
+      !identical(diagnostic[["null_probability_event"]], basis$null_event) ||
+      !identical(diagnostic[["null_probability"]], 0) ||
+      !identical(unname(diagnostic[["k_prior"]]["0"]), 0) ||
+      !identical(unname(diagnostic[["k_posterior"]]["0"]), 0) ||
+      !identical(pred[["native_null_support"]], "excluded_by_prior") ||
+      !identical(pred[["posterior_conditioning"]], "at_least_one_modeled_cause") ||
+      !identical(pred[["null_probability_event"]], basis$null_event) ||
+      !identical(pred[["probability_target_aligned"]], FALSE) ||
+      !identical(pred[["null_model_in_support"]], FALSE) ||
+      !identical(pred[["null_probability"]], 0))
+    stop("Native probability precision diagnostics or null basis do not match")
+  bounds <- .finemap_probability_token_bounds(record$tokens, basis$significant_digits)
+  ordering <- match(pred$variant_id, ids)
+  if (!identical(unname(pred$pip), unname(bounds$value[ordering])) ||
+      !identical(record$probability_lower, bounds$lower) ||
+      !identical(record$probability_upper, bounds$upper))
+    stop("Native probability tokens, PIPs, or bounds do not match")
+  list(lower = bounds$lower[ordering], upper = bounds$upper[ordering])
+}
+
+.finemap_model_size_probabilities <- function(path, max_causal = NULL,
+    header_label = "Post-Pr(# of causal SNPs is k)") {
+  if (!file.exists(path)) return(NULL)
+  lines <- readLines(path, warn = FALSE)
+  header <- grep(header_label, lines, fixed = TRUE)
+  if (!length(header) || tail(header, 1L) >= length(lines)) return(NULL)
+  tail_lines <- lines[seq.int(tail(header, 1L) + 1L, length(lines))]
+  pattern <- "^[[:space:]]*[(]?[0-9]+[[:space:]]*->[[:space:]]*[0-9.eE+-]+[)]?[[:space:]]*$"
+  values <- character()
+  for (line in tail_lines) {
+    if (!nzchar(trimws(line)) && !length(values)) next
+    if (!grepl(pattern, line)) break
+    values <- c(values, line)
+  }
+  if (!length(values)) return(NULL)
+  values <- gsub("[()]", "", values)
+  pieces <- strsplit(trimws(values), "[[:space:]]*->[[:space:]]*")
+  sizes <- vapply(pieces, function(x) x[1L], "")
+  prob <- suppressWarnings(as.numeric(vapply(pieces, function(x) x[2L], "")))
+  if (anyDuplicated(sizes) || any(!is.finite(prob)) || any(prob < 0 | prob > 1) ||
+      !identical(as.integer(sizes), seq.int(0L, if (is.null(max_causal)) max(as.integer(sizes)) else max_causal)))
+    return(NULL)
+  # The tested 1.4.2 release reports log probabilities at three
+  # significant digits, suppressing trailing zeros: .548+.404+.0476=.9996.
+  # Validate the rounding interval, never replace the complete posterior by
+  # sums of a truncated .config table or silently renormalize reported values.
+  tokens <- vapply(pieces, function(x) x[2L], "")
+  significant_digits <- vapply(tokens, function(token) {
+    mantissa <- sub("[eE].*$", "", token)
+    digits <- sub("^0+", "", gsub("[^0-9]", "", mantissa))
+    max(3L, nchar(digits))
+  }, 1L)
+  half_unit <- ifelse(prob == 0, 0, .5 * 10^(floor(log10(pmax(prob, .Machine$double.xmin))) - significant_digits + 1L))
+  # Under the existing half-unit log policy, an exact power of ten has ten
+  # times finer preceding spacing. A symmetric lower envelope at 1 would
+  # wrongly admit 1 + .0006 under that policy.
+  power <- vapply(tokens, function(token) {
+    mantissa <- sub("[eE].*$", "", token)
+    digits <- sub("^0+", "", gsub("[^0-9]", "", mantissa))
+    grepl("^10*$", digits)
+  }, TRUE)
+  lower <- pmax(0, prob - half_unit * ifelse(power, .1, 1)); upper <- pmin(1, prob + half_unit)
+  if (sum(lower) > 1 + 1e-12 || sum(upper) < 1 - 1e-12) return(NULL)
+  result <- stats::setNames(prob, sizes)
+  attr(result, "reported_rounding") <- list(
+    minimum_significant_digits = 3L, reported_tokens = stats::setNames(tokens, sizes),
+    reported_sum = sum(prob),
+    sum_interval = c(lower = sum(lower), upper = sum(upper)),
+    probability_lower = stats::setNames(lower, sizes),
+    probability_upper = stats::setNames(upper, sizes), renormalized = FALSE)
+  result
+}
+
+.finemap_component_sets <- function(path, ids, k) {
+  if (!file.exists(path)) return(NULL)
+  table <- tryCatch(utils::read.table(path, header = TRUE, stringsAsFactors = FALSE,
+    fill = TRUE, na.strings = c("", "NA"), comment.char = "#"), error = function(e) NULL)
+  columns <- paste0("cred", seq_len(k))
+  if (is.null(table) || !all(columns %in% names(table))) return(NULL)
+  sets <- probabilities <- vector("list", k)
+  for (j in seq_len(k)) {
+    probability <- paste0("prob", j)
+    if (!probability %in% names(table)) return(NULL)
+    raw <- as.character(table[[columns[j]]])
+    keep <- !is.na(raw) & nzchar(trimws(raw))
+    raw <- raw[keep]
+    idx <- match(raw, ids)
+    prob <- suppressWarnings(as.numeric(table[[probability]][keep]))
+    if (!length(idx) || anyNA(idx) || anyDuplicated(idx) ||
+        any(!is.finite(prob)) || any(prob < 0 | prob > 1)) return(NULL)
+    ordering <- order(idx)
+    sets[[j]] <- as.integer(idx[ordering])
+    probabilities[[j]] <- prob[ordering]
+  }
+  list(sets = sets, probabilities = probabilities)
+}
+
 #' Run FINEMAP fine-mapping on a single region
 #'
 #' Writes the required FINEMAP input files to a temporary directory, calls the
@@ -266,6 +476,15 @@ download_finemap <- function() {
 #'       \item{best_k}{Integer. Most probable number of causal variants.}
 #'       \item{configs}{Data frame. Top causal configurations with their
 #'         posterior probabilities, as returned in FINEMAP's .config file.}
+#'       \item{snp_probability_tokens}{Literal native probability strings,
+#'         aligned to input variants. Numerical PIPs are not renormalized.}
+#'       \item{native_probability_precision}{Serialization envelopes for the
+#'         exact audited executable only, with six significant digits and an
+#'         unverified rounding mode. Used solely to validate probability-event
+#'         feasibility under the structural non-null prior; never as scores.}
+#'       \item{null_probability_event}{Identifies the candidate model's empty
+#'         configuration event. Its structural zero under the non-null prior
+#'         is not a calibrated probability of the generating whole-locus null.}
 #'     }
 #'   }
 #'   \item{error}{Character or NULL. Error message if FINEMAP failed.}
@@ -300,15 +519,11 @@ run_finemap <- function(z,
 
   if (is.null(variant_ids)) variant_ids <- paste0("SNP_", seq_len(p))
 
-  # FINEMAP's .z file is space-separated. VCF-derived variant_ids like
-  # "4 77357492 rs554755626 C A" contain embedded spaces, which
-  # write.table(sep = " ") writes literally and FINEMAP then interprets
-  # as extra columns - shifting the 'position' column and failing with
-  # "Expected a positive integer value in line N column 3".
-  # Collapse embedded whitespace with underscores so each variant_id is
-  # a single token. Used only for the FINEMAP-facing .z file; other
-  # wrappers use tab-separated formats and are unaffected.
-  variant_ids <- gsub("\\s+", "_", variant_ids)
+  if (!is.character(variant_ids) || length(variant_ids) != p || anyNA(variant_ids) ||
+      anyDuplicated(variant_ids) || any(!nzchar(variant_ids))) stop("Invalid variant IDs")
+  original_variant_ids <- variant_ids
+  # A bijective token map avoids whitespace parsing and normalization collisions.
+  variant_ids <- paste0("variant_", seq_len(p))
   if (is.null(maf))         maf         <- rep(0.3, p)
 
   # Derive beta/se if not supplied
@@ -397,6 +612,9 @@ run_finemap <- function(z,
     "--log"
   )
 
+  executable_sha256 <- .finemap_binary_sha256(finemap_path)
+  # Custody checks belong to the task/PBS cost; the method's existing native
+  # elapsed-time contract measures system2 execution without binary hashing.
   start_time <- proc.time()
 
   run_output <- tryCatch({
@@ -408,7 +626,8 @@ run_finemap <- function(z,
   elapsed <- as.numeric((proc.time() - start_time)["elapsed"])
 
   # Check for binary-level failure
-  if (inherits(run_output, "finemap_error")) {
+  if (inherits(run_output, "finemap_error") ||
+      (!is.null(attr(run_output, "status")) && attr(run_output, "status") != 0L)) {
     return(.finemap_error_result(p, params, elapsed, run_output))
   }
 
@@ -424,19 +643,25 @@ run_finemap <- function(z,
   # --- Parse .snp file --------------------------------------------------------
 
   snp_df <- tryCatch(
-    utils::read.table(snp_file, header = TRUE, stringsAsFactors = FALSE),
+    utils::read.table(snp_file, header = TRUE, stringsAsFactors = FALSE,
+                      colClasses = c(prob = "character")),
     error = function(e) NULL
   )
 
-  if (is.null(snp_df)) {
+  if (is.null(snp_df) || !all(c("rsid", "prob") %in% names(snp_df))) {
     return(.finemap_error_result(p, params, elapsed,
                                  "Failed to parse FINEMAP .snp output file."))
   }
 
   # Re-order rows to match the original variant order
   ord <- match(variant_ids, snp_df$rsid)
+  if (nrow(snp_df) != p || anyNA(ord) || anyNA(snp_df$rsid) || anyDuplicated(snp_df$rsid))
+    return(.finemap_error_result(p, params, elapsed, "FINEMAP output IDs do not match the complete input."))
 
-  pip            <- snp_df$prob[ord]
+  probability_tokens <- snp_df$prob[ord]
+  pip            <- suppressWarnings(as.numeric(probability_tokens))
+  if (any(!is.finite(pip)) || any(pip < 0 | pip > 1))
+    return(.finemap_error_result(p, params, elapsed, "FINEMAP must return finite probabilities in [0,1]."))
   posterior_mean <- snp_df$mean[ord]
   posterior_sd   <- snp_df$sd[ord]
   log10bf        <- snp_df$log10bf[ord]
@@ -448,54 +673,40 @@ run_finemap <- function(z,
     error = function(e) NULL
   )
 
-  k_posterior <- NULL
-  best_k      <- 0L   # default when config_df is missing/unparseable
-
-  if (!is.null(config_df) && "config" %in% names(config_df) &&
-      "prob" %in% names(config_df)) {
-
-    # Prefer n_snps column (present in FINEMAP v1.4.1) — more reliable than
-    # parsing the config string, which uses "0" for the null model (0 causal
-    # variants) and would be misclassified as k=1 by a comma-split approach.
-    if ("n_snps" %in% names(config_df)) {
-      config_df$k <- as.integer(config_df$n_snps)
-    } else {
-      config_df$k <- vapply(config_df$config, function(cfg) {
-        cfg <- trimws(cfg)
-        if (is.na(cfg) || nchar(cfg) == 0 || cfg == "0") 0L
-        else length(strsplit(cfg, ",")[[1L]])
-      }, integer(1L))
-    }
-
-    k_probs     <- tapply(config_df$prob, config_df$k, sum)
-    k_posterior <- setNames(as.numeric(k_probs), names(k_probs))
-    best_k      <- as.integer(names(which.max(k_probs)))
-  }
+  # .config contains only the top configurations; summing it need not recover
+  # model-size probabilities. --log writes the complete native posterior.
+  log_candidates <- c(paste0(log_file, "_sss"), log_file)
+  actual_log <- log_candidates[file.exists(log_candidates)][1L]
+  k_posterior <- if (!is.na(actual_log)) .finemap_model_size_probabilities(actual_log, n_causal) else NULL
+  if (is.null(k_posterior)) return(.finemap_error_result(p, params, elapsed,
+    "FINEMAP produced no valid complete model-size posterior in its log."))
+  best_k <- as.integer(names(which.max(k_posterior)))
+  rounding <- attr(k_posterior, "reported_rounding")
+  k_posterior <- stats::setNames(as.numeric(k_posterior), names(k_posterior))
+  prior <- .finemap_model_size_probabilities(actual_log, n_causal,
+    header_label = "Prior-Pr(# of causal SNPs is k)")
+  k_prior <- if (is.null(prior)) NULL else stats::setNames(as.numeric(prior), names(prior))
+  if (!identical(executable_sha256, .finemap_binary_sha256(finemap_path)))
+    return(.finemap_error_result(p, params, elapsed, "FINEMAP executable changed during execution."))
+  precision <- tryCatch(.finemap_probability_precision(probability_tokens,
+    original_variant_ids, variant_ids, executable_sha256, k_prior, k_posterior),
+    error = identity)
+  if (inherits(precision, "error")) return(.finemap_error_result(p, params, elapsed,
+    paste("FINEMAP probability serialization contract failed:", conditionMessage(precision))))
 
   # --- Parse .cred<k*> file for credible sets ---------------------------------
 
   credible_sets <- list()
+  cs_pip <- NULL
 
   if (best_k > 0L) {
     cred_k_file <- paste0(cred_base, best_k)
 
-    if (file.exists(cred_k_file)) {
-      cred_df <- tryCatch(
-        utils::read.table(cred_k_file, header = TRUE, stringsAsFactors = FALSE,
-                          fill = TRUE, na.strings = c("", "NA")),
-        error = function(e) NULL
-      )
-
-      if (!is.null(cred_df) && ncol(cred_df) > 0L) {
-        credible_sets <- lapply(seq_len(ncol(cred_df)), function(j) {
-          rsids <- cred_df[[j]]
-          rsids <- rsids[!is.na(rsids) & nchar(trimws(rsids)) > 0L]
-          idx   <- match(rsids, variant_ids)
-          sort(idx[!is.na(idx)])
-        })
-        credible_sets <- credible_sets[lengths(credible_sets) > 0L]
-      }
-    }
+    native_sets <- .finemap_component_sets(cred_k_file, variant_ids, best_k)
+    if (is.null(native_sets)) return(.finemap_error_result(p, params, elapsed,
+      "FINEMAP selected-model credible sets are missing or contain invalid IDs/probabilities."))
+    credible_sets <- native_sets$sets
+    cs_pip <- native_sets$probabilities
   }
 
   # --- Return -----------------------------------------------------------------
@@ -512,8 +723,32 @@ run_finemap <- function(z,
       posterior_mean = posterior_mean,
       posterior_sd   = posterior_sd,
       k_posterior    = k_posterior,
+      k_posterior_rounding = rounding,
+      k_prior = k_prior,
+      native_executable_sha256 = executable_sha256,
+      snp_probability_tokens = probability_tokens,
+      native_probability_precision = precision,
       best_k         = best_k,
-      configs        = config_df
+      configs        = config_df,
+      cs_pip         = cs_pip,
+      credible_set_semantics = "native_configuration_conditional_component_sets",
+      k_posterior_source = "complete_native_log",
+      best_k_selection = "maximum_reported_native_posterior",
+      native_null_support = if (is.null(k_prior)) "not_established_from_log" else
+        if (k_prior["0"] == 0) "excluded_by_prior" else "prior_includes_null",
+      posterior_conditioning = if (is.null(k_prior)) "not_established_from_log" else
+        "at_least_one_modeled_cause",
+      null_probability = unname(k_posterior["0"]),
+      null_probability_event = if (!is.null(k_prior) && k_prior["0"] == 0)
+        "empty_configuration_in_nonnull_conditioned_support" else
+          "separate_native_count_posterior_null_not_verified_jointly_with_snp_pips",
+      null_probability_interpretation = if (!is.null(k_prior) && k_prior["0"] == 0)
+        "structural_zero; operational_against_generating_null_not_event_calibration" else
+          "cause_count_posterior_with_separate_null_prior; joint_pip_coherence_not_established",
+      native_seed = NULL,
+      native_rng_reproducibility = "not_established",
+      variant_ids = original_variant_ids,
+      native_variant_ids = variant_ids
     )
   )
 }

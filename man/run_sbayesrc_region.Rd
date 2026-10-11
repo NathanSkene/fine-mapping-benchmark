@@ -4,7 +4,13 @@
 \alias{run_sbayesrc_region}
 \title{Adapter for run_methods() - forwards to run_sbayesrc}
 \usage{
-run_sbayesrc_region(region_geno, region_pheno, pooled_gamma = NULL, ...)
+run_sbayesrc_region(
+  region_geno,
+  region_pheno,
+  pooled_gamma = NULL,
+  ...,
+  statistic_type = NULL
+)
 }
 \arguments{
 \item{region_geno}{One element of \code{simulation$genotypes}.}
@@ -16,6 +22,9 @@ run_sbayesrc_region(region_geno, region_pheno, pooled_gamma = NULL, ...)
 annotation refit happens.}
 
 \item{...}{Forwarded to \code{run_sbayesrc()}.}
+
+\item{statistic_type}{Optional summary type inherited from the region;
+defaults to \code{marginal_ols_t} when no type is declared.}
 }
 \value{
 Output of run_sbayesrc.

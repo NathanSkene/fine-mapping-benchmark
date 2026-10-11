@@ -46,9 +46,8 @@ A list with the standardised fine-mapping output:
 \describe{
 \item{pip}{Numeric vector (length p). Marginal posterior inclusion
 probabilities.}
-\item{credible_sets}{List containing one integer vector: the global
-credible set (1-based indices, sorted). Empty list if CARMA produced
-no credible set.}
+\item{credible_sets}{List of native LD-clustered sets (1-based indices,
+sorted), or an empty list if CARMA produced no sets.}
 \item{method}{Character. Always \code{"carma"}.}
 \item{input_type}{Character. Always \code{"summary"}.}
 \item{params}{List. Hyperparameters used.}
@@ -68,7 +67,8 @@ Calls \code{CARMA::CARMA()} on a single locus and returns results in the
 standardised format.
 }
 \details{
-CARMA returns one global credible set per region (not one per causal
-signal as SuSiE does). The credible set contains the minimal set of
-variants whose joint posterior probability reaches \code{rho.index}.
+CARMA returns multiple LD-clustered sets, constructed using summed marginal
+PIPs and \code{rho.index}. These are preserved separately. A sum of marginal
+PIPs is an expected causal count; it does not establish a joint posterior
+coverage guarantee when multiple causes can occur in a cluster.
 }

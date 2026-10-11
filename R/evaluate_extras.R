@@ -1,29 +1,21 @@
 # =============================================================================
 # R/evaluate_extras.R
 #
-# The per-fit metric functions specified in variable-importance-analysis.md §5.1,
-# §5.2b and §4.4. Kept in a SEPARATE FILE so they can be reviewed and unit-tested
-# before being wired into R/evaluate.R, which is load-bearing for every existing
-# result.
-#
-# WIRING (see the spec's §5.1b). In `.metrics_for_fits`, AP must be computed PER
-# FIT and averaged, not on the concatenated PIP vector of the two same-size
-# regions:
-#
-#   ap_per_fit <- vapply(valid, function(f) {
-#     y <- logical(f$n_variants); y[f$causal_indices] <- TRUE
-#     .compute_ap_exact(f$pip, y)
-#   }, numeric(1))
-#   ap        <- mean(ap_per_fit, na.rm = TRUE)
-#   ap_n_fits <- sum(!is.na(ap_per_fit))
-#
-# Leave the FDR and calibration COUNTS pooled across the two fits - that is
-# correct (spec §3.2). Only the ranking metrics change.
-#
-# STATUS: written, never executed. Nothing here has been run against real data.
-# Add the §5.8 tests and run them before trusting any output.
+# Shared scoring primitives. The main evaluator uses exact AP from this file;
+# analysis scripts may source it independently. Marginal-PIP mass prefixes below
+# are diagnostic candidate lists, not posterior credible sets for a signal.
 # =============================================================================
 
+.validate_probability_labels <- function(pip, is_causal) {
+  if (!is.numeric(pip) || !is.null(dim(pip)) || any(!is.finite(pip)) ||
+      any(pip < 0 | pip > 1))
+    stop("PIPs must be a finite numeric vector in [0, 1].", call. = FALSE)
+  if (length(pip) != length(is_causal) || anyNA(is_causal) ||
+      !is.atomic(is_causal) || !is.numeric(is_causal) && !is.logical(is_causal) ||
+      any(!is_causal %in% c(0, 1)))
+    stop("is_causal must be a binary vector matching the PIPs.", call. = FALSE)
+  invisible(TRUE)
+}
 
 #' Exact rank-based average precision
 #'
@@ -37,7 +29,7 @@
 #'
 #' That error is zero at strong signal and grows as PIPs compress toward zero, so
 #' it is a PHI-DEPENDENT BIAS in the estimator of a metric whose phi dependence
-#' the analysis is trying to measure. A constant bias would be harmless.
+#' the analysis is trying to measure. Its size also depends on the method's score scale.
 #'
 #' Tie handling is by construction: all members of a tied block share one
 #' operating point. Do NOT implement this as order() + precision-at-causal-
@@ -50,6 +42,7 @@
 #' @param is_causal Logical vector, same length.
 #' @return Scalar AP, or NA if there are no causal variants.
 .compute_ap_exact <- function(pip_vals, is_causal) {
+  .validate_probability_labels(pip_vals, is_causal)
   S <- sum(is_causal)
   if (S == 0L || length(pip_vals) == 0L) return(NA_real_)
   ord  <- order(pip_vals, decreasing = TRUE)
@@ -66,9 +59,8 @@
 
 #' Threshold-free per-fit ranking and set metrics (spec §5.2b: P4, P5, Q5)
 #'
-#' Per-locus quantities, so these are AVERAGED across fits, never pooled - with
-#' one exception: `set_hit_*` is a Bernoulli per fit and is SUMMED, its cell-level
-#' rate being the coverage.
+#' Per-locus diagnostics to be averaged across fits. Pooling and macro averaging
+#' answer different questions and must be named explicitly.
 #'
 #' `prec_at_k` matters because methods' PIP scales differ by orders of magnitude,
 #' so any fixed-threshold comparison partly measures calibration rather than
@@ -78,11 +70,16 @@
 #'
 #' @param pip Numeric vector of PIPs for one fit.
 #' @param is_causal Logical vector, same length.
-#' @param alpha Cumulative-mass targets for the uniform credible sets.
+#' @param alpha Targets for cumulative expected causal count (marginal PIP mass).
+#' @param S True sparse causal count, including targets unavailable to a predictor.
 #' @return Named list of scalars.
 .rank_set_metrics <- function(pip, is_causal, alpha = c(0.5, 0.95),
                               S = sum(is_causal)) {
-  stopifnot(length(pip) == length(is_causal))
+  .validate_probability_labels(pip, is_causal)
+  if (!is.numeric(alpha) || !length(alpha) || any(!is.finite(alpha)) || any(alpha <= 0))
+    stop("alpha must contain positive finite mass targets.", call. = FALSE)
+  if (length(S) != 1L || !is.finite(S) || S < 0 || S != floor(S))
+    stop("S must be a nonnegative integer.", call. = FALSE)
   ord <- order(pip, decreasing = TRUE)
   p   <- pip[ord]
   y   <- as.integer(is_causal[ord])
@@ -90,9 +87,9 @@
   tot <- sum(p)
 
   out <- list(
-    prec_at_1     = if (length(y)) y[1] else NA_real_,
-    prec_at_S     = if (S > 0) mean(y[seq_len(min(S,      length(y)))]) else NA_real_,
-    prec_at_2S    = if (S > 0) mean(y[seq_len(min(2L * S, length(y)))]) else NA_real_,
+    prec_at_1     = .precision_at_k_ties(p, y, 1L),
+    prec_at_S     = if (S > 0) .precision_at_k_ties(p, y, S) else NA_real_,
+    prec_at_2S    = if (S > 0) .precision_at_k_ties(p, y, 2L * S) else NA_real_,
     # Q5 - sharpness, the mandatory companion to any calibration number.
     mass_above_50 = if (tot > 0) sum(p[p >= 0.5]) / tot else NA_real_,
     mean_pip_topS = if (S > 0) mean(p[seq_len(min(S, length(p)))]) else NA_real_
@@ -101,20 +98,21 @@
   for (a in alpha) {
     reached <- tot >= a
     k <- if (reached) which(cum >= a)[1L] else length(p)
+    # Include the entire boundary tie: no genomic-index tie breaker.
+    if (k > 0L) k <- max(which(p >= p[k]))
     tag <- sub("0\\.", "", format(a))
     out[[paste0("set_size_",    tag)]] <- k
     out[[paste0("set_hit_",     tag)]] <- as.integer(any(y[seq_len(k)] == 1L))
-    out[[paste0("set_prec_",    tag)]] <- mean(y[seq_len(k)])
-    # A method whose total mass never reaches alpha has k = the whole region.
-    # That is a RESULT, not a missing value - record it so downstream code does
-    # not silently treat a maximally-diffuse posterior as a large credible set.
+    out[[paste0("set_prec_",    tag)]] <- if (k) mean(y[seq_len(k)]) else NA_real_
+    # Sum of marginal PIPs is an expected count, not P(at least one causal).
+    # Keep the historical names, but never interpret set_hit as nominal coverage.
     out[[paste0("set_reached_", tag)]] <- reached
   }
   out
 }
 
 
-#' Murphy decomposition of the Brier score (spec §4.4)
+#' Binned Murphy diagnostics and, with sufficient moments, raw Brier score
 #'
 #' Exists because both headline calibration metrics score a USELESS predictor
 #' perfectly. A method emitting p_j = S/p for every variant has mass ratio 1.000,
@@ -123,21 +121,37 @@
 #'
 #'   BS = REL - RES + UNC
 #'   REL  calibration error   (lower better)
-#'   RES  sharpness           (higher better; 0 for the uniform predictor)
+#'   RES  resolution          (higher better; 0 for the uniform predictor)
 #'   UNC  base rate           (a property of the cell, not the method)
 #'
 #' Raw Brier is NOT comparable across cells because UNC varies over two orders of
 #' magnitude (ybar = S/p), hence the skill score BSS.
 #'
-#' Computable entirely from bin counts already stored - no collection change.
+#' rel-res+unc scores the bin-mean predictions; it is not the raw Brier score
+#' unless predictions are constant inside each bin. Raw Brier requires squared
+#' PIP sums and causal-PIP cross-products, available from .pip_calibration().
 #'
 #' @param n_b,c_b,sum_pip_b Per-bin counts: variants, causals, summed PIP.
-#' @return Named list: rel, res, unc, bs, bss.
-.murphy_decomposition <- function(n_b, c_b, sum_pip_b) {
+#' @param sum_pip_sq_b,sum_causal_pip_b Optional per-bin raw second and cross moments.
+#' @return rel, res, unc, bs/bss (binned), bs_raw/bss_raw (NA without moments).
+.murphy_decomposition <- function(n_b, c_b, sum_pip_b,
+                                  sum_pip_sq_b = NULL, sum_causal_pip_b = NULL) {
+  if (length(n_b) != length(c_b) || length(n_b) != length(sum_pip_b) ||
+      any(!is.finite(c(n_b, c_b, sum_pip_b))) || any(n_b < 0 | c_b < 0 | c_b > n_b) ||
+      any(sum_pip_b < 0 | sum_pip_b > n_b))
+    stop("Invalid calibration bin counts or PIP sums.", call. = FALSE)
+  have_moments <- !is.null(sum_pip_sq_b) && !is.null(sum_causal_pip_b)
+  if (xor(is.null(sum_pip_sq_b), is.null(sum_causal_pip_b)) ||
+      (have_moments && (length(sum_pip_sq_b) != length(n_b) ||
+                       length(sum_causal_pip_b) != length(n_b) ||
+                       any(!is.finite(c(sum_pip_sq_b, sum_causal_pip_b))))))
+    stop("Supply both finite raw-score moment vectors matching n_b.", call. = FALSE)
+  bs_raw <- if (have_moments && sum(n_b) > 0)
+    sum(sum_pip_sq_b - 2 * sum_causal_pip_b + c_b) / sum(n_b) else NA_real_
   keep <- n_b > 0
   if (!any(keep)) {
     return(list(rel = NA_real_, res = NA_real_, unc = NA_real_,
-                bs = NA_real_, bss = NA_real_))
+                bs = NA_real_, bss = NA_real_, bs_raw = NA_real_, bss_raw = NA_real_))
   }
   n_b <- n_b[keep]; c_b <- c_b[keep]; sum_pip_b <- sum_pip_b[keep]
   N    <- sum(n_b)
@@ -150,15 +164,17 @@
   unc <- ytot * (1 - ytot)
   bs  <- rel - res + unc
   list(rel = rel, res = res, unc = unc, bs = bs,
-       bss = if (unc > 0) 1 - bs / unc else NA_real_)
+       bss = if (unc > 0) 1 - bs / unc else NA_real_,
+       bs_raw = bs_raw,
+       bss_raw = if (unc > 0) 1 - bs_raw / unc else NA_real_)
 }
 
 
 #' Excess PIP mass by band (spec §4.3, Q2)
 #'
 #' `total_mass_ratio` says a method is over-confident; this says WHERE. Excess
-#' spread thinly over nulls is harmless; excess concentrated in high-PIP calls is
-#' confidently wrong. No existing scalar distinguishes these, and the distinction
+#' spread thinly over nulls may have different decision costs from excess in high-PIP calls;
+#' the latter exposes confidently wrong decisions. The distinction
 #' decides whether a miscalibration matters.
 #'
 #' Measured on Iteration 003 (ref500): susie put 56% of its excess below PIP 0.1,
@@ -189,9 +205,27 @@
 #'
 #' Zero for an abstainer by construction, which is honest - neither rewarded nor
 #' punished, unlike raw FDR where selecting nothing wins every comparison.
+#' @param fp Observed false-positive counts at each threshold.
+#' @param nsel Number of selected variants at each threshold.
+#' @param sum_pip_sel Sum of selected PIPs at each threshold.
+#' @return Observed minus claimed false positives and their ratio.
 .honesty <- function(fp, nsel, sum_pip_sel) {
   exp_fp <- nsel - sum_pip_sel
   list(exp_fp = exp_fp,
        ex_fp  = fp - exp_fp,
-       rho    = ifelse(exp_fp > 0, fp / exp_fp, NA_real_))
+       rho    = ifelse(exp_fp > 0, fp / exp_fp,
+                       ifelse(fp > 0, Inf, NA_real_)))
+}
+
+
+# Expected top-k precision under a uniform tie break. Entire tie blocks are used
+# for cumulative-mass candidate lists, but a fixed budget k requires fractional
+# credit for the tied block straddling that budget.
+.precision_at_k_ties <- function(sorted_pip, sorted_y, k) {
+  if (!length(sorted_y) || k <= 0) return(NA_real_)
+  k <- min(k, length(sorted_y))
+  boundary <- sorted_pip[k]
+  above <- sorted_pip > boundary
+  tied <- sorted_pip == boundary
+  (sum(sorted_y[above]) + (k - sum(above)) * mean(sorted_y[tied])) / k
 }

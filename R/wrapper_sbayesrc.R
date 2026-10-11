@@ -4,23 +4,11 @@
 # SBayesRC-style Bayesian regression with annotation-informed mixture prior,
 # implemented in R for the fine-mapping benchmark's per-locus regime.
 #
-# See docs/autoresearch/method-sbayesrc.md for the algorithmic derivation and
-# the caveats section (§0.1 of the plan) - this implementation runs FAR
-# outside SBayesRC's native genome-wide-7M-SNP regime and its scores must be
-# treated as in-context-relative to the other Tier-1 methods in this
-# benchmark, NOT as a reflection of SBayesRC's real-world performance on
-# actual GWAS-scale data.
-#
-# Why an in-R reimplementation instead of the upstream R package
-# -------------------------------------------------------------
-# The upstream (zhilizheng/SBayesRC) requires a pre-eigen-decomposed
-# genome-wide LD folder + an annotation file both tied to a specific ~7M-SNP
-# reference panel. Repurposing that machinery for our per-region 40-1000-SNP
-# simulated LD blocks is significantly harder than reimplementing the
-# algorithm - and would produce something that behaves less faithfully.
-# So we reimplement the algorithm here, close to how it is described in
-# Zheng et al. (Nat Genet 2024), tailored to the summary-statistic + block-LD
-# setting the rest of this package produces.
+# This is a local experimental surrogate, not the upstream SBayesRC package.
+# All outputs identify implementation = sbayesrc_style_surrogate and
+# upstream_equivalent = FALSE. A per-region pilot, one pooled multinomial
+# regression, and final per-region chains do not reproduce joint genome-wide
+# SBayesRC posterior inference. See docs/methods.md for scientific limits.
 #
 # Model
 # -----
@@ -46,29 +34,16 @@
 #
 # Summary-stat likelihood
 # -----------------------
-# Given standardized genotypes with n samples and residual variance ~= 1,
-# the marginal-effect estimator is
-#
-#     beta_hat_j = z_j / sqrt(n),  Var(beta_hat_j | beta) = R / n
-#
-# so the SNP-j residual (conditional on beta_{-j}) is
-#
-#     r_j = beta_hat_j - sum_{k != j} R_{j,k} * beta_k
-#     r_j | beta_j ~ Normal(beta_j, 1/n)
-#
-# and the mixture-conditional posteriors on beta_j are the standard
-# normal-normal updates: v_k = 1/(1/sigma2_k + n), m_k = v_k * n * r_j.
-#
-# Gibbs sweep
-# -----------
-#   1. For each region i, several sweeps over its SNPs, updating (comp_j,
-#      beta_j) jointly from the mixture posterior.
-#   2. Every gamma_update_every iterations, pool the current comp_{i,j}
-#      assignments across all regions and refit (alpha, gamma) via a
-#      multinomial logistic regression on A - this is the shared prior
-#      update, and is where cross-region information flows.
-#   3. Repeat, discarding burn-in samples, then estimate PIP_{i,j} as the
-#      posterior probability comp_{i,j} > 0.
+# For standardized X and y, OLS t statistics imply the exact marginal slope
+# beta_hat_j = t_j / sqrt(n - 2 + t_j^2). The likelihood uses fixed residual
+# variance (default 1) with precision (n - 1) / residual_variance. Genuine
+# approximate normal scores may use z/sqrt(n) via statistic_type=normal_score.
+# The Gibbs conditional precision is based on X'X, not the marginal variance
+# of beta_hat. A Gibbs sweep updates sampled mixture class and effect size.
+# A scenario hook runs pilots with a fixed sparse annotation-neutral prior,
+# then pools sampled component assignments to fit a fixed final prior.
+# Single-region calls can still use the documented unstable local refit.
+# Without annotations the mixture proportions stay at their initialization.
 # =============================================================================
 
 
@@ -76,7 +51,11 @@
 # setup_sbayesrc()
 # =============================================================================
 
-#' Check that dependencies for sbayesrc are available
+#' Check full annotation-learning support for the SBayesRC surrogate
+#'
+#' Checks \code{nnet}, required for local or pooled annotation regression.
+#' Fixed-mixture sampling without annotations, or with supplied
+#' \code{pooled_gamma}, uses base R and does not call this full-support check.
 #'
 #' @return Invisible TRUE.
 #' @export
@@ -106,8 +85,9 @@ setup_sbayesrc <- function() {
 #' region alone.
 #'
 #' When \code{annotations} is NULL, the prior collapses to region-common
-#' mixture proportions (learned from the Gibbs assignments), and the method
-#' still runs.
+#' mixture proportions (fixed at their initial values), and the method runs.
+#' This fixed-prior path and supplied \code{pooled_gamma} need only base R;
+#' learning local or scenario-pooled annotation coefficients requires nnet.
 #'
 #' @param z Numeric vector. Marginal z-scores (length p).
 #' @param LD Matrix. LD correlation matrix (p x p).
@@ -125,6 +105,10 @@ setup_sbayesrc <- function() {
 #'   are used as-is.
 #' @param seed Integer or NULL. Sampler seed.
 #' @param variant_ids Character or NULL. Passed through unused.
+#' @param statistic_type Character. \code{marginal_ols_t} (default) uses the
+#'   exact t-to-standardized-slope transform; \code{normal_score} uses z/sqrt(n).
+#' @param residual_variance Positive scalar. Fixed residual variance on the
+#'   standardized phenotype scale. Default 1 is an approximation.
 #' @param ... Ignored (wrapper compatibility).
 #'
 #' @return List with pip, credible_sets, method = "sbayesrc", params,
@@ -139,15 +123,33 @@ run_sbayesrc <- function(z, LD, n,
                          pooled_gamma = NULL,
                          seed = NULL,
                          variant_ids = NULL,
+                         statistic_type = c("marginal_ols_t", "normal_score"),
+                         residual_variance = 1,
                          ...) {
-  setup_sbayesrc()
+  if (!is.null(annotations) && is.null(pooled_gamma)) setup_sbayesrc()
   t0 <- Sys.time()
   if (!is.null(seed)) set.seed(seed)
 
   p <- length(z)
   stopifnot("LD must be p x p" = is.matrix(LD) && all(dim(LD) == c(p, p)))
   K <- length(sigma2_scale)
-  stopifnot(K >= 1L)
+  statistic_type <- match.arg(statistic_type)
+  stopifnot(
+    "z and LD must be finite and nonempty" = p >= 1L && all(is.finite(z)) && all(is.finite(LD)),
+    "LD must be a symmetric correlation matrix" =
+      max(abs(LD - t(LD))) < 1e-8 && max(abs(diag(LD) - 1)) < 1e-8,
+    "n must be an integer >= 3" = length(n) == 1L && is.finite(n) && n >= 3 && n == floor(n),
+    "slab variances must be finite and positive" = K >= 1L && all(is.finite(sigma2_scale)) && all(sigma2_scale > 0),
+    "burn_in must leave posterior samples" =
+      length(n_iter) == 1L && length(burn_in) == 1L && is.finite(n_iter) &&
+      is.finite(burn_in) && n_iter == floor(n_iter) && burn_in == floor(burn_in) &&
+      burn_in >= 0 && n_iter > burn_in,
+    "gamma_update_every must be a positive integer" =
+      length(gamma_update_every) == 1L && is.finite(gamma_update_every) &&
+      gamma_update_every >= 1 && gamma_update_every == floor(gamma_update_every),
+    "residual_variance must be finite and positive" =
+      length(residual_variance) == 1L && is.finite(residual_variance) && residual_variance > 0
+  )
 
   prior_source <- if (is.null(annotations)) {
     "no_annotations"
@@ -158,7 +160,10 @@ run_sbayesrc <- function(z, LD, n,
   }
 
   # --- Marginal beta_hat + per-SNP residual state ---------------------------
-  beta_hat <- z / sqrt(n)
+  # Marginal OLS t statistics imply exactly cor(X, y) = t/sqrt(df+t^2)
+  # for a standardized phenotype. z/sqrt(n) is only a small-effect approximation.
+  beta_hat <- if (statistic_type == "marginal_ols_t") z / sqrt(n - 2 + z^2) else z / sqrt(n)
+  likelihood_precision <- (if (statistic_type == "marginal_ols_t") n - 1 else n) / residual_variance
   beta     <- rep(0, p)                # current effect estimates
   comp     <- rep(0L, p)               # current mixture assignments (0..K)
   # Running R %*% beta so per-SNP residuals are cheap: init 0 (beta = 0)
@@ -208,7 +213,7 @@ run_sbayesrc <- function(z, LD, n,
   for (it in seq_len(n_iter)) {
     # Sweep over SNPs
     swp <- .sbayesrc_gibbs_sweep(
-      beta_hat = beta_hat, LD = LD, n = n,
+      beta_hat = beta_hat, LD = LD, n = likelihood_precision,
       beta = beta, comp = comp, R_beta = R_beta,
       pi_mat = pi_mat, sigma2_scale = sigma2_scale
     )
@@ -249,12 +254,15 @@ run_sbayesrc <- function(z, LD, n,
   pip  <- if (n_kept > 0L) pip_running  / n_kept else rep(0, p)
   bhat <- if (n_kept > 0L) beta_running / n_kept else rep(0, p)
 
-  # --- 95%-mass credible set (greedy on PIP) --------------------------------
-  ord      <- order(pip, decreasing = TRUE)
-  cumpip   <- cumsum(pip[ord])
-  keep     <- ord[seq_len(min(which(cumpip >= 0.95 * sum(pip)), length(ord)))]
-  if (length(keep) == 0L || sum(pip) == 0) keep <- integer(0)
-  cs_list  <- if (length(keep) > 0L) list(as.integer(keep)) else list()
+  # A set containing 95% of SUMMED marginal PIPs is a posterior mass summary,
+  # not a 95% credible set for an effect or the complete causal configuration.
+  ord <- order(pip, decreasing = TRUE)
+  mass_set <- integer(0)
+  if (sum(pip) > 0) {
+    cutoff <- which(cumsum(pip[ord]) >= 0.95 * sum(pip))[1L]
+    mass_set <- as.integer(ord[seq_len(cutoff)])
+  }
+  cs_list <- list()
 
   list(
     pip             = pip,
@@ -263,11 +271,19 @@ run_sbayesrc <- function(z, LD, n,
     input_type      = "summary",
     params          = list(
       sigma2_scale = sigma2_scale, n_iter = n_iter, burn_in = burn_in,
-      gamma_update_every = gamma_update_every, K = K
+      gamma_update_every = gamma_update_every, K = K,
+      statistic_type = statistic_type, residual_variance = residual_variance,
+      implementation = "sbayesrc_style_surrogate", upstream_equivalent = FALSE
     ),
     runtime_seconds = as.numeric(difftime(Sys.time(), t0, units = "secs")),
     additional      = list(
       posterior_mean_beta = bhat,
+      component_assignments = comp,
+      pip_event = "any_nonzero_mixture_component",
+      pip_mass_set = mass_set,
+      credible_set_semantics = "not_provided",
+      implementation = "sbayesrc_style_surrogate",
+      upstream_equivalent = FALSE,
       prior_source        = prior_source,
       alpha               = alpha,
       gamma               = gamma,
@@ -289,11 +305,13 @@ run_sbayesrc <- function(z, LD, n,
 #'   \code{run_sbayesrc_scenario_setup()}. When supplied, no region-local
 #'   annotation refit happens.
 #' @param ... Forwarded to \code{run_sbayesrc()}.
+#' @param statistic_type Optional summary type inherited from the region;
+#'   defaults to \code{marginal_ols_t} when no type is declared.
 #'
 #' @return Output of run_sbayesrc.
 #' @export
 run_sbayesrc_region <- function(region_geno, region_pheno,
-                                pooled_gamma = NULL, ...) {
+                                pooled_gamma = NULL, ..., statistic_type = NULL) {
   A <- region_geno$annotations_matrix
   if (is.null(A)) A <- region_pheno$annotations_matrix
   run_sbayesrc(
@@ -302,6 +320,7 @@ run_sbayesrc_region <- function(region_geno, region_pheno,
     n            = region_geno$n,
     annotations  = A,
     pooled_gamma = pooled_gamma,
+    statistic_type = statistic_type %||% region_pheno$statistic_type %||% "marginal_ols_t",
     variant_ids  = region_geno$variant_ids,
     ...
   )
@@ -314,17 +333,17 @@ run_sbayesrc_region <- function(region_geno, region_pheno,
 
 #' Fit a pooled annotation regression for sbayesrc across the scenario
 #'
-#' Runs a short-burn Gibbs on every region with region-local annotation
-#' refits, pools the resulting per-SNP component assignments across all
+#' Runs a short-burn Gibbs on every region under a fixed sparse prior,
+#' pools the resulting per-SNP component assignments across all
 #' regions, and does one final multinomial regression on the pooled data to
 #' obtain the shared \code{(alpha, gamma)} - i.e., the annotation-to-prior
-#' mapping learned genome-wide-style from the whole scenario.
+#' mapping learned from the whole scenario.
 #'
 #' Downstream calls (per region) use those shared coefficients as
 #' \code{pooled_gamma}, so each region's Gibbs skips the per-region
 #' annotation refit and its priors are set from the cross-region model. This
-#' implements the plan's §0.1 requirement that SBayesRC's annotation prior
-#' be learned jointly across regions and fed back per-block.
+#' pools information across regions, but does not implement upstream SBayesRC
+#' joint posterior inference.
 #'
 #' Returns an empty list (no forwarding) when there are fewer than 2 regions,
 #' when annotation matrices are missing/inconsistent, or when the pilot Gibbs
@@ -338,6 +357,7 @@ run_sbayesrc_region <- function(region_geno, region_pheno,
 #'   or an empty list.
 #' @export
 run_sbayesrc_scenario_setup <- function(genotypes, regions, user_args) {
+  if (!is.null(user_args$pooled_gamma)) return(list(pooled_gamma = user_args$pooled_gamma))
   n_regions <- length(regions)
   if (n_regions < 2L) return(list())
 
@@ -345,7 +365,6 @@ run_sbayesrc_scenario_setup <- function(genotypes, regions, user_args) {
   sigma2_scale       <- user_args$sigma2_scale %||% c(0.05, 0.005, 5e-4, 5e-5)
   pilot_iter         <- user_args$scenario_pilot_iter %||% 100L
   pilot_burn         <- user_args$scenario_pilot_burn %||% 40L
-  gamma_update_every <- user_args$gamma_update_every  %||% 10L
   K <- length(sigma2_scale)
 
   # Validate that every region has an annotation matrix of consistent width
@@ -359,10 +378,18 @@ run_sbayesrc_scenario_setup <- function(genotypes, regions, user_args) {
   }
   ncols <- vapply(A_list, ncol, integer(1))
   if (length(unique(ncols)) != 1L) return(list())
+  # Learning the shared coefficients requires nnet. Do not let a missing
+  # optional dependency become a silently degenerate pooled prior through
+  # the numerical-fit fallback in .sbayesrc_fit_gamma(). Supplied coefficients
+  # return above, and unannotated scenarios return without this requirement.
+  setup_sbayesrc()
 
-  # Pilot Gibbs per region to seed component assignments the joint regression
-  # will pool over. We do NOT need the full posterior - just enough for a
-  # reasonable pooled fit.
+  # A pilot must not fit annotations repeatedly to its own sampled labels:
+  # that empirical-Bayes feedback can inflate inclusion and contaminate the
+  # pooled fit before it sees another region. Freeze the same sparse neutral
+  # prior for all pilots, then estimate annotations once on the pooled draws.
+  pilot_prior <- list(alpha = rep(log((0.03 / K) / 0.97), K),
+                      gamma = matrix(0, nrow = ncols[1L], ncol = K))
   for (i in seq_len(n_regions)) {
     A_i <- A_list[[i]]
     z_i <- regions[[i]]$z
@@ -375,27 +402,16 @@ run_sbayesrc_scenario_setup <- function(genotypes, regions, user_args) {
       run_sbayesrc(
         z = z_i, LD = LD_i, n = n_i, annotations = A_i,
         sigma2_scale = sigma2_scale, n_iter = pilot_iter, burn_in = pilot_burn,
-        gamma_update_every = gamma_update_every, pooled_gamma = NULL
+        statistic_type = user_args$statistic_type %||% regions[[i]]$statistic_type %||% "marginal_ols_t",
+        residual_variance = user_args$residual_variance %||% 1,
+        pooled_gamma = pilot_prior
       ),
       error = function(e) NULL
     )
-    if (is.null(pilot)) return(list())
-    # Threshold each SNP's PIP to a component: 0 for the spike, or a slab
-    # index sampled proportional to sigma2_scale (larger slab -> more mass).
-    # We don't have full sample paths outside run_sbayesrc's memory, but the
-    # posterior mean beta gives a reasonable slab-index proxy: sort SNPs by
-    # |bhat| within the non-null (PIP > 0.5) set and assign the top third to
-    # slab 1 (largest variance), middle third to slab 2, etc.
-    pip_i  <- pilot$pip
-    bhat_i <- pilot$additional$posterior_mean_beta
-    comp_i <- rep(0L, length(z_i))
-    hits   <- which(pip_i > 0.5)
-    if (length(hits) > 0L) {
-      # Assign slab by rank of |bhat| among the hits
-      ranks <- rank(-abs(bhat_i[hits]))
-      slab  <- pmin(K, ceiling(ranks / length(hits) * K))
-      comp_i[hits] <- slab
-    }
+    if (is.null(pilot)) stop("SBayesRC surrogate pilot fit failed.", call. = FALSE)
+    # Use a real posterior Gibbs assignment. Slab membership is a sampled
+    # latent variable, not a rank bin of thresholded posterior-mean effects.
+    comp_i <- pilot$additional$component_assignments
     comp_list[[i]] <- comp_i
   }
 
@@ -406,7 +422,7 @@ run_sbayesrc_scenario_setup <- function(genotypes, regions, user_args) {
     .sbayesrc_fit_gamma(comp_pooled, A_pooled, K),
     error = function(e) NULL
   )
-  if (is.null(fit)) return(list())
+  if (is.null(fit)) stop("SBayesRC surrogate pooled prior fit failed.", call. = FALSE)
 
   list(pooled_gamma = list(alpha = fit$alpha, gamma = fit$gamma))
 }
@@ -526,7 +542,7 @@ run_sbayesrc_scenario_setup <- function(genotypes, regions, user_args) {
     return(list(alpha = rep(empty_alpha, K),
                 gamma = matrix(0, nrow = m_ann, ncol = K)))
   }
-  coefs <- tryCatch(coef(fit), error = function(e) NULL)
+  coefs <- tryCatch(stats::coef(fit), error = function(e) NULL)
   if (is.null(coefs)) {
     return(list(alpha = rep(empty_alpha, K),
                 gamma = matrix(0, nrow = m_ann, ncol = K)))

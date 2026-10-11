@@ -97,6 +97,14 @@ setup_finemap_inf <- function(finemap_inf_dir, python = "python") {
 #'   method is distributed to run.
 #' @param est_tausq Logical. Force FINEMAP-inf to estimate tau^2 itself even
 #'   when SuSiE-inf is in the run (\code{--est-finemapinf-tausq}). Default FALSE.
+#' @param statistic_type \code{marginal_ols_t} (default). OLS t statistics are
+#'   converted exactly to the author's score sufficient statistics.
+#'   \code{normal_score} is unsupported because the joint variance estimator
+#'   requires a phenotype second moment absent from the Gaussian score challenge.
+#' @param meansq Positive phenotype mean square on the chosen centered trait
+#'   scale. Default 1 explicitly population-SD standardizes the phenotype.
+#'   A supplied mean square reconstructs that trait scale and changes effect
+#'   and prior units accordingly. Genotypes use population-SD standardized units.
 #'
 #' @return A list in the benchmark's standard fine-mapping output format.
 #' @export
@@ -104,24 +112,41 @@ run_finemap_inf <- function(z,
                             LD,
                             n,
                             variant_ids        = NULL,
-                            finemap_inf_dir,
+                            finemap_inf_dir    = NULL,
                             python             = "python",
                             num_sparse_effects = 10L,
                             coverage           = 0.95,
                             purity             = 0.5,
                             method             = "finemapinf",
                             run_methods_str    = "susieinf,finemapinf",
-                            est_tausq          = FALSE) {
+                            est_tausq          = FALSE,
+                            statistic_type     = "marginal_ols_t",
+                            meansq             = 1) {
 
   p <- length(z)
+  statistic_type <- match.arg(statistic_type, c("marginal_ols_t", "normal_score"))
   params <- list(num_sparse_effects = num_sparse_effects, coverage = coverage,
                  purity = purity, method = method, run_methods_str = run_methods_str,
                  est_tausq = est_tausq,
-                 n = n, finemap_inf_dir = finemap_inf_dir, python = python)
+                 n = n, finemap_inf_dir = finemap_inf_dir, python = python,
+                 statistic_type = statistic_type, meansq = meansq,
+                 native_statistic_type = "x_transpose_centered_y_over_sqrt_n",
+                 likelihood = "reconstructed_centered_ols_sufficient_statistics",
+                 genotype_effect_units = "population_sd_standardized",
+                 phenotype_effect_units = if (identical(as.numeric(meansq), 1))
+                   "population_sd_standardized" else "centered_trait_with_supplied_mean_square")
+
+  if (statistic_type == "normal_score") return(.fminf_error_result(p, params, 0,
+    paste0("unsupported_input: normal_score FINEMAP-inf jointly estimates phenotype ",
+      "residual and infinitesimal variances using a phenotype second moment; ",
+      "the Gaussian score challenge does not supply those phenotype sufficient statistics.")))
+  native_z <- .fm_ols_t_to_score(z, n, meansq)
 
   stopifnot("LD must be a p x p matrix" = is.matrix(LD) && nrow(LD) == p && ncol(LD) == p,
             "n must be a positive integer" = is.numeric(n) && length(n) == 1 && n > 0)
 
+  if (is.null(finemap_inf_dir) || length(finemap_inf_dir) != 1L || !nzchar(finemap_inf_dir))
+    return(.fminf_error_result(p, params, 0, "finemap_inf_dir must identify the installed author implementation."))
   script <- file.path(finemap_inf_dir, "run_fine_mapping.py")
   if (!file.exists(script)) {
     return(.fminf_error_result(p, params, 0,
@@ -145,7 +170,7 @@ run_finemap_inf <- function(z,
   prefix  <- file.path(work_dir, "out")
 
   # --sumstats is a table with a named z column (--z-col-name).
-  utils::write.table(data.frame(SNP = variant_ids, Z = as.numeric(z)),
+  utils::write.table(data.frame(SNP = variant_ids, Z = native_z),
                      ss_path, quote = FALSE, row.names = FALSE,
                      col.names = TRUE, sep = "\t")
   # --ld-file: full numeric matrix, gzip-compressed (see the note above).
@@ -159,6 +184,7 @@ run_finemap_inf <- function(z,
             "--z-col-name",         "Z",
             "--ld-file",            ld_path,
             "--n",                  as.character(as.integer(n)),
+            "--meansq",             as.character(meansq),
             "--method",             run_methods_str,
             "--num-sparse-effects", as.character(as.integer(num_sparse_effects)),
             "--coverage",           as.character(coverage),
@@ -173,6 +199,10 @@ run_finemap_inf <- function(z,
   elapsed <- as.numeric((proc.time() - start_time)["elapsed"])
   if (inherits(run_output, "fminf_error")) {
     return(.fminf_error_result(p, params, elapsed, as.character(run_output)))
+  }
+  if (!is.null(attr(run_output, "status"))) {
+    return(.fminf_error_result(p, params, elapsed,
+      paste(c("FINEMAP-inf exited unsuccessfully:", tail(run_output, 20L)), collapse = "\n")))
   }
 
   # Upstream writes <prefix>.<method>.bgz; --save-tsv also yields a plain .tsv.
@@ -198,19 +228,26 @@ run_finemap_inf <- function(z,
             if (is.null(df)) "<unreadable>" else paste(names(df), collapse = ", "))))
   }
 
-  # Re-order to the input variant order when the id column survives.
-  ord <- if ("SNP" %in% names(df)) {
-    o <- match(variant_ids, as.character(df$SNP)); if (anyNA(o)) seq_len(p) else o
-  } else seq_len(p)
-  pip <- pmax(0, pmin(1, suppressWarnings(as.numeric(df$prob[ord]))))
-  if (length(pip) != p) {
+  # Upstream preserves SNP IDs; positional output cannot establish alignment.
+  if (!"SNP" %in% names(df)) {
     return(.fminf_error_result(p, params, elapsed,
-      sprintf("FINEMAP-inf returned %d probabilities, expected %d.", length(pip), p)))
+      "FINEMAP-inf output SNP IDs are missing; positional alignment is not accepted."))
+  }
+  ord <- match(variant_ids, as.character(df$SNP))
+  if (anyNA(df$SNP) || anyNA(ord) || anyDuplicated(df$SNP) || nrow(df) != p) {
+    return(.fminf_error_result(p, params, elapsed,
+      "FINEMAP-inf output SNP IDs do not match the complete input."))
+  }
+  pip <- suppressWarnings(as.numeric(df$prob[ord]))
+  if (length(pip) != p || any(!is.finite(pip)) || any(pip < 0 | pip > 1)) {
+    return(.fminf_error_result(p, params, elapsed,
+      "FINEMAP-inf must return one finite probability in [0,1] per input variant."))
   }
 
-  # SuSiE-inf output carries a `cs` column; FINEMAP-inf's table does not, so a
-  # coverage set is built greedily from the PIPs (as for PAINTOR).
+  # Only native component sets define credible-set events. Cumulative marginal
+  # PIP selections are diagnostics, not multi-causal event probabilities.
   credible_sets <- list()
+  pip_mass_set <- NULL
   if ("cs" %in% names(df)) {
     csv <- df$cs[ord]
     for (lab in setdiff(unique(csv), c(NA, -1, "", "-1", "NA"))) {
@@ -221,7 +258,7 @@ run_finemap_inf <- function(z,
     op <- order(pip, decreasing = TRUE)
     n_cs <- which(cumsum(pip[op]) >= coverage)[1L]
     if (is.na(n_cs)) n_cs <- p
-    credible_sets <- list(sort(op[seq_len(n_cs)]))
+    pip_mass_set <- sort(op[seq_len(n_cs)])
   }
 
   list(
@@ -232,6 +269,8 @@ run_finemap_inf <- function(z,
     params          = params,
     runtime_seconds = elapsed,
     additional      = list(
+      pip_mass_set = pip_mass_set,
+      credible_set_semantics = if ("cs" %in% names(df)) "native_component_sets" else "not_provided",
       tausq    = if ("tausq"    %in% names(df)) df$tausq[1]    else NA_real_,
       sigmasq  = if ("sigmasq"  %in% names(df)) df$sigmasq[1]  else NA_real_,
       post_mean = if ("post_mean" %in% names(df)) as.numeric(df$post_mean[ord]) else NULL
@@ -244,15 +283,21 @@ run_finemap_inf <- function(z,
 #'
 #' @param region_geno One element of \code{simulation$genotypes}.
 #' @param region_pheno One element of a scenario's \code{regions}.
+#' @param statistic_type Optional summary type; defaults to the region's declared
+#'   type or \code{marginal_ols_t}.
+#' @param meansq Phenotype mean square in the chosen native effect units; default 1.
 #' @param ... Passed to \code{\link{run_finemap_inf}}.
 #' @return The output of \code{\link{run_finemap_inf}}.
 #' @export
-run_finemap_inf_region <- function(region_geno, region_pheno, ...) {
+run_finemap_inf_region <- function(region_geno, region_pheno,
+                                   statistic_type = NULL, meansq = 1, ...) {
   run_finemap_inf(
     z           = region_pheno$z,
     LD          = region_geno$LD,
     n           = region_geno$n,
     variant_ids = region_geno$variant_ids,
+    statistic_type = statistic_type %||% region_pheno$statistic_type %||% "marginal_ols_t",
+    meansq      = meansq,
     ...
   )
 }

@@ -134,20 +134,20 @@ simulate_genotypes <- function(n_regions = 3,
 
   # n
   stopifnot(
-    "n must be a positive integer" =
+    "n must be an integer >= 3" =
       is.numeric(n) && length(n) == 1 &&
-      n == floor(n) && n >= 1
+      is.finite(n) && n == floor(n) && n >= 3
   )
   n <- as.integer(n)
 
   # n_ref (optional): NULL = no reference panel (in-sample LD only).
-  # Integer >= 1 = additionally draw a reference panel of this size from the
+  # Integer >= 2 = additionally draw a reference panel of this size from the
   # same VCF, in the same sim1000G session. The two samples are independent.
   if (!is.null(n_ref)) {
     stopifnot(
-      "n_ref must be a positive integer when not NULL" =
+      "n_ref must be an integer >= 2 when not NULL" =
         is.numeric(n_ref) && length(n_ref) == 1 &&
-        n_ref == floor(n_ref) && n_ref >= 1
+        is.finite(n_ref) && n_ref == floor(n_ref) && n_ref >= 2
     )
     n_ref <- as.integer(n_ref)
   }
@@ -450,12 +450,12 @@ simulate_single_region <- function(vcf_file,
 
   col_means <- colMeans(genotype_raw)
   sim_maf   <- pmin(col_means / 2, 1 - col_means / 2)
-  poly_main <- sim_maf > 0
+  poly_main <- genotype_variable_columns(genotype_raw)
 
   if (!is.null(genotype_ref_raw)) {
     ref_means <- colMeans(genotype_ref_raw)
     ref_maf   <- pmin(ref_means / 2, 1 - ref_means / 2)
-    poly_ref  <- ref_maf > 0
+    poly_ref  <- genotype_variable_columns(genotype_ref_raw)
     polymorphic <- poly_main & poly_ref
   } else {
     polymorphic <- poly_main
@@ -480,6 +480,9 @@ simulate_single_region <- function(vcf_file,
   }
 
   p_actual <- ncol(genotype_raw)
+  if (p_actual == 0L) {
+    stop("No genotype columns have nonzero variance in both required samples.", call. = FALSE)
+  }
 
   # --- Standardise if requested -----------------------------------------------
   #
@@ -522,6 +525,20 @@ simulate_single_region <- function(vcf_file,
     region_id = region_id,
     vcf_source = vcf_file
   )
+  # sim1000G 1.40 reads phased 0/1 allele indices and sums gt1 + gt2:
+  # X_raw counts VCF ALT, not necessarily the minor allele. Preserve the
+  # exact retained rows so external-file methods need not guess orientation.
+  if (!is.null(vcf_obj$vcf) && nrow(vcf_obj$vcf) == length(polymorphic) &&
+      ncol(vcf_obj$vcf) >= 5L) {
+    retained <- vcf_obj$vcf[polymorphic, seq_len(5L), drop = FALSE]
+    out$variant_metadata <- data.frame(
+      chrom = as.character(retained[[1L]]), position = as.numeric(retained[[2L]]),
+      source_id = as.character(retained[[3L]]), ref = as.character(retained[[4L]]),
+      alt = as.character(retained[[5L]]), stringsAsFactors = FALSE)
+    out$counted_allele <- "ALT"
+    out$allele_frequency <- colMeans(genotype_raw) / 2
+    out$genotype_sd <- apply(genotype_raw, 2L, stats::sd)
+  }
   if (!is.null(X_ref)) {
     out$X_ref     <- X_ref
     out$X_ref_raw <- genotype_ref_raw
@@ -561,4 +578,13 @@ scale_genotypes <- function(X_raw) {
   }
 
   X
+}
+
+# Allele frequency alone does not identify a variable dosage column: all
+# individuals may be heterozygous (MAF = 0.5, dosage variance = 0).
+genotype_variable_columns <- function(G) {
+  if (!is.matrix(G) || nrow(G) < 2L || any(!is.finite(G))) {
+    stop("Genotypes require finite values and at least two individuals.", call. = FALSE)
+  }
+  apply(G, 2, function(x) max(x) > min(x))
 }

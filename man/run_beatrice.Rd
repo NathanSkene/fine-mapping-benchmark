@@ -26,7 +26,9 @@ run_beatrice(
 \item{n}{Integer. Sample size (GWAS N).}
 
 \item{variant_ids}{Character vector or NULL. Variant identifiers (length p).
-If NULL, set to \code{"rs0", "rs1", ...} (matching BEATRICE convention).}
+If NULL, set to \code{"rs0", "rs1", ...} (matching BEATRICE convention).
+Original identifiers are retained in \code{additional$variant_ids} and
+\code{additional$variant_alignment}; native files use collision-free tokens.}
 
 \item{beatrice_dir}{Character. Path to the cloned Beatrice-Finemapping
 repository root.}
@@ -63,6 +65,11 @@ were produced.}
 \item{cs_pip}{List of numeric vectors. Conditional inclusion
 probabilities within each credible set, as reported by BEATRICE.
 NULL if the file is not produced.}
+\item{credible_set_diagnostics}{Declared fork's per-set conditional
+union probability and target-attainment evidence; NULL for external
+implementations without this declared output contract.}
+\item{null_probability}{Empty candidate-configuration probability
+within the explored posterior support, when declared.}
 }
 }
 \item{error}{Character or NULL. Error message if BEATRICE failed.}
@@ -73,6 +80,13 @@ Writes the required BEATRICE input files to a temporary directory, calls
 \code{beatrice.py} via the specified Python executable, parses the output,
 and returns results in the standardised format. The temporary directory is
 deleted on exit.
+Nonzero process exits and malformed, incomplete, or unaligned native
+probabilities or credible sets return a failed fit; evidence is never clipped
+or repaired. Synthetic tokens serialize variants without changing their IDs.
+The declared bundled fork uses conditional union-event stopping within its
+explored configuration support. Its per-set event probabilities, conditioning
+indices and target-attainment flags are retained in the additional metadata;
+this is not an unconditional or full-model-space coverage guarantee.
 }
 \details{
 BEATRICE trains a neural network for each region; runtime scales with
