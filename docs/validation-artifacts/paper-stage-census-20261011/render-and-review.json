@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "scope": "Publication-only draft, metadata, stage analysis and figure layout; full campaign results remain pending",
+  "inference_source_commit": "0e4a7ead774b2e8d3f8ab2f48bc61eadb31c6e91",
+  "proof_sha256": "47dc1fdf7635f011fcba25a229b8254e5754963571bb1ecb5c5ede4650f057d6",
+  "source_sha256": {
+    "paper/manuscript.md": "dfca7b0a22510459fd1a8d5d3be32611590b5c74dc6261c8e02b6589964ffdcf",
+    "paper/manuscript.tex": "a97a829c5e100d76a0de8089ec7bcb92a7cbd10fa244789d5ce296b73a857fa0",
+    "paper/plot_results.R": "b280d2bf20fee535fa0a6924dbd8262d62813b05bece38ac9f3e6edfd3453be8",
+    "paper/stage_attribution.R": "836dd3a21859716c2ac70e891c8fd921d46f1df498ff1534e934cff989158169",
+    "paper/stage_publication.R": "d23c13e5a4a9c6cc7eef489fb6c323760314f4cda2cf16ad5ca059b5b2c9d2c4",
+    "paper/regional_publication.R": "dfeec81526540d891ed8f2cf4d83705f881b0026da742f57890f61d01447dfb2",
+    "paper/stage-attribution-spec.json": "e46d855f0dc64a40f285872ca31ce9e2cf81fad6740e57d77cb05e17d684c00e"
+  },
+  "render": {
+    "md_and_generated_tex_exact_agent_handoff": true,
+    "pdf_logical_label": "results/paper/manuscript-in-progress.pdf",
+    "pdf_sha256": "1daa9fd69cd0ce3ee0c3f2d193efa08db869c7070a5f66c329f3803b7c084979",
+    "pages": 15,
+    "pandoc_and_both_pdflatex_passes_succeeded": true,
+    "desktop_editor_compiler_status": "success",
+    "visual_review": "Updated manuscript pages4/11 reviewed by paper owner; main and final regional-paired development figure pages reviewed by root; no footer/axis-label overlap in final layout",
+    "limits": "Working draft; no verified full campaign winner or convergence claim"
+  },
+  "independent_review": {
+    "agent": "comparison_paper",
+    "read_only": true,
+    "stage_mathematics_masks_selection_and_final_caption_review": "No remaining scoped blocker",
+    "proof_scoped_tests_rerun_by_reviewer": false
+  },
+  "unchanged": "Current server inference, original metric scores and existing method-paired numerical contrasts/intervals"
+}

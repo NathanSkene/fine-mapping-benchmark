@@ -43,6 +43,13 @@ jobs:
           RSCRIPT
       - name: Test scoring, generative invariants and blinded-input contracts
         run: Rscript --vanilla scripts/challenge/test_core.R
+      - name: Test publication denominators and specified stage contrasts
+        run: |
+          Rscript --vanilla paper/test_csv_reader.R
+          Rscript --vanilla paper/test_native_publication.R
+          Rscript --vanilla paper/test_regional_publication.R
+          Rscript --vanilla paper/test_stage_attribution.R
+          Rscript --vanilla paper/test_stage_publication.R
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

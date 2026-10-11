@@ -13,14 +13,22 @@ working draft until the results and provenance below are present and checked.
    and truth, or regenerate the historical experiments at the frozen original
    source. Identify which happened. Original and corrected scorers on identical
    predictions isolate evaluator effects; repaired method code on identical
-   inputs isolates implementation effects. New simulation data cannot establish
-   either contrast alone.
+   inputs isolates the combined implementation/adapter/acceptance change.
+   A particular repair needs a separate ablation. New simulation data cannot
+   establish either contrast alone.
 3. **Full experiment identity:** original-grid family, repaired genotype/OLS
    family, new Gaussian stress family and native genome-wide family each need
    frozen design files, source/input hashes, resource limits, seeds, variant
    universes, truth definitions, probability-event alignment, exposure history
    and independent cluster IDs. The native 128-block comparison is an empirical
    subset, not dense genome-wide coverage.
+   Historical-grid p is a requested design size: report realized candidate
+   distributions and filter losses alongside it. Ns are synthetic experiment
+   parameters: legacy N counts simulated individuals, while Gaussian N is a
+   score-design parameter; variant-wise N distributions require the committed
+   public inputs. None is a published GWAS participant total.
+   Reference-panel regime rows are not isolated LD-only pairs because
+   their genotype draws and retained candidates can differ.
 4. **Final assessment:** hyperparameters and contrasts fixed before final truth
    inspection; author defaults, controlled ablations and competitive tuning
    reported separately. The exact reference and true-prior controls are labelled
@@ -45,6 +53,16 @@ working draft until the results and provenance below are present and checked.
    dependence. Report effect differences and confidence intervals, not only
    win counts. State whether intervals condition on existing LD or generalise
    to new genomic loci. Treat all unregistered contrasts as exploratory.
+   The separate regional stage specification fixes implementation/acceptance
+   and generating-experiment contrasts before full-campaign outcomes, after
+   development outcomes were seen. Preserve endpoint-specific finite pairs,
+   availability, recovered/lost fits, failure-zero AP and unmatched attempts;
+   a selected-out stage is unassessed. One shared-prior panel gives no interval.
+   Historical per-p strata usually contain two genotype clusters regardless
+   of phenotype repetition count: their percentile envelopes are descriptive,
+   have no validated nominal coverage and cannot establish statistical
+   distinguishability. Generalising across genomic loci needs more independent
+   genotype panels, rather than more repetitions on the same loci.
 8. **Historical claim checks:** for each claim in `original-results-audit.md`,
    classify as reproduced, revised by scoring, revised by inference, revised
    by simulation, untestable from available historical data, or outside the new
@@ -81,6 +99,11 @@ Suggested primary contrasts, chosen before final results are inspected:
 - Native GCTB mode versus same-input regional strategies, separated from any
   genome-wide information advantage; report chain diagnostics before accuracy
   claims.
+   Regional publication figures require their sealed locus metric CSV/type
+   schema and endpoint-specific realized-size/truth census. Retain generating
+   nulls, observed-positive eligibility, missing causes, failures and infinite
+   losses with their proper denominators. Paired census metadata must use the
+   exact source contributing mask, without altering scores or intervals.
 
 For manuscript phrasing, "leads" means the strongest observed result on a
 named endpoint; "statistically distinguishable" additionally requires an

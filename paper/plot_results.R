@@ -1,5 +1,6 @@
 #!/usr/bin/env Rscript
-# Plot the collector's frozen evidence. No simulation, tuning or new bootstrap.
+# Plot frozen collector evidence; separately specified stage contrasts use
+# stored locus scores and a fixed cluster bootstrap. No refitting or tuning.
 main <- function() {
 args <- commandArgs(TRUE)
 if (length(args) < 2L)
@@ -20,6 +21,8 @@ reader_source <- file.path(repo, "paper", "read_selected_csv.R")
 source(reader_source)
 native_publication_source <- file.path(repo, "paper", "native_publication.R")
 source(native_publication_source)
+regional_publication_source <- file.path(repo, "paper", "regional_publication.R")
+source(regional_publication_source)
 if (nzchar(Sys.getenv("FMB_R_LIB"))) .libPaths(c(Sys.getenv("FMB_R_LIB"), .libPaths()))
 if (dir.exists(file.path(repo, ".local-lib"))) .libPaths(c(file.path(repo, ".local-lib"), .libPaths()))
 for (path in list.files(file.path(repo, "R"), full.names = TRUE)) if (endsWith(path, ".R")) source(path)
@@ -158,10 +161,50 @@ if (file.exists(contrast_path)) {
   if (nrow(contrasts) > 2400L)
     stop("Export exceeds 2,400 paired contrasts; select prespecified settings/methods")
 }
+regional <- NULL
+regional_census_inputs <- character()
+stage_publication <- NULL
+stage_publication_sources <- character()
+if (!native) {
+  regional_census_inputs <- file.path(analysis, c("task-metrics.csv", "task-metrics-schema.rds"))
+  available <- all(file.exists(regional_census_inputs)) &&
+    all(regional_census_inputs %in% manifest$artifacts$path)
+  if (!available && scientific)
+    stop("Publication regional figures require sealed locus metrics and their CSV schema for realized-size/truth census")
+  stage_callback <- NULL
+  if (available) {
+    stage_publication_sources <- file.path(repo, "paper", c("stage_attribution.R", "stage_publication.R", "stage-attribution-spec.json"))
+    source(stage_publication_sources[1L]); source(stage_publication_sources[2L])
+    stage_adapter <- .paper_stage_publication(plan, rows, stage_publication_sources[3L],
+      scientific = scientific, collection_complete = identical(status, "complete"))
+    stage_callback <- stage_adapter$on_stratum
+  }
+  regional <- if (available) .paper_regional_publication(regional_census_inputs[1L],
+    regional_census_inputs[2L], rows, contrasts, on_stratum = stage_callback) else .paper_regional_unassessed(rows, contrasts)
+  stage_publication <- if (available) stage_adapter$finish() else list(metadata = list(
+    available = FALSE, reason = "sealed_regional_metric_csv_or_schema_unavailable"))
+  rows <- regional$rows; contrasts <- regional$contrasts
+  if (available) rows$aligned <- rows$regional_brier_probability_target_aligned
+  if (!available) {
+    regional_census_inputs <- character()
+    label <- paste(label, "| regional realized-size/truth census unavailable; unassessed")
+  }
+}
 dir.create(output, recursive = TRUE)
 inputs <- c(manifest_path, file.path(analysis, "analysis-manifest.json"),
             file.path(dirname(analysis), "plan.rds"),
             file.path(analysis, if (native) "draw-metrics.csv" else "regime-summary.csv"))
+if (!native) {
+  inputs <- c(inputs, regional_census_inputs)
+  .paper_regional_write_csv(regional$census, file.path(output, "regional-target-census.csv"))
+  .paper_regional_write_csv(rows, file.path(output, "regional-summary-publication.csv"))
+  if (!is.null(contrasts)) .paper_regional_write_csv(contrasts, file.path(output, "regional-paired-publication.csv"))
+  if (isTRUE(stage_publication$metadata$available)) {
+    .paper_regional_write_csv(stage_publication$selection, file.path(output, "regional-stage-selection.csv"))
+    if (nrow(stage_publication$contrasts))
+      .paper_regional_write_csv(stage_publication$contrasts, file.path(output, "regional-stage-attribution.csv"))
+  }
+}
 if (native) {
   if (native_census_available) inputs <- c(inputs, native_census_path)
   write.csv(rows, file.path(output, "native-draw-publication.csv"), row.names = FALSE)
@@ -207,7 +250,12 @@ tryCatch({
     mtext(paste(strwrap(setting, width = 140), collapse = "\n"), outer = TRUE, side = 3L, line = 2.2, cex = .9)
     mtext(paste(strwrap(label, width = 155), collapse = "\n"), outer = TRUE, side = 3L, line = .1, cex = .72,
           col = if (scientific) "#444444" else "#9b382a")
-    note <- if (native) "AP uses positive loci; points are genotype draws. Four-chain success does not establish MCMC convergence. " else "Counts show successful / attempted locus fits. "
+    note <- if (native) "AP uses positive loci; points are genotype draws. Four-chain success does not establish MCMC convergence. " else
+      paste0("Counts show successful / attempted locus fits. ", .paper_regional_n_caption(d), "Settings use requested p; ",
+        if (isTRUE(regional$streaming$available)) paste0("retained p ", min(d$regional_actual_p_min), "–",
+          max(d$regional_actual_p_max), "; endpoint-specific prevalence/gap distributions are in regional-target-census.csv. ") else
+          "retained-size/truth census unassessed. ",
+        "Reference-panel regimes are not LD-only paired inputs. ")
     if (native && any(d$ap_localisation_status == "no_localisation_discrimination" |
                       d$recall_localisation_status == "no_localisation_discrimination"))
       note <- paste0(note, "Triangles: all-positive scored loci; AP=1 at any ranking; recall is a call fraction, with no localisation discrimination. ")
@@ -215,7 +263,9 @@ tryCatch({
       note <- paste0(note, "For an all-positive target, constant PIP=1 gives AP=1, recall=1, Brier=0 and log loss=0 without data. ")
     if (native && any(grepl("degenerate", d$ap_localisation_status, fixed = TRUE)))
       note <- paste0(note, "AP includes both all-positive and discriminating loci; see the exported truth census. ")
-    mtext(paste(strwrap(paste0(note, "Open Brier points: event-misaligned operational scores. Cross: undefined/no successful score."),
+    legend <- if (native) "Open Brier points: event-misaligned operational scores. Cross: undefined/no successful score." else
+      "Open Brier points: event alignment unqualified; operational scores. Cross: undefined/no successful score."
+    mtext(paste(strwrap(paste0(note, legend),
                         width = 170), collapse = "\n"), outer = TRUE, side = 1L, line = .5, cex = .68)
   }
 }, finally = grDevices::dev.off())
@@ -249,7 +299,7 @@ if (!is.null(contrasts) && nrow(contrasts)) {
         z <- d[ix, ]; y <- rev(seq_len(nrow(z))); valid <- is.finite(z$difference)
         span <- range(c(0, z$difference[valid], z$lower[is.finite(z$lower)], z$upper[is.finite(z$upper)]))
         pad <- max(diff(span) * .08, .01); span <- span + c(-pad, pad)
-        par(mar = c(5, 28, 2, 2), oma = c(4, 0, 5, 0), cex = .95)
+        par(mar = c(5, 28, 2, 2), oma = c(if (native) 4 else 6, 0, 5, 0), cex = .95)
         plot(NA, xlim = span, ylim = c(.4, nrow(z) + .6), xlab = "",
              ylab = "", yaxt = "n", bty = "n")
         abline(v = 0, lty = 2, col = "#888888")
@@ -269,11 +319,15 @@ if (!is.null(contrasts) && nrow(contrasts)) {
         mtext(paste(strwrap(label, width = 170), collapse = "\n"), outer = TRUE, side = 3L, line = .1, cex = .65,
               col = if (scientific) "#444444" else "#9b382a")
         mtext("Method A minus method B on the named endpoint", side = 1L, line = 3, cex = .85)
-        note <- "Paired cluster intervals; direction depends on endpoint. Open grey points: event-misaligned operational Brier contrasts, not calibration ranks."
+        note <- if (native) "Paired cluster intervals; direction depends on endpoint. Open grey points: event-misaligned operational Brier contrasts, not calibration ranks." else
+          paste0("Descriptive cluster percentile envelopes; nominal coverage unvalidated with few genotype clusters; no multiplicity control. Direction depends on endpoint. ",
+            "Open grey points: event alignment unqualified; operational Brier contrasts, not calibration ranks.")
+        if (!native) note <- paste0(note,
+          " Regional census uses exactly the finite-difference pairs; recall includes recorded failure zeros. Requested p differs from retained candidates where filtering applies. N is a synthetic experiment parameter; Gaussian per-variant N distributions require the committed public inputs. Reference-panel regimes are not LD-only pairs.")
         if (native && any(degenerate)) note <- paste0(note,
           " Triangles: no localisation resolution. For an all-positive target, constant PIP=1 attains AP=1, recall=1, Brier=0 and log loss=0 without data.")
         mtext(paste(strwrap(note, width = 175), collapse = "\n"),
-              outer = TRUE, side = 1L, line = .5, cex = .65)
+              outer = TRUE, side = 1L, line = if (native) .5 else 2.2, cex = .65)
       }
     }
   }, finally = grDevices::dev.off())
@@ -283,10 +337,15 @@ figure_manifest <- list(schema = 1L, plan_sha256 = manifest$plan_sha256, collect
   profile = plan$profile, scientific_full_profile = scientific, label = label,
   selection = selection, n_settings_plotted = length(unique(rows$setting)),
   plotting_source_sha256 = .challenge_sha256(sub("^--file=", "", file_arg[1L])),
-  plotting_helpers = .campaign_artifact_manifest(c(reader_source, native_publication_source)),
+  plotting_helpers = .campaign_artifact_manifest(c(reader_source, native_publication_source,
+    if (!native) c(regional_publication_source, stage_publication_sources))),
   native_truth_census_available = native && native_census_available,
+  regional_truth_census = if (!native) regional$streaming else NULL,
+  regional_stage_analysis = if (!native) stage_publication$metadata else NULL,
   inputs = .campaign_artifact_manifest(inputs), outputs = .campaign_artifact_manifest(outputs),
-  interpretation = paste("Setting-specific endpoint views, alphabetical method order, no overall rank; existing paired intervals only.",
+  interpretation = paste("Setting-specific endpoint views, alphabetical method order, no overall rank; existing method-paired intervals unchanged.",
+    if (!native && isTRUE(stage_publication$metadata$available))
+      "A separately specified regional stage table uses stored locus scores and a fixed paired cluster bootstrap; filters excluding a required stage leave that comparison unassessed. Percentile envelopes are descriptive, with nominal coverage unvalidated and no multiplicity control.",
     "Native truth census and paired event metadata are publication annotations; collected scores and intervals are unchanged.",
     "All-positive AP/recall do not demonstrate localisation; constant-one probabilities give zero all-positive proper-score loss."))
 jsonlite::write_json(figure_manifest, file.path(output, "figure-manifest.json"), pretty = TRUE,

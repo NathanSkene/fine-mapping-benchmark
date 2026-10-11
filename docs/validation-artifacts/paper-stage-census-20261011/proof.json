@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "scope": "Bounded regional publication census and separate fixed stage analysis of stored scores; software fixtures and prior sealed development data, no new inference or full campaign performance claim.",
+  "source_sha256": {
+    ".github/workflows/scientific-invariants.yaml": "dc931f12b5d0fd8ac05495c2e62905da626f011e824888759e49e73c7f274845",
+    "paper/README.md": "2c2752cd6931c6fd6ea8598cd2227ed1c7364e73f24fcc3a2e3ff15d2d637a85",
+    "paper/native_publication.R": "023502887e78881341e357dc2bafe2273dbd6dcfb346bb06e57a15e050d7b159",
+    "paper/plot_results.R": "b280d2bf20fee535fa0a6924dbd8262d62813b05bece38ac9f3e6edfd3453be8",
+    "paper/read_selected_csv.R": "52ac0cf60b56fa594aee27df34ccc1beb5a3a6c7d93e2315f395b0c7db5336a3",
+    "paper/regional_publication.R": "dfeec81526540d891ed8f2cf4d83705f881b0026da742f57890f61d01447dfb2",
+    "paper/results-requirements.md": "ccbcb18e74784ccce7b3607cf8c86eeff19bb0c472770471166aeecb1a9dd182",
+    "paper/stage-attribution-spec.json": "e46d855f0dc64a40f285872ca31ce9e2cf81fad6740e57d77cb05e17d684c00e",
+    "paper/stage_attribution.R": "836dd3a21859716c2ac70e891c8fd921d46f1df498ff1534e934cff989158169",
+    "paper/stage_publication.R": "d23c13e5a4a9c6cc7eef489fb6c323760314f4cda2cf16ad5ca059b5b2c9d2c4",
+    "paper/test_csv_reader.R": "e20732fb5c8477edf35d41ffe585a74d8cf95c3c7e50e6afdd2707d7490d942b",
+    "paper/test_native_publication.R": "591dd54c4cb5d989c4b3d0ad464f6c7c9c9c673a325f484fdeafe9133c031251",
+    "paper/test_regional_publication.R": "55c2923979fcbc9069bcd925f77062155f130e40556e691a3085de4cbdcdf614",
+    "paper/test_stage_attribution.R": "c3a257482b61abe9ad2fd75692ab7b92a29528d434afc37b8bb1f0d627672ea2",
+    "paper/test_stage_publication.R": "2faaeb66d7acd48796201defd0b09cc697ce30cba3f602334df134844425100b"
+  },
+  "source_unchanged_through_validation": true,
+  "inference_R_bytes_unchanged": true,
+  "tests": [
+    {
+      "script": "paper/test_csv_reader.R",
+      "checks": 11,
+      "exit_code": 0,
+      "wall_seconds": 0.4823960000067018,
+      "log_sha256": "e0808c9483cca85f0ac866d64767f8ed1d6da06628a995a0167cf5028af7362f"
+    },
+    {
+      "script": "paper/test_native_publication.R",
+      "checks": 63,
+      "exit_code": 0,
+      "wall_seconds": 11.272565666993614,
+      "log_sha256": "6ad900d55c51f566e1101f6a5d5fb784d181d90a1d91cd5db1056a86bbcc8118"
+    },
+    {
+      "script": "paper/test_regional_publication.R",
+      "checks": 85,
+      "exit_code": 0,
+      "wall_seconds": 29.147906958009116,
+      "log_sha256": "a5e46f5f42a381955bb652abe0eea6f5fcbd5c2a60266702e52db8415be73f73"
+    },
+    {
+      "script": "paper/test_stage_attribution.R",
+      "checks": 96,
+      "exit_code": 0,
+      "wall_seconds": 3.019098374992609,
+      "log_sha256": "33f307ee235c50945f47a9ee8fd8ed687db3e258859e6fd5f7be26c59c0ac46d"
+    },
+    {
+      "script": "paper/test_stage_publication.R",
+      "checks": 30,
+      "exit_code": 0,
+      "wall_seconds": 2.0306743329856545,
+      "log_sha256": "2abb5ab75360ba88b4603bc3b221087f7c90215587b5d1fa2fc9af4e9805969a"
+    }
+  ],
+  "total_checks": 285,
+  "observed_development_export": {
+    "figure_manifest_sha256": "274d3d7f4fe74faa299cce3a2e8bd835f78e2c70c3fb68a1da34dc2e39dd8736",
+    "label": "DEVELOPMENT ONLY: profile integration collection complete",
+    "derived_table_rows": {
+      "regional-paired-publication.csv": 540,
+      "regional-stage-attribution.csv": 24,
+      "regional-stage-selection.csv": 90,
+      "regional-summary-publication.csv": 94,
+      "regional-target-census.csv": 940
+    },
+    "stage_analysis": {
+      "available": true,
+      "analysis": "regional_stage_attribution_v1",
+      "registered_full_plan": false,
+      "scientific_full_profile": false,
+      "development_results_already_seen": true,
+      "n_strata_visited": 23,
+      "n_contrast_metric_rows": 24,
+      "max_output_rows": 100000,
+      "bootstrap": {
+        "draws": 1000,
+        "seed": 20261011,
+        "interval": "percentile 0.025/0.975",
+        "statistic": "mean paired locus difference",
+        "resample": "declared independent clusters with replacement"
+      },
+      "interval_nominal_coverage_validated": false,
+      "interval_interpretation": "Descriptive percentile envelopes; few independent genotype clusters cannot establish statistical distinguishability",
+      "interpretation": "Separate stage analysis of stored scores; original method contrasts and intervals are unchanged"
+    },
+    "all_input_output_helper_bytes_verified": true
+  },
+  "limitations": [
+    "Stage numerical differences and percentile envelopes are new analytical results; original method scores/contrasts/intervals are unchanged.",
+    "Nominal interval coverage is not validated; two genotype clusters cannot establish statistical distinguishability.",
+    "Registered specification was fixed after development outcomes but before full-campaign outcomes.",
+    "Full inference remains frozen at0e4a7ead774b; current server integration, resource, native convergence and full campaign gates are separate."
+  ]
+}

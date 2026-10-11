@@ -33,6 +33,13 @@ record, exact archive-file hashes and explicit optional-test gaps. The linked
 native parser and retention proofs verify executed interfaces. Full campaign
 results require their own frozen plan, completion census and analysis manifest.
 
+The [regional paper census and stage-analysis record](paper-stage-census-20261011/README.md)
+binds 285 publication/math checks and an export of a prior sealed development
+collection. It distinguishes implementation/acceptance changes from a changed
+generating experiment and records why the historical two-genotype-cluster
+percentile envelopes are descriptive rather than validated confidence bounds.
+It does not alter inference or establish full-campaign rankings.
+
 Full per-task predictions, public-input/assessor releases, raw logs and RDS
 objects are retained in the local checkout's ignored `results/` directories.
 Run the documented scripts with a fresh output directory to generate an

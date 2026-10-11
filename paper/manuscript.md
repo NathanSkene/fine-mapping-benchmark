@@ -1,7 +1,7 @@
 ---
 title: "What makes a fine-mapping benchmark trustworthy? A comparative reassessment and a prospective challenge framework"
 subtitle: "Working comparative manuscript — campaign results not yet complete"
-date: "10 October 2026"
+date: "11 October 2026"
 lang: en-GB
 fontsize: 10pt
 geometry: margin=0.9in
@@ -200,17 +200,69 @@ We organise comparison evidence around the following contrasts.
 | Contrast | What is fixed | What the result can establish |
 |---|---|---|
 | Historical rescoring | Predictions, truth, candidate IDs and locus identities | Change due to the evaluator |
-| Inference repair | Inputs, method settings and declared stochastic budget | Change due to implementation |
+| Implementation and acceptance repair | Observed inputs, truth and declared method configuration/budget | Combined change due to implementation, adapters and acceptance policy |
 | Simulation repair | Source genotype family and matched generation policy | Change due to the generating experiment |
 | New challenge | Frozen new inputs and participant information contract | Behaviour under newly tested mechanisms |
 
 Only the first contrast is a direct update to an old ranking with predictions
-held fixed. The second can test a posterior bug without changing the
-phenotype. The third addresses whether the originally labelled model was
+held fixed. The second assesses the whole implementation/acceptance bundle
+without changing the phenotype; attributing its result to one posterior repair
+requires a separate ablation. The third addresses whether the originally labelled model was
 actually simulated. The fourth extends the questions the benchmark can ask.
 When historical artifacts are unavailable, the paper must state that it uses
 a reproduction at the original source, and record any dependency or source
 panel differences.
+
+## Recorded stage contrasts and publication census
+
+The [registered stage specification](stage-attribution-spec.json) fixes two
+comparisons of stored locus scores for the recorded full plan. Development
+outcomes had already been seen when it was frozen; full-campaign outcomes had
+not. The difference `corrected_refit - original_refit` holds supplied inputs
+and truth fixed and assesses the combined implementation, adapter and
+acceptance changes. The difference
+`corrected_resimulation - corrected_refit` holds the genotype panel and design
+fixed while changing the phenotype and truth experiment. The latter cannot
+alone establish an inference improvement or reversal of a historical ranking.
+These are new analytical contrasts, not a recovery of Lucas's historical
+predictions. [Stage analysis](stage_attribution.R).
+
+Each endpoint has its own finite paired-difference mask. Availability includes
+all matched attempts. AP requires finite observed-positive scores on both
+sides; its failure-zero companion includes only observed-positive attempts
+eligible in both stages. Attempted recall retains recorded failure zeros.
+Generating-null loci, missing causes, recovered/lost fits and unmatched
+attempts remain explicit. Brier alignment is assessed on exactly its
+contributing pairs; false or unknown alignment permits an operational
+probability-score contrast, not a calibration ranking. Selection filters that
+omit any of the three stages leave that stratum/method comparison unassessed,
+rather than creating failed attempts. Gaussian score tasks have no such
+implementation-stage pair. A complete collection must have matched attempted
+locus identities. [Stage publication contract](stage_publication.R).
+
+The regional publication census streams the sealed, typed locus metrics and
+uses exactly the existing endpoint masks without rescoring. Design strata
+retain requested p, whereas retained candidate counts determine target
+prevalence. Distributions of requested/retained p, candidate gaps and observed
+target prevalence accompany each endpoint; null loci and missing causes stay
+distinct. Legacy post-simulation monomorphism filtering does not justify
+padding or resampling. A Gaussian candidate restriction is a different
+mechanism. Reference-panel regime rows can use different genotype draws and
+retained candidates, so their comparison does not isolate LD estimation alone.
+[Regional census](regional_publication.R).
+
+All N labels describe synthetic experiments. Legacy N counts simulated GWAS
+or reference individuals. Gaussian N is a score-generating design parameter,
+without individual rows; `meta_missingness` and `meta_known_overlap` can have
+variant-specific sample sizes. Their distributions are not recorded in the
+locus metric CSV and must be read from the committed public inputs. No such
+N is a cohort count from a published GWAS. The derived publication tables
+preserve collected scores and existing method-paired intervals, including
+infinite log loss. Separate dense-event counts identify all-positive targets
+and their constant-one baseline instead of inferring prevalence from a model
+name. The registered stage table adds only its specified differences and
+bootstrap envelopes. Scientific export still requires the sealed, complete
+full-profile collection; development exports cannot supply final winners.
 
 ## Causal target and probability event
 
@@ -702,9 +754,27 @@ locus/panel families and preserves shared structures. In the legacy generator,
 genotypes are simulated once per job row and reused across all causal-count,
 heritability and replicate scenarios. Repeated phenotypes do not create new
 empirical loci. Joint prior learning also links regions within a training
-panel. Intervals that condition on those LD/training families must be described
-as conditional uncertainty; generalisation to new genomic loci requires
-additional independent families.
+panel. The [reconstructed historical grid](../scripts/hpc/generate_params_grid.R)
+has two regions per requested-p class. Consequently a typical non-pooled
+per-p stratum has two genotype clusters despite ten phenotype repetitions;
+methods sharing a learned prior have one whole-panel cluster. Failures can
+reduce the contributing support further. Generalisation to new genomic loci
+requires additional independent genotype families.
+
+The registered stage analysis uses 1,000 whole-cluster bootstrap draws at a
+fixed seed and reports the 2.5th/97.5th percentile bounds when at least two
+clusters contribute. With one cluster it reports no interval. These numerical
+bounds are descriptive envelopes, with nominal coverage unvalidated. To see
+why two clusters do not justify a 95% confidence claim, let their independent
+effects equal $+a$ or $-a$ with equal probability. The true mean is zero, but
+half of samples have two effects of the same sign; their bootstrap envelope
+then excludes zero. Increasing the number of bootstrap draws or repeating
+phenotypes cannot repair that lack of independent genotype information.
+Existing regional method-paired bounds retain their recorded values and need
+the same low-cluster interpretation. Neither these envelopes nor the stage
+table establish statistical distinguishability. They are pointwise, without
+multiplicity control across the grid, and condition on the supplied
+genotype/training design.
 
 Macro localisation assigns equal weight to loci. Micro discovery precision
 assigns weight to calls; pooled probability scores assign weight to variants.
