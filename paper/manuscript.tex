@@ -382,7 +382,7 @@ small effects are literally noncausal.
 \href{https://doi.org/10.1038/s41588-023-01597-3}{Cui et al., 2024}.
 
 Mixture-model PIPs require particular care here. Both standard native
-SBayesRC and the repository's local SBayesRC surrogate reports the
+SBayesRC and the repository's local SBayesRC surrogate report the
 probability of membership in any nonzero effect component; that is not
 necessarily the probability of membership in the simulator's planted
 sparse component. With continuous background effects, the full
@@ -393,6 +393,43 @@ declared nonzero-effect event. It does not call native PIPs
 miscalibrated sparse probabilities merely because they assign mass to
 small background effects. Sparse-target FDR and native-PIP calibration
 must remain distinct in conclusions.
+
+In the present native \texttt{sparse\_inf} generator, sparse members
+receive continuous sparse effects and every remaining variant receives a
+continuous background effect. The resulting total-effect label is
+therefore positive at every candidate almost surely. This is a
+degenerate localisation target: AP equals 1 for every finite ranking,
+and recall at a fixed PIP threshold is simply the fraction of variants
+called. Neither endpoint distinguishes where a signal lies. For an
+exactly all-positive locus, the proper scores reduce to
+
+\[\mathrm{Brier}=\frac1p\sum_{j=1}^{p}(1-\widehat p_j)^2,\qquad
+\mathrm{LogLoss}=-\frac1p\sum_{j=1}^{p}\log\widehat p_j.\]
+
+A constant forecast \(\widehat p_j=1\), using no observations, attains
+AP 1, recall 1 and zero Brier and log loss. These scores still describe
+forecasts against the dense nonzero-effect event; low loss cannot
+establish fine-mapping resolution. The sparse-membership view poses a
+different localisation question, and a mixture-membership PIP used there
+remains an operational score rather than a calibrated sparse-membership
+probability.
+
+Publication figures use the sealed locus-level counts of positive and
+total candidates to identify this condition, rather than assuming that
+every input with a particular model name is all-positive. They preserve
+all collected values and existing intervals, mark all-positive AP and
+recall as having no localisation discrimination, and retain each
+probability event and its alignment on both sides of a paired contrast.
+The census also distinguishes all-positive loci from loci containing
+both positive and negative candidates: a mixture of wholly null and
+wholly positive loci offers no within-locus ranking task even though its
+pooled labels contain both classes. For each paired endpoint, these
+annotations use exactly the finite, complete genotype-draw pairs
+contributing to the stored contrast; a separate census retains the wider
+selected support. Excluded mixed loci cannot give an all-positive paired
+AP contrast apparent localisation discrimination.
+\href{../scripts/native/campaign/helpers.R}{Native scoring contract},
+\href{native_publication.R}{Publication annotations}.
 
 Candidate-universe and generating-universe scores also differ. AP ranks
 observed candidates. Total-target recall retains causes omitted from
