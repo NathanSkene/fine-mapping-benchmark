@@ -4,7 +4,12 @@
 \alias{evaluate_challenge}
 \title{Score all attempted challenge tasks and report separate mechanism strata}
 \usage{
-evaluate_challenge(panel, predictions, threshold = 0.95)
+evaluate_challenge(
+  panel,
+  predictions,
+  threshold = 0.95,
+  allow_native_probability_precision = FALSE
+)
 }
 \arguments{
 \item{panel}{Output of generate_challenge, held by the assessor.}
@@ -12,6 +17,12 @@ evaluate_challenge(panel, predictions, threshold = 0.95)
 \item{predictions}{Output of run_challenge or the same named contract.}
 
 \item{threshold}{Prespecified PIP discovery threshold.}
+
+\item{allow_native_probability_precision}{Assessor-controlled logical,
+default FALSE. Enable only after establishing custody of outputs from the
+exact audited FINEMAP executable and controlled adapter. An output's
+self-consistent serialization metadata is not authentication. This option
+validates literal rounding envelopes without changing probabilities or scores.}
 }
 \value{
 Task metrics, mechanism summary and variant-level reliability table.

@@ -15,6 +15,19 @@ The native directories preserve integration outputs for official FINEMAP and
 SBayesRC. Convergence of the SBayesRC short chain has not been established;
 neither native smoke is a genome-wide performance benchmark.
 
+The [11 October integration repair ledger](integration-repairs-20261011/README.md)
+preserves the immutable `eb2d9bc34190` integration census: 1,158 successful
+locus attempts, 240 declared absences and six unexpected validation failures.
+It separates exact generation repair, native FINEMAP precision inspection,
+SparsePro output-transport/parser checks, the exact-source dimension audit and
+the final repaired-source package check (1,824 passing expectations, 24 explicit
+skips; separate source-native checks passed 218 expectations). Fresh campaign
+plans and execution gates remain separate. Failed v1/v3 replay harnesses and
+the preceding package snapshots are preserved.
+Each record has a logical artifact label and SHA-256; retained raw archives
+are not represented as publicly downloadable evidence. The older native
+execution quality check used only 20 retained draws per chain.
+
 `campaign-hardening-20261010` preserves the later complete R package-check
 record, exact archive-file hashes and explicit optional-test gaps. The linked
 native parser and retention proofs verify executed interfaces. Full campaign

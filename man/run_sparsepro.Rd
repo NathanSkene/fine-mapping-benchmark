@@ -25,7 +25,9 @@ run_sparsepro(
 \item{variant_ids}{Character vector or NULL. Variant identifiers (length p).
 Required for SparsePro's output (the \code{.pip} and \code{.cs} files
 key on rsids). If NULL, synthetic IDs of the form \code{"snp1", "snp2",
-...} are generated.}
+...} are generated.
+Whitespace is normalized to underscores; the resulting IDs must be unique
+and must not contain comma, slash or quote delimiters.}
 
 \item{sparsepro_dir}{Character. Path to the cloned SparsePro repository
 (must contain \code{sparsepro_zld.py}).}
@@ -61,6 +63,10 @@ sizes per variant per credible set (the \code{effect_size} column
 of the \code{.cs} file). NULL if not parseable.}
 \item{run_log}{Character. Captured stdout/stderr from the SparsePro
 invocation; useful for debugging unexpected failures.}
+\item{native_output_evidence}{On output-validation failure, bounded
+\code{.pip}/\code{.cs} text (or exact bytes when not UTF-8 text),
+with file sizes, decoding status and truncation flags. This is
+diagnostic evidence, never a substitute prediction.}
 }
 }
 \item{error}{Character or NULL. Error message if SparsePro failed.}

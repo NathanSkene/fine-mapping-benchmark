@@ -122,7 +122,10 @@ challenge_scenarios <- function() {
       n_per_variant <- ifelse(included, n, n / 2)
       overlap <- outer(as.numeric(included), as.numeric(included), "*") + 1
       noise_covariance <- R * overlap / sqrt(outer(1 + included, 1 + included))
-      if (scenario == "meta_known_overlap") sample_overlap <- noise_covariance / R
+      # This is the normalized Gram of the two study-inclusion vectors.
+      # Recovering it by dividing by LD fails at zero or subnormal LD entries.
+      if (scenario == "meta_known_overlap")
+        sample_overlap <- overlap / sqrt(outer(1 + included, 1 + included))
     }
     if (scenario == "ld_reference_small") {
       ref <- .challenge_mvn(R, reference_n)

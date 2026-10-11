@@ -55,6 +55,13 @@ test_that("FINEMAP validates actual rounded complete posteriors without renormal
   }
   write_log(c("0", ".6", ".3", ".2", "0", "0"))
   expect_null(.finemap_model_size_probabilities(path, 5L))
+  # Three-digit general rounding below a printed 1 has spacing .001,
+  # not .01: under the existing half-unit policy these tokens are incompatible
+  # with normalization. This does not prove the log writer's rounding mode.
+  write_log(c("0", "1", ".0006"), 0:2)
+  expect_null(.finemap_model_size_probabilities(path, 2L))
+  write_log(c("0", "1", ".0004"), 0:2)
+  expect_equal(as.numeric(.finemap_model_size_probabilities(path, 2L)), c(0, 1, .0004))
   write_log(c("0", ".8", ".2"), 0:2)
   expect_null(.finemap_model_size_probabilities(path, 5L))
   write_log(c("0", ".8", ".2", "0", "0", "0"), c(0L, 1L, 1L, 3L, 4L, 5L))

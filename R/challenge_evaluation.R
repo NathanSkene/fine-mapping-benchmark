@@ -85,7 +85,9 @@ validate_challenge_input <- function(input) {
   invisible(TRUE)
 }
 
-.challenge_validate_prediction <- function(pred, input) {
+.challenge_validate_prediction <- function(pred, input, allow_native_probability_precision = FALSE) {
+  if (!is.logical(allow_native_probability_precision) || length(allow_native_probability_precision) != 1L ||
+      is.na(allow_native_probability_precision)) stop("Invalid native probability precision assessor option")
   if (!is.list(pred) || !identical(pred$task_id, input$task_id)) stop("Task ID mismatch")
   if (!identical(pred$status, "ok")) stop(pred$error %||% "Predictor did not succeed")
   if (!is.character(pred$variant_id) || anyDuplicated(pred$variant_id) ||
@@ -108,9 +110,20 @@ validate_challenge_input <- function(input) {
   if (!is.null(pred$null_probability) && (length(pred$null_probability) != 1L ||
       !is.finite(pred$null_probability) || pred$null_probability < 0 || pred$null_probability > 1))
     stop("Invalid null probability")
-  if (!is.null(pred$null_probability) && max(pred$pip) + pred$null_probability > 1 + 1e-8)
+  # Exact verified native serialization can round a coherent union's reported
+  # PIPs below one. Test feasibility within aligned literal-derived envelopes,
+  # without changing probabilities or scores. Missing provenance retains the
+  # ordinary strict point-value checks; malformed provenance fails closed.
+  precision <- .finemap_validate_probability_precision(pred)
+  # An internally consistent descriptor is not proof of artifact custody.
+  # Generic/public submissions stay strict unless the assessor explicitly
+  # enables the known native-adapter route after checking its custody.
+  if (!allow_native_probability_precision) precision <- NULL
+  pip_lower <- if (is.null(precision)) pred$pip else precision$lower
+  pip_upper <- if (is.null(precision)) pred$pip else precision$upper
+  if (!is.null(pred$null_probability) && max(pip_lower) + pred$null_probability > 1 + 1e-8)
     stop("Null probability contradicts marginal PIPs")
-  if (!is.null(pred$null_probability) && 1 - pred$null_probability > sum(pred$pip) + 1e-8)
+  if (!is.null(pred$null_probability) && 1 - pred$null_probability > sum(pip_upper) + 1e-8)
     stop("Null probability violates the PIP union bound")
   pred
 }
@@ -166,7 +179,7 @@ run_challenge <- function(inputs, methods = list(exact = challenge_exact,
 
 .challenge_safe_mean <- function(x) if (!length(x) || all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
 
-.challenge_score <- function(pred, input, truth, threshold) {
+.challenge_score <- function(pred, input, truth, threshold, allow_native_probability_precision = FALSE) {
   err <- NULL
   runtime <- if (is.list(pred)) pred$runtime_seconds %||% NA_real_ else NA_real_
   warning_count <- if (is.list(pred)) length(pred$warnings %||% character()) else 0L
@@ -174,7 +187,7 @@ run_challenge <- function(inputs, methods = list(exact = challenge_exact,
   if (!is.logical(converged) || length(converged) != 1L) converged <- NA
   if (length(runtime) != 1L || !is.numeric(runtime) || !is.finite(runtime) || runtime < 0)
     runtime <- NA_real_
-  pred <- tryCatch(.challenge_validate_prediction(pred, input),
+  pred <- tryCatch(.challenge_validate_prediction(pred, input, allow_native_probability_precision),
                    error = function(e) { err <<- conditionMessage(e); NULL })
   base <- list(task_id = input$task_id, scenario = truth$scenario,
                cluster_id = truth$cluster_id, null = truth$null,
@@ -220,9 +233,17 @@ run_challenge <- function(inputs, methods = list(exact = challenge_exact,
 #' @param panel Output of generate_challenge, held by the assessor.
 #' @param predictions Output of run_challenge or the same named contract.
 #' @param threshold Prespecified PIP discovery threshold.
+#' @param allow_native_probability_precision Assessor-controlled logical,
+#'   default FALSE. Enable only after establishing custody of outputs from the
+#'   exact audited FINEMAP executable and controlled adapter. An output's
+#'   self-consistent serialization metadata is not authentication. This option
+#'   validates literal rounding envelopes without changing probabilities or scores.
 #' @return Task metrics, mechanism summary and variant-level reliability table.
 #' @export
-evaluate_challenge <- function(panel, predictions, threshold = .95) {
+evaluate_challenge <- function(panel, predictions, threshold = .95,
+                               allow_native_probability_precision = FALSE) {
+  if (!is.logical(allow_native_probability_precision) || length(allow_native_probability_precision) != 1L ||
+      is.na(allow_native_probability_precision)) stop("Invalid native probability precision assessor option")
   .challenge_validate_panel(panel)
   if (length(threshold) != 1L || !is.finite(threshold) || threshold <= 0 || threshold >= 1)
     stop("threshold must be in (0,1)")
@@ -235,10 +256,10 @@ evaluate_challenge <- function(panel, predictions, threshold = .95) {
       stop("Unexpected/duplicate task identifiers in predictions")
     for (id in names(panel$inputs)) {
       input <- panel$inputs[[id]]; truth <- panel$truth[[id]]
-      row <- .challenge_score(pp[[id]], input, truth, threshold)
+      row <- .challenge_score(pp[[id]], input, truth, threshold, allow_native_probability_precision)
       rows[[length(rows) + 1L]] <- as.data.frame(c(list(method = method), row), stringsAsFactors = FALSE)
       if (row$success) {
-        pred <- .challenge_validate_prediction(pp[[id]], input)
+        pred <- .challenge_validate_prediction(pp[[id]], input, allow_native_probability_precision)
         reliability[[length(reliability) + 1L]] <- data.frame(
           method = method, scenario = truth$scenario, task_id = id,
           pip = pred$pip, causal = input$variant_id %in% truth$causal_variant_id)

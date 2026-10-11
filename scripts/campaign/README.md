@@ -6,8 +6,21 @@ contains 45 original-design rows plus 135 control rows, 250 scenario draws per
 row and ten loci per scenario. The control rows restore sample size 1,000,
 variant counts 100–1,000, heritabilities .0075–.4, and independent LD references
 of 200 and 500 individuals. The latest design retains sample size 5,000 and
-500–2,000 variants. Actual variant counts must equal the requested counts;
-truncating an undersized VCF window fails generation.
+500–2,000 nominal variants. Truncating an undersized VCF window fails generation.
+The exact frozen upstream genotype source (SHA256 `651dbb1640b63187028c12406a82801a676f10be1f9a52b635aedad5a49be139`)
+selects the requested variants before simulation and then removes columns
+monomorphic in the GWAS or reference sample. Valid losses from that known
+filter are retained with a per-locus audit of requested, realized and dropped
+counts and fractions. Other generator sources must realize exact dimensions;
+extra variants, invalid matrices and contradictory metadata fail generation.
+Every original warning remains unchanged. The upstream warning that fewer
+variants were available after VCF MAF filtering remains fatal even for the
+known source. Bundled-VCF capping at 500 is also a fatal source shortage. There
+is no padding, resampling, retry or change to genotype, phenotype or RNG draws.
+The compact audit is stored in the simulation parameters
+and generation checkpoint; metrics distinguish nominal design size from the
+retained variant universe. Old failed generation attempts remain failed records
+under their original source and plan.
 
 With 20 registered methods and three paired stages this is **27 million locus
 fits**, before the additional 13,200 Gaussian stress loci. The plan is the full
@@ -71,8 +84,13 @@ fallback or missing-dependency substitution. Preflight requires actual
 successful execution on two annotated loci, including native external binaries.
 An `integration` profile is solely a small installation test and is always
 labelled accordingly.
-The `canary` profile preserves the full 500–2,000-variant, 5,000-individual locus
-sizes while selecting four sparse/background and annotation arms with one
+SparsePro additionally runs a fixed coherent perfect-LD transport fixture and
+must import a multi-member native set; singleton fits alone cannot exercise its
+slash-separated set fields. This gate tests the interface, not localization of
+indistinguishable variants. A later source change requires new source-bound
+preflight receipts rather than reusing an earlier successful installation.
+The `canary` profile preserves the full nominal 500–2,000-variant,
+5,000-individual locus designs while selecting four sparse/background and annotation arms with one
 scenario each. It measures real campaign resource costs and never replaces the
 full scientific profile.
 The `resource_probe` profile selects the same four full-size legacy arms and

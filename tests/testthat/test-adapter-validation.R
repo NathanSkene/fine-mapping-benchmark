@@ -163,7 +163,7 @@ test_that("pooled caches distinguish complete ordered scientific inputs", {
   expect_match(run_paintor_region(changed, pheno, .paintor_cache = cache)$error, "no single-locus fallback")
 })
 
-sparsepro_set_fixture <- function(set) {
+sparsepro_set_fixture <- function(set, variant_ids = c("a", "b"), pip_bytes = NULL) {
   path <- tempfile(); dir.create(path)
   on.exit(unlink(path, recursive = TRUE))
   writeLines("# fixture", file.path(path, "sparsepro_zld.py"))
@@ -171,13 +171,15 @@ sparsepro_set_fixture <- function(set) {
   e <- new.env(parent = environment(fn))
   e$system2 <- function(command, args, ...) {
     out <- args[match("--save", args) + 1L]
-    write.table(data.frame(id = c("a", "b"), z = c(3, 1), pip = c(.8, .2)),
+    write.table(data.frame(id = gsub("\\s+", "_", variant_ids), z = c(3, 1), pip = c(.8, .2)),
       file.path(out, "region.z.pip"), row.names = FALSE, col.names = FALSE, quote = FALSE)
-    writeLines(set, file.path(out, "region.z.cs"))
+    if (!is.null(pip_bytes)) writeBin(pip_bytes, file.path(out, "region.z.pip"))
+    if (is.raw(set)) writeBin(set, file.path(out, "region.z.cs"))
+    else writeLines(set, file.path(out, "region.z.cs"))
     "success"
   }
   environment(fn) <- e
-  fn(c(3, 1), diag(2), 100, variant_ids = c("a", "b"), sparsepro_dir = path)
+  fn(c(3, 1), diag(2), 100, variant_ids = variant_ids, sparsepro_dir = path)
 }
 
 test_that("SparsePro rejects damaged sets instead of discarding bad members", {
@@ -193,4 +195,81 @@ test_that("SparsePro rejects damaged sets instead of discarding bad members", {
     expect_match(fit$error, "native sets contain invalid")
     expect_true(all(is.na(fit$pip)))
   }
+})
+
+test_that("SparsePro rejects corrupted bytes rather than accepting a valid prefix", {
+  cs_prefix <- charToRaw("a/b\t0.8/0.2\t0.7/0.3")
+  corrupt_cs <- c(cs_prefix, as.raw(0L), charToRaw("JUNK"))
+  non_utf8_cs <- c(cs_prefix, as.raw(255L))
+  pip_bytes <- c(charToRaw("a 3 0.8\nb 1 0.2"), as.raw(0L), charToRaw("JUNK"))
+  for (cs in list(corrupt_cs, non_utf8_cs)) {
+    fit <- sparsepro_set_fixture(cs)
+    expect_match(fit$error, "NUL, invalid UTF-8")
+    expect_true(all(is.na(fit$pip)))
+    expect_identical(fit$additional$native_output_evidence$cs$bytes, cs)
+  }
+  fit <- sparsepro_set_fixture("a/b\t0.8/0.2\t0.7/0.3", pip_bytes = pip_bytes)
+  expect_match(fit$error, "NUL, invalid UTF-8")
+  expect_true(all(is.na(fit$pip)))
+  expect_identical(fit$additional$native_output_evidence$pip$bytes, pip_bytes)
+})
+
+test_that("SparsePro parses the upstream slash-separated multi-member sets", {
+  fit <- sparsepro_set_fixture("cs\tpip\tbeta\nb/a\t0.2/0.8\t-0.3/0.7")
+  expect_null(fit$error)
+  expect_identical(fit$credible_sets, list(c(1L, 2L)))
+  expect_equal(fit$additional$cs_pip, list(c(.8, .2)))
+  expect_equal(fit$additional$cs_effect_size, list(c(.7, -.3)))
+  expect_equal(fit$pip, c(.8, .2))
+  for (bad in c("a/missing\t0.8/0.2\t0.7/0.3", "a/a\t0.8/0.2\t0.7/0.3",
+                "a/b\t0.8\t0.7/0.3", "a/b\t0.8/NaN\t0.7/0.3",
+                "a/b\t0.8/1.2\t0.7/0.3", "a/b\t0.8/0.2\t0.7/Inf",
+                "a/b/\t0.8/0.2/\t0.7/0.3/", "a/b\t0.8/0.2\t",
+                "a/b\t0.8/0.2\t0.7/0.3\tJUNK", "a//b\t0.8/0.2\t0.7/0.3",
+                "a,b/\t0.8,0.2\t0.7,0.3", "a,b,\t0.8,0.2,\t0.7,0.3,")) {
+    rejected <- sparsepro_set_fixture(bad)
+    expect_match(rejected$error, "native sets contain invalid")
+    expect_true(all(is.na(rejected$pip)))
+    expect_identical(rejected$additional$native_output_evidence$cs$text,
+                     paste0(bad, "\n"))
+    expect_false(rejected$additional$native_output_evidence$cs$truncated)
+  }
+})
+
+test_that("SparsePro retains singleton IDs matching a header prefix and rejects ambiguous IDs", {
+  singleton <- sparsepro_set_fixture("cs\t0.8\t0.7", c("cs", "b"))
+  expect_null(singleton$error)
+  expect_identical(singleton$credible_sets, list(1L))
+  spaced <- sparsepro_set_fixture("b / a\t0.2 / 0.8\t-0.3 / 0.7")
+  expect_null(spaced$error)
+  expect_identical(spaced$credible_sets, list(c(1L, 2L)))
+  for (ids in list(c("a b", "a_b"), c("a/b", "b"), c("a,b", "b"), c('a"b', "b"))) {
+    rejected <- sparsepro_set_fixture("a\t0.8\t0.7", ids)
+    expect_match(rejected$error, "unique nonempty normalized IDs")
+    expect_true(all(is.na(rejected$pip)))
+  }
+})
+
+test_that("SparsePro failure evidence is bounded and survives challenge conversion", {
+  path <- tempfile(); on.exit(unlink(path))
+  writeBin(charToRaw(paste(rep("x", 100L), collapse = "")), path)
+  evidence <- .sparsepro_output_evidence(c(cs = path), max_bytes = 16L)
+  expect_identical(evidence$cs$captured_bytes, 16L)
+  expect_identical(evidence$cs$text, paste(rep("x", 16L), collapse = ""))
+  expect_true(evidence$cs$truncated)
+  binary <- as.raw(c(97L, 0L, 98L))
+  writeBin(binary, path)
+  binary_evidence <- .sparsepro_output_evidence(c(cs = path))
+  expect_null(binary_evidence$cs$text)
+  expect_identical(binary_evidence$cs$bytes, binary)
+  expect_identical(binary_evidence$cs$decoding_status, "non_text_bytes")
+  expect_false(binary_evidence$cs$truncated)
+  unreadable <- .sparsepro_output_evidence(c(cs = tempdir()))
+  expect_true(unreadable$cs$present)
+  expect_type(unreadable$cs$capture_error, "character")
+  failed <- sparsepro_set_fixture("a/missing\t0.8/0.2\t0.7/0.3")
+  prediction <- .campaign_fit_to_prediction(failed, list(task_id = "fixture"))
+  expect_identical(prediction$status, "failed")
+  expect_identical(prediction$native_diagnostics, failed$additional)
+  expect_null(prediction[["pip"]])
 })

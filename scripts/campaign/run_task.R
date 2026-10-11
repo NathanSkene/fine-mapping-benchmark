@@ -98,7 +98,8 @@ for (i in seq_len(nrow(datasets))) {
   if (task$stage == "challenge") {
     panel <- cached_sim
     pred <- .campaign_challenge_predict(panel, seq_along(panel$inputs), task$method, args)
-    ev <- evaluate_challenge(panel, stats::setNames(list(pred), task$method))
+    ev <- evaluate_challenge(panel, stats::setNames(list(pred), task$method),
+      allow_native_probability_precision = identical(task$method, "finemap"))
     table <- .campaign_challenge_task_metrics(ev$tasks, pred, panel, task$method)
     ev$tasks <- table
     for (si in seq_len(nrow(ev$summary))) {

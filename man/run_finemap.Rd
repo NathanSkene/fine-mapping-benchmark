@@ -78,6 +78,15 @@ exactly k variants are causal (names are k = 0, 1, 2, ...).}
 \item{best_k}{Integer. Most probable number of causal variants.}
 \item{configs}{Data frame. Top causal configurations with their
 posterior probabilities, as returned in FINEMAP's .config file.}
+\item{snp_probability_tokens}{Literal native probability strings,
+aligned to input variants. Numerical PIPs are not renormalized.}
+\item{native_probability_precision}{Serialization envelopes for the
+exact audited executable only, with six significant digits and an
+unverified rounding mode. Used solely to validate probability-event
+feasibility under the structural non-null prior; never as scores.}
+\item{null_probability_event}{Identifies the candidate model's empty
+configuration event. Its structural zero under the non-null prior
+is not a calibrated probability of the generating whole-locus null.}
 }
 }
 \item{error}{Character or NULL. Error message if FINEMAP failed.}

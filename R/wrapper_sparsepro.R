@@ -170,6 +170,8 @@ setup_sparsepro <- function(sparsepro_dir, python = "python") {
 #'   Required for SparsePro's output (the \code{.pip} and \code{.cs} files
 #'   key on rsids). If NULL, synthetic IDs of the form \code{"snp1", "snp2",
 #'   ...} are generated.
+#'   Whitespace is normalized to underscores; the resulting IDs must be unique
+#'   and must not contain comma, slash or quote delimiters.
 #' @param sparsepro_dir Character. Path to the cloned SparsePro repository
 #'   (must contain \code{sparsepro_zld.py}).
 #' @param python Character. Path to the Python executable. Default:
@@ -200,6 +202,10 @@ setup_sparsepro <- function(sparsepro_dir, python = "python") {
 #'         of the \code{.cs} file). NULL if not parseable.}
 #'       \item{run_log}{Character. Captured stdout/stderr from the SparsePro
 #'         invocation; useful for debugging unexpected failures.}
+#'       \item{native_output_evidence}{On output-validation failure, bounded
+#'         \code{.pip}/\code{.cs} text (or exact bytes when not UTF-8 text),
+#'         with file sizes, decoding status and truncation flags. This is
+#'         diagnostic evidence, never a substitute prediction.}
 #'     }
 #'   }
 #'   \item{error}{Character or NULL. Error message if SparsePro failed.}
@@ -248,6 +254,13 @@ run_sparsepro <- function(z,
   script_path   <- file.path(sparsepro_dir, "sparsepro_zld.py")
 
   params <- .sparsepro_params(n, K, cthres, sparsepro_dir, python)
+
+  # Delimiters cannot be represented unambiguously in native set cells, and
+  # whitespace normalization must remain a bijection over the input IDs.
+  if (length(variant_ids) != p || anyNA(variant_ids) || any(!nzchar(variant_ids)) ||
+      anyDuplicated(variant_ids) || any(grepl("[,/\"']", variant_ids)))
+    return(.sparsepro_error_result(p, params, 0,
+      "SparsePro requires unique nonempty normalized IDs without comma, slash or quote delimiters."))
 
   if (!file.exists(script_path)) {
     return(.sparsepro_error_result(
@@ -345,6 +358,9 @@ run_sparsepro <- function(z,
 
   pip_path <- file.path(out_dir, paste0(zfile_name, ".pip"))
   cs_path  <- file.path(out_dir, paste0(zfile_name, ".cs"))
+  invalid_output <- function(error) .sparsepro_error_result(p, params, elapsed,
+    error, run_log, native_output_evidence = .sparsepro_output_evidence(
+      c(pip = pip_path, cs = cs_path)))
 
   if (!file.exists(pip_path)) {
     err_msg <- paste(
@@ -354,6 +370,11 @@ run_sparsepro <- function(z,
     return(.sparsepro_error_result(p, params, elapsed, err_msg, run_log = run_log))
   }
 
+  # R's text readers can silently truncate an embedded-NUL line. Validate
+  # complete bytes first, so a valid prefix cannot hide damaged native output.
+  for (path in c(pip_path, cs_path)) if (file.exists(path) && !.sparsepro_valid_output_text(path))
+    return(invalid_output("SparsePro output contains NUL, invalid UTF-8 or unreadable text."))
+
   # --- Parse .pip file --------------------------------------------------------
   # Three columns: variant_id, z-score, pip. Whitespace-separated. The order
   # may differ from the input variant order; we re-index against variant_ids.
@@ -361,34 +382,33 @@ run_sparsepro <- function(z,
   pip_df <- tryCatch(
     utils::read.table(pip_path, header = FALSE, sep = "",
                       stringsAsFactors = FALSE,
+                      colClasses = c("character", "numeric", "numeric"),
+                      na.strings = character(0), quote = "", comment.char = "",
                       col.names = c("rsid", "z", "pip")),
     error = function(e) NULL
   )
 
   if (is.null(pip_df) || !"pip" %in% names(pip_df)) {
-    return(.sparsepro_error_result(
-      p, params, elapsed,
-      "Failed to parse SparsePro .pip output.",
-      run_log = run_log
-    ))
+    return(invalid_output("Failed to parse SparsePro .pip output."))
   }
 
   # Complete predictions must align by unique IDs; never clip invalid output.
   ord <- match(variant_ids, pip_df$rsid)
   if (nrow(pip_df) != p || anyNA(ord) || anyNA(pip_df$rsid) || anyDuplicated(pip_df$rsid))
-    return(.sparsepro_error_result(p, params, elapsed, "SparsePro output IDs are incomplete or duplicated.", run_log))
+    return(invalid_output("SparsePro output IDs are incomplete or duplicated."))
   pip <- suppressWarnings(as.numeric(pip_df$pip[ord]))
   if (any(!is.finite(pip)) || any(pip < 0 | pip > 1))
-    return(.sparsepro_error_result(p, params, elapsed, "SparsePro output is not a finite probability vector.", run_log))
+    return(invalid_output("SparsePro output is not a finite probability vector."))
 
   # --- Parse .cs file ---------------------------------------------------------
   # SparsePro emits one row per effect group (credible set). Columns:
-  #   cs            : whitespace- or comma-separated rsids in the group
-  #   pip           : whitespace- or comma-separated within-group PIPs
-  #   effect_size   : whitespace- or comma-separated effect sizes
+  #   cs            : slash-separated rsids in the pinned upstream version
+  #   pip           : slash-separated within-group PIPs
+  #   effect_size   : slash-separated effect sizes
   #
   # The exact intra-cell separator varies between SparsePro versions. We
-  # parse defensively: try comma-split first, fall back to whitespace.
+  # also accept the comma/whitespace formats used by other versions. Splitting
+  # all three columns the same way preserves each member's probability/effect.
 
   credible_sets  <- list()
   cs_pip         <- NULL
@@ -398,24 +418,35 @@ run_sparsepro <- function(z,
     cs_lines <- readLines(cs_path, warn = FALSE)
     cs_lines <- cs_lines[nchar(trimws(cs_lines)) > 0L]
 
-    # Skip a header row if present (column names commonly start with "cs").
-    if (length(cs_lines) > 0L && grepl("^(cs|set|group)\\b", cs_lines[1L],
-                                       ignore.case = TRUE)) {
+    # A native ID such as "cs" is not a header. Require all three column names.
+    header <- tolower(trimws(strsplit(cs_lines[1L], "\t", fixed = TRUE)[[1L]]))
+    if (length(header) == 3L && header[1L] %in% c("cs", "set", "group") &&
+        header[2L] %in% c("pip", "prob", "probability") &&
+        header[3L] %in% c("beta", "effect", "effect_size")) {
       cs_lines <- cs_lines[-1L]
     }
 
     if (length(cs_lines) > 0L) {
       parsed <- lapply(cs_lines, function(line) {
         # Split top-level on tabs (between the three columns).
-        cells <- strsplit(line, "\t", fixed = TRUE)[[1L]]
-        if (length(cells) < 1L) return(NULL)
+        # Append a sentinel before splitting: R otherwise drops a trailing
+        # empty cell and could silently accept a missing effect column.
+        cells <- head(strsplit(paste0(line, "\tEND"), "\t", fixed = TRUE)[[1L]], -1L)
+        if (length(cells) != 3L || any(!nzchar(trimws(cells)))) return(NULL)
 
         # Robust intra-cell split.
         split_cell <- function(s) {
           s <- trimws(s)
           if (!nzchar(s)) return(character(0))
-          if (grepl(",", s, fixed = TRUE)) strsplit(s, ",\\s*")[[1L]]
-          else strsplit(s, "\\s+")[[1L]]
+          comma <- grepl(",", s, fixed = TRUE); slash <- grepl("/", s, fixed = TRUE)
+          if (comma && slash) return(character(0))
+          if (comma || slash) {
+            delimiter <- if (comma) "," else "/"
+            tokens <- trimws(head(strsplit(paste0(s, delimiter, "END"),
+                                           delimiter, fixed = TRUE)[[1L]], -1L))
+          } else tokens <- strsplit(s, "\\s+")[[1L]]
+          if (any(!nzchar(tokens))) return(character(0))
+          tokens
         }
 
         rsids  <- split_cell(cells[1L])
@@ -434,8 +465,8 @@ run_sparsepro <- function(z,
       })
 
       if (any(vapply(parsed, is.null, logical(1))))
-        return(.sparsepro_error_result(p, params, elapsed,
-          "SparsePro native sets contain invalid IDs or misaligned probabilities/effects.", run_log))
+        return(invalid_output(
+          "SparsePro native sets contain invalid IDs or misaligned probabilities/effects."))
 
       if (length(parsed) > 0L) {
         credible_sets  <- lapply(parsed, `[[`, "idx")
@@ -507,8 +538,29 @@ run_sparsepro_region <- function(region_geno, region_pheno, ...) {
   )
 }
 
+.sparsepro_valid_output_text <- function(path) tryCatch({
+  bytes <- suppressWarnings(readBin(path, "raw", n = file.info(path)$size))
+  !any(bytes == as.raw(0L)) && validUTF8(rawToChar(bytes))
+}, error = function(e) FALSE)
+
+.sparsepro_output_evidence <- function(paths, max_bytes = 262144L) {
+  stats::setNames(lapply(paths, function(path) tryCatch({
+    if (!file.exists(path)) return(list(present = FALSE))
+    size <- unname(file.info(path)$size)
+    bytes <- suppressWarnings(readBin(path, "raw", n = min(size, max_bytes)))
+    text <- tryCatch(rawToChar(bytes), error = function(e) NULL)
+    if (!is.null(text) && !validUTF8(text)) text <- NULL
+    if (!is.null(text)) Encoding(text) <- "UTF-8"
+    list(present = TRUE, byte_size = size, captured_bytes = length(bytes),
+         truncated = size > max_bytes, text = text,
+         decoding_status = if (is.null(text)) "non_text_bytes" else "utf8_text",
+         bytes = if (is.null(text)) bytes else NULL)
+  }, error = function(e) list(present = file.exists(path),
+                              capture_error = conditionMessage(e)))), names(paths))
+}
+
 .sparsepro_error_result <- function(p, params, elapsed, error_msg,
-                                     run_log = character(0)) {
+                                     run_log = character(0), native_output_evidence = NULL) {
   list(
     pip             = rep(NA_real_, p),
     credible_sets   = list(),
@@ -519,7 +571,8 @@ run_sparsepro_region <- function(region_geno, region_pheno, ...) {
     additional      = list(
       cs_pip         = NULL,
       cs_effect_size = NULL,
-      run_log        = run_log
+      run_log        = run_log,
+      native_output_evidence = native_output_evidence
     ),
     error           = error_msg
   )

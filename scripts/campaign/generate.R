@@ -19,6 +19,7 @@ if (.campaign_validate_checkpoint(checkpoint, plan, row)) {
 on.exit(unlink(paste0(directory, ".lock"), recursive = TRUE), add = TRUE)
 dir.create(directory, recursive = TRUE, showWarnings = FALSE)
 started <- Sys.time()
+generation_dimension_audit <- NULL
 if (row$family == "challenge") {
   panel <- generate_challenge(n_replicates = row$replicates, p = row$p, n = row$n,
                                seed = row$seed, split = "final")
@@ -45,26 +46,28 @@ if (row$family == "challenge") {
   if (!is.na(g$n_ref)) args$n_ref <- g$n_ref
   # Extdata lookup is relative to the snapshot root in source-only mode.
   old <- getwd(); setwd(plan$original_source)
-  sim <- tryCatch(do.call(original$run_simulation, args), finally = setwd(old))
+  captured <- tryCatch(.campaign_capture_generation(function()
+    do.call(original$run_simulation, args)), finally = setwd(old))
+  sim <- captured$value
   used <- sim$params$vcf_files_used
   if (length(used) && nzchar(plan$data_paths$vcf_dir))
     .campaign_check_inputs(used, plan$input_file_manifest)
   maps <- list.files(plan$data_paths$genetic_map_dir, full.names = TRUE, recursive = TRUE)
   if (length(maps)) .campaign_check_inputs(maps, plan$input_file_manifest)
-  actual <- vapply(sim$genotypes, function(g) ncol(g$X), 1L)
   requested <- split_integer(g$p_values)
-  if (!identical(actual, requested)) stop("Generation did not realize the requested p vector: ",
-      paste(actual, collapse = ","), " versus ", paste(requested, collapse = ","))
-  if (any(vapply(sim$genotypes, function(g) any(!is.finite(g$X)) ||
-                   any(apply(g$X, 2L, stats::var) <= 0), TRUE)))
-    stop("Original generator produced invalid genotype columns; do not benchmark invalid inputs")
+  generation_dimension_audit <- .campaign_generation_dimension_audit(sim, requested, g$n,
+    n_ref = if (is.na(g$n_ref)) NULL else g$n_ref,
+    source_file_sha256 = .challenge_sha256(file.path(plan$original_source, "R/simulate_genotypes.R")),
+    warnings = captured$warnings)
   sim$params$campaign_generation_source <- "original code reconstruction"
+  sim$params$generation_dimension_audit <- generation_dimension_audit
   .campaign_atomic_rds(sim, file.path(directory, "simulation.rds"))
   artifacts <- file.path(directory, "simulation.rds")
 }
 provenance <- list(terminal = TRUE, plan_sha256 = plan$plan_sha256, task = row,
   started = started, completed = Sys.time(), session = utils::sessionInfo(),
   genotypes_sha256 = if (row$family == "challenge") NA_character_ else .campaign_object_sha(sim$genotypes),
+  generation_dimension_audit = generation_dimension_audit,
   artifacts = data.frame(path = artifacts, sha256 = vapply(artifacts, .challenge_sha256, "")))
 .campaign_atomic_rds(provenance, checkpoint)
 .campaign_receipt(directory, checkpoint, plan$plan_sha256, paste0("generation_", index))

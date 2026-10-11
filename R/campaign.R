@@ -170,6 +170,123 @@
   env
 }
 
+.campaign_capture_generation <- function(generate) {
+  warnings <- character()
+  value <- withCallingHandlers(generate(), warning = function(w) {
+    # Observe, never muffle or replace, the original warning. This handler does
+    # not draw randomness or change the generator's warning/error policy.
+    warnings <<- c(warnings, conditionMessage(w))
+  })
+  list(value = value, warnings = warnings)
+}
+
+.campaign_generation_dimension_audit <- function(sim, requested_p, n, n_ref = NULL,
+    source_file_sha256, warnings = character()) {
+  known_sha <- "651dbb1640b63187028c12406a82801a676f10be1f9a52b635aedad5a49be139"
+  integer_values <- function(x, size, label, minimum = 1L) {
+    if (!is.numeric(x) || is.complex(x) || !is.null(dim(x)) || length(x) != size ||
+        any(!is.finite(x)) || any(x != floor(x) | x < minimum | x > .Machine$integer.max))
+      stop("Invalid generation ", label)
+    as.integer(x)
+  }
+  if (!is.list(sim) || !is.list(sim$genotypes) || !length(sim$genotypes) ||
+      !is.list(sim$params)) stop("Invalid generation simulation structure")
+  count <- length(sim$genotypes)
+  requested <- integer_values(requested_p, count, "requested variant counts")
+  n <- integer_values(n, 1L, "GWAS sample size", 2L)
+  if (!is.null(n_ref)) n_ref <- integer_values(n_ref, 1L, "reference sample size", 2L)
+  if (!is.character(source_file_sha256) || length(source_file_sha256) != 1L ||
+      is.na(source_file_sha256) || !grepl("^[a-f0-9]{64}$", source_file_sha256))
+    stop("Invalid generation source-file SHA256")
+  if (!is.character(warnings) || anyNA(warnings)) stop("Invalid original generation warnings")
+  undersupply <- grepl(paste0("requested[[:space:]]+[0-9]+[[:space:]]+SNPs[[:space:]]+",
+    "but[[:space:]]+only[[:space:]]+[0-9]+[[:space:]]+variants[[:space:]]+available",
+    "[[:space:]]+after[[:space:]]+MAF[[:space:]]+filtering"), warnings)
+  undersupply <- undersupply | grepl("Capping p at 500 for regions where p > 500", warnings, fixed = TRUE)
+  if (any(undersupply)) stop("Original VCF undersupply remains fatal: ",
+                            paste(warnings[undersupply], collapse = "\n"))
+  if (!identical(integer_values(sim$params$p, count, "nominal params$p"), requested) ||
+      !identical(integer_values(sim$params$n, 1L, "params$n", 2L), n))
+    stop("Contradictory generation design parameters")
+  if (is.null(n_ref)) {
+    if (!is.null(sim$params$n_ref)) stop("Unexpected generation reference sample")
+  } else if (!identical(integer_values(sim$params$n_ref, 1L, "params$n_ref", 2L), n_ref)) {
+    stop("Contradictory generation reference sample size")
+  }
+  finite_matrix <- function(x, rows, cols, label, variable = FALSE) {
+    if (!is.matrix(x) || !is.numeric(x) || is.complex(x) || !identical(dim(x), c(rows, cols)) ||
+        any(!is.finite(x))) stop("Invalid generation ", label, " dimensions or values")
+    if (variable && any(!vapply(seq_len(cols), function(j) {
+      variance <- stats::var(x[, j]); is.finite(variance) && variance > 0
+    }, TRUE)))
+      stop("Invalid generation ", label, ": nonvariable columns")
+  }
+  check_names <- function(x, ids, label, square = FALSE) {
+    cn <- colnames(x)
+    if (!is.null(cn) && !identical(cn, ids)) stop("Generation ", label, " variant IDs disagree")
+    if (square && !is.null(rownames(x)) && !identical(rownames(x), ids))
+      stop("Generation ", label, " variant IDs disagree")
+  }
+  actual <- integer(count)
+  known_filter <- identical(source_file_sha256, known_sha)
+  for (i in seq_len(count)) {
+    g <- sim$genotypes[[i]]
+    if (!is.list(g) || !is.matrix(g$X)) stop("Invalid generation GWAS genotype matrix")
+    actual[i] <- integer_values(ncol(g$X), 1L, "realized variant count")
+    if (actual[i] > requested[i]) stop("Generation has extra variants beyond its nominal design")
+    if (actual[i] < requested[i] && !known_filter)
+      stop("Unknown original-generator origin for dimension loss; exact dimensions required")
+    if (!identical(integer_values(g$p, 1L, "genotype p"), actual[i]) ||
+        !identical(integer_values(g$n, 1L, "genotype n", 2L), n))
+      stop("Contradictory generation genotype dimensions")
+    if (!is.null(g$region_id) && !identical(integer_values(g$region_id, 1L, "region ID"), i))
+      stop("Contradictory generation region ID")
+    ids <- g$variant_ids
+    if (!is.character(ids) || length(ids) != actual[i] || anyNA(ids) ||
+        any(!nzchar(ids)) || anyDuplicated(ids)) stop("Invalid generation variant IDs")
+    finite_matrix(g$X, n, actual[i], "GWAS X", TRUE)
+    check_names(g$X, ids, "GWAS X")
+    if (!is.null(g$X_raw) || known_filter) {
+      finite_matrix(g$X_raw, n, actual[i], "GWAS X_raw", TRUE)
+      check_names(g$X_raw, ids, "GWAS X_raw")
+    }
+    if (is.null(n_ref)) {
+      if (!is.null(g$X_ref) || !is.null(g$X_ref_raw) || !is.null(g$n_ref))
+        stop("Unexpected generation reference genotype matrix")
+    } else {
+      if (!identical(integer_values(g$n_ref, 1L, "genotype n_ref", 2L), n_ref))
+        stop("Contradictory generation reference dimensions")
+      finite_matrix(g$X_ref, n_ref, actual[i], "reference X", TRUE)
+      check_names(g$X_ref, ids, "reference X")
+      if (!is.null(g$X_ref_raw) || known_filter) {
+        finite_matrix(g$X_ref_raw, n_ref, actual[i], "reference X_raw", TRUE)
+        check_names(g$X_ref_raw, ids, "reference X_raw")
+      }
+    }
+    for (field in c("LD", "LD_true")) {
+      finite_matrix(g[[field]], actual[i], actual[i], field)
+      check_names(g[[field]], ids, field, TRUE)
+    }
+  }
+  if (!identical(integer_values(sim$params$p_actual, count, "params$p_actual"), actual))
+    stop("Contradictory generation params$p_actual")
+  basis <- if (known_filter) "known_f053_post_simulation_monomorphic_gwas_or_reference_filter" else
+    "unverified_filter_origin_no_dimension_loss_permitted"
+  list(schema = 1L, source_file = "R/simulate_genotypes.R",
+       source_file_sha256 = source_file_sha256, known_post_simulation_filter = known_filter,
+       design_semantics = "nominal_requested_variant_count",
+       variant_universe_semantics = "retained_polymorphic_gwas_and_reference_if_present",
+       post_simulation_filter_basis = basis,
+       loci = data.frame(region_id = seq_len(count), requested_p = requested,
+         realized_p = actual, dropped_p = requested - actual,
+         retained_fraction = actual / requested, dropped_fraction = (requested - actual) / requested,
+         n_gwas = rep(n, count), n_reference = rep(n_ref %||% NA_integer_, count),
+         post_simulation_filter_basis = rep(basis, count), stringsAsFactors = FALSE),
+       warnings = data.frame(index = seq_along(warnings), message = warnings,
+         classification = rep("other_original_warning_preserved", length(warnings)),
+         stringsAsFactors = FALSE))
+}
+
 .campaign_legacy_index <- function(root, methods) {
   sims <- list.files(root, "^sim\\.rds$", recursive = TRUE, full.names = TRUE)
   if (!length(sims)) stop("No frozen legacy sim.rds found under --legacy-root")
@@ -263,12 +380,23 @@
   if (!is.null(fit$error)) return(c(list(task_id = input$task_id, status = "failed",
       error = fit$error, runtime_seconds = fit$runtime_seconds,
       null_probability = null_probability,
+      native_diagnostics = fit$additional,
       credible_set_semantics = fit$additional$credible_set_semantics %||% "unspecified_method_native_sets"), event))
+  # A successful prediction needs the finite-precision declaration, not the
+  # potentially 50,000-row configuration table or unrelated fit internals.
+  fields <- c("variant_ids", "native_variant_ids", "native_executable_sha256",
+    "snp_probability_tokens", "native_probability_precision", "native_null_support",
+    "posterior_conditioning", "null_probability_event", "null_probability",
+    "k_prior", "k_posterior")
+  diagnostics <- if (identical(fit$method, "finemap"))
+    fit$additional[intersect(fields, names(fit$additional))] else NULL
   c(list(task_id = input$task_id, variant_id = input$variant_id, pip = fit$pip,
        status = "ok", credible_sets = lapply(fit$credible_sets, function(s) input$variant_id[s]),
        converged = fit$additional$converged %||% NA,
        runtime_seconds = fit$runtime_seconds,
        null_probability = null_probability,
+       native_diagnostics = diagnostics,
+       native_probability_precision = (fit$additional %||% list())[["native_probability_precision"]],
        credible_set_semantics = fit$additional$credible_set_semantics %||% "unspecified_method_native_sets",
        implementation = fit$additional$implementation %||% fit$method), event)
 }
@@ -296,6 +424,9 @@
        null_model_in_support = support,
        null_probability = null %||% NA_real_, null_probability_reported = !is.null(null),
        null_probability_not_provided = additional[["null_probability_not_provided"]] %||% is.null(null),
+       null_probability_event = additional[["null_probability_event"]] %||% "unspecified",
+       null_probability_interpretation = additional[["null_probability_interpretation"]] %||%
+         "operational_against_generating_null; event_alignment_not_established",
        configuration_count = additional[["configuration_count"]] %||% NA_real_,
        probability_score_interpretation = if (method == "sbayesrc")
          "operational_sparse_membership_diagnostic; event mismatch" else
@@ -337,7 +468,8 @@
     id <- table$task_id[i]; input <- panel$inputs[[id]]; truth <- panel$truth[[id]]
     pred <- predictions[[match(id, vapply(predictions, function(x) x$task_id, ""))]]
     ok <- isTRUE(table$success[i])
-    if (ok) pred <- .challenge_validate_prediction(pred, input)
+    if (ok) pred <- .challenge_validate_prediction(pred, input,
+      allow_native_probability_precision = identical(method, "finemap"))
     semantics <- pred$credible_set_semantics %||% if (method == "caviar")
       "native_all_causal_containment_set" else "unspecified_method_native_sets"
     values <- .campaign_set_metrics(if (ok) pred$credible_sets %||% list() else list(),

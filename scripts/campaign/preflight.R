@@ -33,7 +33,7 @@ sim <- list(genotypes = genotypes, scenarios = list(list(scenario_id = 1L, S = 2
         iter = 1L, model = "sparse", regions = lapply(z, function(x) x[c("y", "z", "beta_hat", "se",
                            "annotations_matrix", "truth", "statistic_type")]))),
         params = list(p = rep(24L, 2L), annotation_type = "binary"))
-started <- Sys.time(); error <- NULL
+started <- Sys.time(); error <- NULL; transport_probe <- NULL
 fits <- tryCatch(run_methods(sim, method, stats::setNames(list(plan$method_args[[method]]), method),
                              verbose = FALSE), error = function(e) { error <<- conditionMessage(e); NULL })
 if (!is.null(fits)) {
@@ -42,8 +42,23 @@ if (!is.null(fits)) {
   success <- length(errors) == 2L && all(!nzchar(errors))
   if (!success) error <- paste(unique(errors[nzchar(errors)]), collapse = "\n")
 } else success <- FALSE
+if (success && identical(method, "sparsepro")) {
+  # The two installation loci can pass with only singleton sets. This public,
+  # coherent perfect-LD fixture exercises the native multi-member transport path;
+  # it establishes parsing, never accuracy or identifiability of either twin.
+  twins <- diag(24L); twins[1L, 2L] <- twins[2L, 1L] <- 1
+  transport_probe <- tryCatch(do.call(run_sparsepro_region,
+    c(list(region_geno = list(LD = twins, n = 500L, p = 24L,
+      variant_ids = paste0("probe:", 1:24)),
+      region_pheno = list(z = c(6, 6, rep(0, 22L)))), plan$method_args[[method]])),
+    error = function(e) list(error = conditionMessage(e)))
+  success <- is.null(transport_probe$error) && length(transport_probe$pip) == 24L &&
+    all(is.finite(transport_probe$pip)) && any(lengths(transport_probe$credible_sets) > 1L)
+  if (!success) error <- paste("SparsePro multi-member native transport probe failed:",
+    paste(transport_probe$error %||% "No multi-member native set was returned", collapse = "\n"))
+}
 z <- list(terminal = TRUE, plan_sha256 = plan$plan_sha256, task = method, success = success,
-    error = error, fits = fits, started = started, completed = Sys.time(),
+    error = error, fits = fits, transport_probe = transport_probe, started = started, completed = Sys.time(),
     elapsed_seconds = as.numeric(difftime(Sys.time(), started, units = "secs")),
     session = utils::sessionInfo(), dependency_inventory = .campaign_dependency_inventory(plan$method_args),
     role = "installation/integration gate; not an accuracy or convergence experiment")

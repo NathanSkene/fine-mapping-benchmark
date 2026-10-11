@@ -1,0 +1,524 @@
+{
+  "schema": 1,
+  "recorded_date": "2026-10-11",
+  "status": "repair_checks_complete_fresh_campaign_execution_gates_pending",
+  "scope": "Integration failure diagnosis and source-bound repairs; no scientific ranking, convergence certificate or repaired full-campaign result",
+  "artifact_access": "Logical labels and hashes identify retained archives; they are not download URLs or a claim that the full raw data/environment is publicly available",
+  "frozen_integration_source_commit": "eb2d9bc34190c9fc89cfa25b43ecb2f070139fc8",
+  "frozen_integration_plan_sha256": "f0cfb18aadab117ac4bec9a48d158fb8575ef66c484b05f0a0ba7ef327dd8724",
+  "integration": {
+    "operational_receipt_and_census_gate": "PASS",
+    "tasks_planned": 168,
+    "tasks_complete": 168,
+    "dataset_records": 282,
+    "locus_attempts": 1404,
+    "successes": 1158,
+    "recorded_failures": 246,
+    "declared_absences": {
+      "non_scalar_sample_size": 152,
+      "normal_score_INF_unsupported": 72,
+      "exact_or_forced_one_overlap_information_missing": 4,
+      "funmap_annotations_missing": 12,
+      "total": 240
+    },
+    "unexpected_validation_failures": {
+      "finemap_serialized_probability_union": 2,
+      "sparsepro_native_set_parser": 4,
+      "total": 6
+    },
+    "original_outputs_and_errors_preserved": true,
+    "analysis_manifest_sha256": "0fc7c204e6571309d07bc215e15ea5a1a269471b2360f1b68c955b787dbd6537",
+    "artifacts": [
+      {
+        "label": "eb2/integration-completion-census.json",
+        "sha256": "ee09ceb240e69543364168939141985f31cf52fe6d2267a85b44c984bd2d9d66",
+        "role": "Receipt and identity census",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "eb2/integration-method-completion.csv",
+        "sha256": "51234cb3abf6fe9c99000eaf699a2188e6887d8b3660cb5d9bdcbc35b63e3c94",
+        "role": "Method/stage completion counts",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "eb2/integration-failure-messages.csv",
+        "sha256": "7945dc9033accb5ab90be2672c0bc25102251c06598cf789d995015acc0563ae",
+        "role": "Original recorded failure messages and counts",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      }
+    ],
+    "limits": "Small installation and execution-contract experiment; completion does not certify scientific predictions or comparative performance"
+  },
+  "known_overlap": {
+    "role": "Exact single frozen-generation replay; no method fitting or truth scoring",
+    "case": {
+      "generation_index": 5,
+      "panel_seed": 20361016,
+      "serial": 50,
+      "case_seed": 120361066,
+      "split": "final",
+      "p": 1000,
+      "n": 10000
+    },
+    "defect": "noise_covariance / LD loses overlap information at zero LD and amplifies floating-point error at subnormal LD",
+    "observed": {
+      "zero_ld_entries": 10506,
+      "subnormal_ld_entries": 10956,
+      "old_nonfinite_overlap_entries": 10506,
+      "corrected_nonfinite_overlap_entries": 0,
+      "old_subnormal_max_error": 0.29289321881345254,
+      "corrected_gram_max_error": 2.220446049250313e-16,
+      "corrected_overlap_numerical_rank": 2
+    },
+    "repair": "Construct normalized study-membership Gram W directly; V_j=(1,a_j)/sqrt(1+a_j), W=VV^T, Cov(z)=LD*W entrywise",
+    "input_other_fields_identical": true,
+    "truth_all_fields_identical": true,
+    "input_validator_and_PSD_thresholds_unchanged": true,
+    "source_bindings": {
+      "frozen_source": "6308cf64cf912b7cd7807e2a086316f55737c82c24db2129a0679e1703ded066",
+      "corrected_source": "485a335a859f8e3d7382bbaf3c634d3a09a984fcdc3bbd2e9d4c0198bc4e16c3",
+      "frozen_validator_file": "66fefaf4bb04b64207bd93d4b0f2b1a297c141512c1155e9ed3dd61c9c47ee79",
+      "current_validator_file": "1da3c2204679bf81fd4838446203a652adb966d18f6beb998e7fa4553408a23c",
+      "regression_test": "a53b2d1d2002e4e837a4633fa968ec04cd0f93b59ca0f8fbd0874652c952ad55"
+    },
+    "artifacts": [
+      {
+        "label": "overlap/replay-v2-report.json",
+        "sha256": "6d0430e4288397cb9147a168ea23db199290ade476f88b0ee496ecc8644b5163",
+        "role": "Exact p1000 diagnosis and byte-identity observations",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "overlap/replay-v2-manifest.json",
+        "sha256": "4d0e70ad433a2ebbdedfbfe9d4faf9c049eb4c6774ebe36e36b67b150ee792d3",
+        "role": "All nine listed raw/source/report artifacts verified",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "overlap/replay-v1-report.json",
+        "sha256": "116aea350ae13cf2db851dd004dc038ba91c3199eb5811662cff713456ccdae4",
+        "role": "Earlier replay preserved; v2 also quantifies subnormal distortion",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      }
+    ],
+    "limits": "One p1000 frozen case only; this does not establish complete 220-task generation or downstream method success."
+  },
+  "finemap": {
+    "native_proof": {
+      "pbs_job_id": "4314729.pbs-7",
+      "scheduler_observation": "F/exit0",
+      "binary_sha256": "41e0af31c18e2e92d2a5fd1fbf35c9832d62ae737746ecd0aa4629a5925c9bcc",
+      "download_label": "finemap_v1.4.2_x86_64",
+      "version_channels": {
+        "download_label": "finemap_v1.4.2_x86_64",
+        "stdout_help_banner": "FINEMAP v1.4.2",
+        "native_log_banner": "FINEMAP v1.4.1",
+        "binary_contains_both_banner_strings": true,
+        "interpretation": "Different embedded console/log headers within the same byte-identical executable; no release replacement inferred"
+      },
+      "writer_evidence_type": "Inspected unstripped executable, not an author manual/source guarantee",
+      "format": "general-format six significant digits",
+      "rounding_mode": "not separately verified",
+      "reported_vectors_exactly_match_archived": true,
+      "raw_PIPs_altered": false,
+      "native_PIP_sums": [
+        0.9999998,
+        0.9999995
+      ],
+      "conservative_one_place_summed_envelopes": [
+        [
+          0.9999965,
+          1.0000031
+        ],
+        [
+          0.9999962,
+          1.0000028
+        ]
+      ],
+      "artifacts": [
+        {
+          "label": "finemap/precision-proof-v2.json",
+          "sha256": "7e93b246eebd758d37849841d390f4709cca6e3d11e4d5836781117221554836",
+          "role": "Channel-qualified binary and two exact native vector replays",
+          "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+        },
+        {
+          "label": "finemap/precision-proof-v1.json",
+          "sha256": "37f777ef6857ea1bac5b83f0e0172c1390141bea8dd7e4b3c5ddb9b248f87faa",
+          "role": "Preserved first proof; version-channel field superseded by v2",
+          "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+        }
+      ],
+      "limits": "Exact vectors establish these two output transports only; native seed reproducibility, general calibration and comparative accuracy are not established"
+    },
+    "repair_contract": {
+      "public_evaluation_default": "strict point validation",
+      "assessor_opt_in": "allow_native_probability_precision = TRUE after controlled adapter custody checks",
+      "executable_scope": "41e0af31c18e2e92d2a5fd1fbf35c9832d62ae737746ecd0aa4629a5925c9bcc",
+      "envelope": "Conservative one adjacent last-place; lower spacing ten times finer at exact decimal powers; literal-token, numeric-PIP and ID consistency required",
+      "unknown_executable_or_generic_predictions": "strict point validation",
+      "raw_points_scores_and_tokens_preserved": true,
+      "descriptor_is_authentication": false,
+      "SNP_PIP_event": "Membership conditional on a nonempty native modeled configuration",
+      "null_zero_basis": "Excluded native prior-k0 support; structural candidate-empty probability zero, not whole generating-locus null calibration",
+      "count_log_policy": "Existing at-least-three-digit nearest half-unit interval policy; exact-power lower bound corrected by factor ten; active log rounding mode unverified; independent of six-digit SNP proof"
+    },
+    "focused_software_check": {
+      "scope": "software-contract regression only; no inference or method-performance evidence",
+      "test_counts": {
+        "precision": 81,
+        "native_parser": 119,
+        "challenge": 105,
+        "campaign_contract": 147,
+        "total": 452,
+        "failures": 0,
+        "warnings": 0,
+        "skips": 0
+      },
+      "source_unchanged": true,
+      "source_bindings": {
+        "R/wrapper_finemap.R": "78daf23c8570593bd8908767c806a3326375c58d39f7d9707d01d942ddd9424c",
+        "R/challenge_evaluation.R": "d90c4b03e6b48014732848e61fd4a5e3b23ebdd92ebb72477877f1dd5ae9f7c5",
+        "R/campaign.R": "45211375c4ab39ade914532e3a2b9bfcdd8c3d64cd4a1447d0105a3674cbc0c0",
+        "scripts/campaign/run_task.R": "fef6d88083cd6baa83327e7390ccd621fe601451bfc912e9405482c25f07fc94",
+        "man/evaluate_challenge.Rd": "5d43d0f280d234e63404cc9d73a2e517c0ea2c9f278fb7155cab63b71c7ba642",
+        "tests/testthat/test-native-probability-precision.R": "ea17183a582873cc796eacf415b5c81759498ff055189124e52970ea2cb21f3b",
+        "tests/testthat/test-native-parser-events.R": "2f828d08f01f6d7e8836652c3d9c77d11003fd655ebc19399f23c3d2de0ea973",
+        "docs/finemap-native-contract.md": "298032bd98c17ea0d05fd16bad6a7cbf385180a61ba89685fff2a2f858cb6a84"
+      },
+      "artifacts": [
+        {
+          "label": "finemap/focused-software-proof.json",
+          "sha256": "c9a198f824fe8b37f428be819e4deacec4291f450e7bfd8f5895b66ff0f241a0",
+          "role": "452 source-bound software assertions; not final repaired-source full package validation",
+          "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+        }
+      ],
+      "test_log_sha256": "826acdfb9f3ad44044ffaf7cd5b12d1a843e0dd884d3015ca243829d3befd505"
+    }
+  },
+  "sparsepro": {
+    "native_v2_transport_proof": {
+      "pbs_job_id": "4314778.pbs-7",
+      "scheduler_observation": "F/exit0",
+      "native_execution_count": 5,
+      "cases": "Four diagnosed archived cases plus one deterministic multi-member-set output probe",
+      "corrected_wrapper_sha256": "1b2926c82a58f3acf283ce942eb3a1fc0c047549fa9efc74f25e0dd001f10fdd",
+      "native_script_sha256": "b4db3c8c9e0dae199bfc8c1ef7fe3e2820c6f6f5311942c00aac2cb011850319",
+      "public_input_export_sha256": "6a68e54802161529caa22ed080ca46cfa4f48fd1382563b87ec47d5610d6c738",
+      "all_five_imported_PIP_vectors_identical_to_native": true,
+      "checkpoint_sha256": "5d34b6950970398be9f2f9021bbe27a3bcfd12bb997467f6554403f09467ddb7",
+      "artifacts": [
+        {
+          "label": "sparsepro/native-v2-manifest.json",
+          "sha256": "8bbd78a51b7774541395e76be54798c6cdecb4d9d06f6e4b2d73ee87a6cc4b30",
+          "role": "Five cases and all 35 listed native/parser artifacts verified",
+          "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+        },
+        {
+          "label": "sparsepro/native-v2-terminal.json",
+          "sha256": "c96e92dbfdc7b9182e58df11b363be9e5c27ae9f507c35f07353885a1d962cad",
+          "role": "Seals the native-v2 RDS checkpoint",
+          "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+        },
+        {
+          "label": "sparsepro/native-v2-scheduler-observation.json",
+          "sha256": "7bd8f29a83ca7a1b4349cf58d6688e3edceac013b16c231820e27bc7ffd07450",
+          "role": "Observed terminal PBS exit0",
+          "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+        }
+      ],
+      "limits": "Slash parser transport proof at its stated wrapper snapshot; not proof of later strict wrapper, new scientific scores or benchmark checkpoint replacement"
+    },
+    "prior_v1_harness_failure": {
+      "status": "preserved_failure",
+      "details": "The replay harness failed before completion; excluded from successful-native proof counts. Repaired native transport evidence is recorded separately as v2.",
+      "artifacts": [
+        {
+          "label": "sparsepro/prior-v1-harness.pbs.err",
+          "sha256": "2d0105e6ac822ea1dfc232dfbd21fdbf7324e18e1ed04b3e8954f546a934a2fb",
+          "role": "Preserved failed harness stderr; no success claim"
+        }
+      ]
+    },
+    "final_strict_parser": {
+      "wrapper_sha256": "1f75f58b118e923198abbcc6c6791f61728bdd5f62f47f441832c575f5193fbb",
+      "scope": "Slash-separated native sets, strict set schema/member/probability/effect alignment, corrupted UTF-8/NUL byte refusal and unambiguous IDs",
+      "limits": "Uses the five already-sealed native outputs; no new inference runs or altered PIPs",
+      "v4_parser_only_proof": {
+        "status": "complete",
+        "pbs_job_id": "4314827.pbs-7",
+        "scheduler_observation": "F/exit0",
+        "scope": "Final SparsePro native-byte parser transport proof; no scoring or benchmark replacement",
+        "native_execution_count": 0,
+        "mocked_invocations": 5,
+        "cases": 5,
+        "output_artifacts_verified": 40,
+        "all_three_original_written_input_hashes_per_case_exact": true,
+        "both_output_copy_stages_exact_hash_and_raw_bytes": true,
+        "independent_PIP_set_members_group_probabilities_and_effects_alignment": true,
+        "all_raw_set_rows_exact_three_fields": true,
+        "wrapper_sha256": "1f75f58b118e923198abbcc6c6791f61728bdd5f62f47f441832c575f5193fbb",
+        "checkpoint_sha256": "9b12bf0730c1ca4f2bd413cc9bd2619a89d3806994629fb92a6d77b957271f71",
+        "artifacts": [
+          {
+            "label": "sparsepro/final-v4-proof-summary.json",
+            "sha256": "b4588c8d3b52a8f08b02604df81bc790640aea0ac52c12717ddc08e88fc3feb7",
+            "role": "Terminal parser/transport proof with all 22 outer artifacts verified",
+            "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+          },
+          {
+            "label": "sparsepro/final-v4-output-manifest.json",
+            "sha256": "a9b3041e272550bc8d7352a14eb59b024aa2d91bfe3d937f67a388ed6c06743b",
+            "role": "All 40 native-byte-copy/parser result artifacts verified",
+            "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+          },
+          {
+            "label": "sparsepro/final-v4-terminal.json",
+            "sha256": "67ba56320b6d80e5fe727519e09b6746cc8bca3bf44ff095d444f83b765d0da8",
+            "role": "Seals both result manifest formats",
+            "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+          }
+        ],
+        "local_input_text_limit": "Case03 z-file textual SHA differed locally; main server proof matched all three original input hashes for every case. Local check asserts parsing only.",
+        "limits": [
+          "No new SparsePro native inference",
+          "No truth scoring, accuracy, calibration, convergence or ranking claims",
+          "No historical benchmark result replacement"
+        ]
+      }
+    },
+    "benchmark_predictions_overwritten": false,
+    "v3_failed_harness": {
+      "status": "failed_harness_before_parser",
+      "pbs_job_id": "4314810.pbs-7",
+      "scheduler_observation": "F/exit1",
+      "parser_comparison": "not_run",
+      "native_execution_count": 0,
+      "cause": "nzchar(Sys.readlink(missing path)) considered NA true",
+      "scientific_source_changed": false,
+      "artifacts": [
+        {
+          "label": "sparsepro/v3-failed-harness-proof.json",
+          "sha256": "8654a7ea430444ad6bbc30fdaa6179718b879af4b12f72ab5e795dced61482b0",
+          "role": "Preserved v3 code/lineage/error seals; all 13 listed artifacts verified"
+        }
+      ]
+    }
+  },
+  "prior_native_integration_quality": {
+    "pbs_job_id": "4314710.pbs-7",
+    "scheduler_observation": "F/exit0",
+    "specified_execution_quality_gates": "PASS",
+    "event_rows": 252,
+    "supported_regional_cells": 59,
+    "structurally_unavailable_regional_cells": 1,
+    "retained_draws_per_chain": 20,
+    "artifacts": [
+      {
+        "label": "native/eb2-integration-quality-completion.json",
+        "sha256": "3f339f890a4ae07917353097beb16968f2656e67d31c5d8df6620da8dc84dffd",
+        "role": "Observed execution quality gates and artifact seals",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      }
+    ],
+    "limits": "Short-chain execution/interface and event-typing contract; not convergence, full-size resource cost or native accuracy certification"
+  },
+  "pending_gates": {
+    "fresh_immutable_source_and_campaign_plans": "pending",
+    "fresh_preflight_integration_and_resource_gates": "pending",
+    "full_scientific_campaign": "not certified by this ledger",
+    "generation_nominal_realized_dimension_audit": "302 source-bound software assertions PASS; fresh execution gate pending"
+  },
+  "historical_results": {
+    "highest_priority_request": "Lucas original raw simulation objects and per-method prediction/result files, with seeds and configuration logs; collected tables/figures are secondary",
+    "audit": "docs/original-results-audit.md",
+    "custody": "No historical raw archive recovered; no outreach performed",
+    "replay_limit": "New-seed upstream-code replay is a new experiment, not direct rescoring of historical outputs"
+  },
+  "intermediate_package_check": {
+    "stage": "staged-v2 before later timer-accounting and generation-audit changes",
+    "status": "Status: OK",
+    "final_repaired_source_validation": false,
+    "counts": {
+      "pass": 1727,
+      "fail": 0,
+      "warning": 0,
+      "skip": 25
+    },
+    "NOT_CRAN": "unset; one extra OnCRAN pipeline skip included",
+    "archive_sha256": "2d8a41c8ba60b186624261c8efa6b3eb5cc65d6d46f3e9a1ff09e9e53e2e5870",
+    "archived_files_verified": 158,
+    "artifacts": [
+      {
+        "label": "repairs/staged-v2-built-package-files.json",
+        "sha256": "78ef922ddf62a6b7e3a44996eee13444612fb4572cb4590da58c00f2ac48d2c5",
+        "role": "Exact archive and all 158 archived file hashes"
+      },
+      {
+        "label": "repairs/staged-v2-package-check.log",
+        "sha256": "9ddf03c195cf9824f9c416af93cdbf12483946f7029ad51b2a16138c1af763fe",
+        "role": "Intermediate source only; not final repaired-source check"
+      },
+      {
+        "label": "repairs/staged-v2-testthat.Rout",
+        "sha256": "2550f3619452dba371bcbedec2473a58a572c1e1674cde32b7e9db568143e398",
+        "role": "Intermediate 1727/25 test expectations"
+      }
+    ],
+    "later_changes": "FINEMAP executable verification excluded from native elapsed timer; generation dimensions audit pending; PBS task costs include verification"
+  },
+  "nominal_realized_dimensions": {
+    "status": "source_bound_regressions_pass; fresh_generation_execution_pending",
+    "scope": "Source-bound unit and regression tests for known-upstream generation dimension auditing; no full genotype panel regenerated and no PBS submission",
+    "known_upstream_genotype_sha256": "651dbb1640b63187028c12406a82801a676f10be1f9a52b635aedad5a49be139",
+    "old_failure": {
+      "pbs_job_id": "4314711.pbs-7",
+      "source_commit": "eb2d9bc34190c9fc89cfa25b43ecb2f070139fc8",
+      "requested_p": [
+        500,
+        500,
+        750,
+        750,
+        1000,
+        1000,
+        1500,
+        1500,
+        2000,
+        2000
+      ],
+      "reported_realized_p": [
+        498,
+        498,
+        749,
+        750,
+        997,
+        998,
+        1496,
+        1496,
+        1998,
+        2000
+      ],
+      "scheduler_observation": "F/exit1",
+      "raw_log_label": "run-eb2d9bc34190/regional-resource_probe/dispatch/4314711.pbs-7.ER",
+      "raw_log_access": "Preserved execution archive; this ledger binds the source-bound proof containing the reported dimensions, not a separately verified raw-log hash"
+    },
+    "policy": "Known-source post-simulation monomorphic GWAS/reference filtering only; per-locus nominal/realized/dropped counts and fractions/sample sizes; all original warnings preserved",
+    "fatal_warnings": [
+      "Canonical requested SNPs but only variants available after MAF filtering",
+      "Capping p at 500 for regions where p > 500"
+    ],
+    "other_fatal_conditions": "Unknown-source loss, extra or contradictory dimensions, nonfinite/nonvariable matrices and misaligned IDs/LD shape",
+    "genotype_phenotype_payload_and_RNG_preserved": true,
+    "resampling": false,
+    "test_counts": {
+      "generation_audit": 74,
+      "campaign_contract": 147,
+      "native_probability_precision": 81,
+      "total": 302,
+      "fail": 0,
+      "error": 0,
+      "warning": 0,
+      "skip": 0
+    },
+    "independent_review": "74 focused assertions repeated; bundled-cap policy gap repaired and negatively tested",
+    "source_bindings": {
+      "R/campaign.R": "e0add7a4fa2ac1abf7dc67d639501a713b34c55320a19f8a0ed779084f07364c",
+      "scripts/campaign/generate.R": "4fd7d378c50978da446c43fc098c959e7795b2675785c5740e0d34a5f0e0208e",
+      "tests/testthat/test-generation-dimension-audit.R": "c90f70d3d3bf65ef11d889819440004a7ed2e0c30e9644df4704abf4ac2df15f",
+      "scripts/campaign/README.md": "9ff58837ba79ac541065c7260c12b8ba702ec0701e9061d2324180a4f04dc068"
+    },
+    "artifacts": [
+      {
+        "label": "generation/dimension-audit-proof-v2.json",
+        "sha256": "fa61f33a0899bea893882675b8d8a01728b506f96b4e15cd39e60a22fcca8e9e",
+        "role": "302 software assertions with source/byte/RNG/nominal-realized invariants; not full-panel execution"
+      },
+      {
+        "label": "generation/dimension-audit-proof-v1.json",
+        "sha256": "cbb212f24cdfc9697f45a2762e1c4d99677a156544475bf55d639be50c4b2669",
+        "role": "Prior proof retained; v2 adds bundled-cap negatives"
+      }
+    ],
+    "full_panel_execution_claim": false
+  },
+  "repaired_source_package_check": {
+    "scope": "Final v3 package snapshot and source-only native orchestration checks; no full panel generation, native inference or campaign execution is claimed.",
+    "status": "OK",
+    "errors": 0,
+    "warnings": 0,
+    "notes": 0,
+    "testthat": {
+      "fail": 0,
+      "pass": 1824,
+      "skip": 24,
+      "warn": 0
+    },
+    "NOT_CRAN": "true; pipeline test executed",
+    "source_native_orchestration": {
+      "expectation_error": 0,
+      "expectation_failure": 0,
+      "expectation_skip": 0,
+      "expectation_success": 218,
+      "expectation_warning": 0
+    },
+    "archive_sha256": "6d3812db885521a290bd03a6625e396e85caadf9e207b75f399ec0d1efe02ffd",
+    "archive_files_verified": 159,
+    "independently_verified_current_scientific_source_files": 264,
+    "current_source_matches_frozen_manifest": true,
+    "source_unchanged_through_completion": "Validation driver asserts staged and current scientific source custody before recording completed proof",
+    "frozen_stage_manifest_sha256": "c4ee41cba7b0bdf9ea9cbfce4a74b1d830d07d00e17cfca9650b9ce876f1453f",
+    "artifacts": [
+      {
+        "label": "repairs/final-v3-check-proof.json",
+        "sha256": "76b7b0ce33c95ff5eb26cecd9353a0c502127311140dd6178677bb1c7a42af86",
+        "role": "Completed exact snapshot and separate source-native checks",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "repairs/final-v3-built-package-files.json",
+        "sha256": "dd40d7cb4621c373b2dc888a64af54ee596987099d9f8cadc4d69d9b7f658cc9",
+        "role": "All 159 archive file hashes verified",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "repairs/final-v3-frozen-stage-manifest.json",
+        "sha256": "c4ee41cba7b0bdf9ea9cbfce4a74b1d830d07d00e17cfca9650b9ce876f1453f",
+        "role": "Frozen staged source plus current-scientific-source custody",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "repairs/final-package-validation-driver.py",
+        "sha256": "3ae1487b10ff4e2f5833889e539704a6dfacadf137f85e468c56bd43bcb7c995",
+        "role": "Exact Python staging/build/check/count/custody driver; field validation_helper_sha256",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "repairs/source-native-orchestration-helper.R",
+        "sha256": "a58c0ff88cf1074d97ee330a20ed8406f51443d8bc81f8e184f361dc418d1650",
+        "role": "Separate emitted R driver for 218 source-native checks",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "repairs/final-v3-package-check.log",
+        "sha256": "69a41f10d2cd8fefb3e71e19136cb432e0a6971fa7498ad2cb2fd97ac5335075",
+        "role": "Status OK, zero errors/warnings/notes",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "repairs/final-v3-package-testthat.Rout",
+        "sha256": "1e3bca8ee4580378294941a962aa124f0eede6e31373528e0c0800b65fb4b81e",
+        "role": "1824 passing expectations and 24 explicit skips",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      },
+      {
+        "label": "repairs/final-v3-source-native-tests.log",
+        "sha256": "9f8fe19210b012a78f0b89b14e33c44a20fd9c0c8c58f14ccf6db2ec4fd9c20e",
+        "role": "218 passing expectations and zero failures/errors/warnings/skips",
+        "custody": "Retained ignored execution archive; raw bytes are not embedded in this public ledger"
+      }
+    ],
+    "limits": "Package/source-only software validation, not full generation/native inference/campaign performance; optional native execution has separate gates"
+  }
+}

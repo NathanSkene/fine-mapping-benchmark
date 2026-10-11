@@ -1,4 +1,4 @@
-# Validation record — 10 October 2026
+# Validation record — 11 October 2026
 
 This records executed checks, not a universal method ranking. Original upstream
 source was `f053fdf318a3abe2c44eeb0ac3f3c99a03979b81`. The earlier development
@@ -8,9 +8,66 @@ development artifacts are frozen separately; run provenance records source
 commit and individual R file hashes. The [review](REVIEW.md) and
 [scientific contract](challenge-science.md) define interpretation limits.
 
-## Campaign hardening checks
+## Integration failures and repairs — 11 October
 
-The subsequent complete R package check passed **Status: OK**, with **1,559
+The immutable `eb2d9bc34190c9fc89cfa25b43ecb2f070139fc8` integration finished
+168/168 task receipts and 1,404 locus attempts. Its identity/completion census
+passed: **1,158 successful attempts and 246 recorded failures**. Of these,
+240 were declared input or algorithm absences: 152 non-scalar-N cases, 72
+unsupported Gaussian INF cases, four exact/forced-one overlap cases and 12
+annotation-free Funmap cases. Two FINEMAP probability-coherence rejections and
+four SparsePro set-parser rejections required repairs. Those original errors
+and outputs remain preserved. Completion is not equivalent to scientific
+success.
+
+The [repair ledger](validation-artifacts/integration-repairs-20261011/README.md)
+and [source-bound records](validation-artifacts/integration-repairs-20261011/evidence.json)
+distinguish the following evidence:
+
+- A replay of one actual planned `p = 1000` known-overlap case diagnosed both
+  zero-LD NaNs and subnormal division distortion. Direct normalized-Gram
+  construction preserves every other public-input field and all truth fields,
+  with unchanged validators and PSD thresholds.
+- Two actual FINEMAP replays returned archived PIPs exactly. Inspected binary
+  output precision explains the small union deficits without changing PIPs or
+  scores. Public evaluation remains strict unless an assessor explicitly
+  enables the exact-binary, token-bound contract. The count-log half-unit
+  policy is separate and its active rounding mode is unverified.
+- Five actual SparsePro native probes passed the v2 transport/parser replay
+  with unchanged native PIPs. Its earlier harness failure is retained. The
+  v3 parser-only harness failed before parsing on a Linux missing-path guard;
+  the strict v4 replay then passed on all five sealed outputs, with original
+  input hashes, exact copied bytes and independent PIP/set/effect alignment.
+  It made five intercepted calls and zero new inference runs.
+
+The final repaired-source v3 R package check passed **Status: OK**, with
+**1,824 passing expectations, 24 explicit optional/repository-only skips and
+zero errors, warnings or notes**. `NOT_CRAN=true` enabled the pipeline test.
+Separate source-only native orchestration checks passed **218 expectations**
+with no failures, errors, warnings or skips. The repair ledger binds the exact
+archive, all 159 archive file hashes, validation driver and logs; 264 current
+scientific/source files were independently verified against the frozen manifest.
+These checks certify the tested software snapshot. Fresh immutable campaign
+source/plans and execution gates remain pending here. Prior native integration quality gates
+passed specified execution contracts with 20 retained draws per chain; this
+cannot establish convergence or performance. Historical direct rescoring also
+still needs Lucas's original raw simulations and per-method predictions, as
+specified in the [original-results audit](original-results-audit.md).
+
+A separate resource-probe failure exposed nominal-versus-realized genotype
+size: monomorphic filtering can remove variants after a frozen upstream draw.
+The exact-source audit records per-locus dimensions/fractions and all warnings,
+preserves genotype draws/RNG and permits no resampling. Canonical VCF shortage
+and bundled-capping warnings remain fatal, along with unexplained dimension
+loss. Its 74 focused assertions passed independently; the source-bound
+302-assertion proof also includes existing campaign and precision regressions.
+This is not a regenerated full panel. An intermediate staged-v2 package
+check passed for its archived source, before this audit and a FINEMAP
+timer-accounting correction; it does not certify the final repaired source.
+
+## Prior campaign hardening checks
+
+The preceding source snapshot's complete R package check passed **Status: OK**, with **1,559
 passing expectations, zero failures and zero warnings**. Its 24 explicit skips
 comprise seven CARMA, one configured legacy BEATRICE, two FINEMAP, one Funmap,
 two PAINTOR, two SparsePro and nine repository-only native orchestration tests.
