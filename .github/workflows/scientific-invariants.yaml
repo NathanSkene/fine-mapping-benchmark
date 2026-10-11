@@ -21,7 +21,7 @@ jobs:
       - uses: r-lib/actions/setup-r@v2
         with:
           r-version: 'release'
-      - name: Install evaluator test dependency
+      - name: Install scientific and publication test dependencies
         run: |
           Rscript --vanilla - <<'RSCRIPT'
           options(timeout = max(300, getOption("timeout")))
@@ -29,17 +29,20 @@ jobs:
           # --vanilla skips R profiles, so select that repository explicitly.
           repo <- Sys.getenv("RSPM", unset = "")
           if (!nzchar(repo)) repo <- "https://cloud.r-project.org"
+          required <- c("testthat", "jsonlite", "posterior")
+          available <- function() vapply(required, requireNamespace, TRUE, quietly = TRUE)
           for (attempt in seq_len(3L)) {
-            if (requireNamespace("testthat", quietly = TRUE)) break
-            message("Installing testthat: attempt ", attempt, "/3 from ", repo)
-            tryCatch(install.packages("testthat", repos = repo),
+            if (all(available())) break
+            missing <- required[!available()]
+            message("Installing ", paste(missing, collapse = ", "), ": attempt ", attempt, "/3 from ", repo)
+            tryCatch(install.packages(missing, repos = repo),
                      error = function(e) message(conditionMessage(e)))
-            if (requireNamespace("testthat", quietly = TRUE)) break
+            if (all(available())) break
             if (attempt < 3L) Sys.sleep(5L * attempt)
           }
-          if (!requireNamespace("testthat", quietly = TRUE))
-            stop("testthat installation failed after three attempts")
-          message("Verified testthat ", packageVersion("testthat"))
+          if (!all(available()))
+            stop("Test dependency installation failed after three attempts: ", paste(required[!available()], collapse = ", "))
+          for (package in required) message("Verified ", package, " ", packageVersion(package))
           RSCRIPT
       - name: Test scoring, generative invariants and blinded-input contracts
         run: Rscript --vanilla scripts/challenge/test_core.R
