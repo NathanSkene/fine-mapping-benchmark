@@ -14,6 +14,10 @@ The [paired campaign runner](scripts/campaign/README.md) preserves the full
 historical design grids, distinguishes scoring changes from inference changes,
 and adds the stress suite. The [paper draft](paper/manuscript.md) records the
 comparison design and marks results that still require completed runs.
+The separate [resource cost report](docs/resource-cost-reporting.md) keeps
+failed attempts, input rejections and unmeasured worker designs visible when
+planning compute. Its sampled timing envelopes require matching worker designs
+and do not establish full-campaign cost or posterior convergence.
 The separately installable [FineMap RL package](rl_envs/README.md) provides
 inference, experiment allocation, method design and isolated code improvement
 environments, with a [submission dossier](rl_envs/docs/submission-dossier.md).

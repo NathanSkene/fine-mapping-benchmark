@@ -1,0 +1,172 @@
+{
+  "schema": 1,
+  "role": "actual_frozen_source_integration_execution_evidence",
+  "source_commit": "0e4a7ead774b2e8d3f8ab2f48bc61eadb31c6e91",
+  "archive_sha256": "938c8f6083a608564da133b291fce65b05192e13f4eeb5720a7ffd3077f983f1",
+  "regional": {
+    "plan_sha256": "c9465874fa4f670027fc55ced075e6b60b86116d564bfcf32b7b4e381b8663d7",
+    "actual_preflights": {
+      "methods": 20,
+      "terminal_F0": 20,
+      "sealed_actual_receipts": 20,
+      "gate_sha256": "16fc980861e9b8bf8304bb07bce4db58fc15287d86de505ab65d0b0b1cddb3e7",
+      "sparsepro_multi_member_transport_fixture_required": true
+    },
+    "controller": {
+      "generation_complete": 4,
+      "method_tasks_complete": 168,
+      "confirmed_PBS_handles": 92,
+      "all_terminal_F0": true,
+      "controller_stopped": true,
+      "atomic_owner_released": true
+    },
+    "collection": {
+      "job_id": "4315256.pbs-7",
+      "observed_utc": "2026-10-11T15:02:47.058751+00:00",
+      "state": "F",
+      "exit_status": 0,
+      "resources_used": {
+        "cpupercent": 98,
+        "cput": "00:09:13",
+        "mem": "220644kb",
+        "ncpus": 1,
+        "vmem": "562516kb",
+        "walltime": "00:10:20"
+      },
+      "scheduler_evidence_remote": "/rds/general/user/nskene/home/fmbenchmark-campaign-20261010/regional-execution-0e4a7ead774b/integration-collection-scheduler-20261011T150247Z-5aec85e6.json",
+      "scheduler_evidence_sha256": "952cbce89739c7c8b52271323f9e702dd324ab488a52f14bf234772011842b4c",
+      "analysis_manifest_sha256": "ab87a9cc2616d5615c5bb933bc27970b2af5ec616cfe2558f212cdc14c839d1f",
+      "census_sha256": "4f0285a9ba0e81191965b78309b165b46bce1d1cbbea6cd1f1b4ac2a77b56061",
+      "exact_artifacts_verified": 10,
+      "artifact_custody_proof_sha256": "03a6f5ab289f48f56c50be09426d6133a42345364ba22cf3f68a2426817c6395"
+    },
+    "actual_census": {
+      "tasks": 168,
+      "dataset_records": 282,
+      "locus_rows": 1404,
+      "successful_locus_fits": 1164,
+      "declared_absent_locus_fits": 240,
+      "unexpected_failures": 0
+    },
+    "declared_absences": {
+      "declared_required_annotation_absence": 12,
+      "declared_scalar_N_input_absence": 152,
+      "declared_Gaussian_INF_information_absence": 72,
+      "declared_overlap_metadata_absence": 4
+    },
+    "all_six_previous_case_identities_present_once_and_successful": true,
+    "case_identity_does_not_assert_cross_revision_input_or_native_byte_equivalence": true,
+    "data_scope": {
+      "published_GWAS_release_selected": false,
+      "twentythreeandme": "not_applicable",
+      "restricted_GWAS_cohorts": "not_applicable",
+      "legacy_simulated_GWAS_N": 200,
+      "challenge_nominal_generated_N": 500,
+      "per_variant_or_cohort_N": "Typed observed input records retain scenario-specific N",
+      "nominal_p": [
+        24,
+        40
+      ],
+      "actual_retained_p": [
+        23,
+        24,
+        40
+      ],
+      "reference_source_participants_are_not_simulated_GWAS_N": true
+    }
+  },
+  "native": {
+    "plan_sha256": "afa97417d346a94f287a9869090032ae505399498665d0d9ac9379d1155771f9",
+    "source_snapshot_sha256": "db873651beeb2731f070f3b06a0f4a4ce009cc7aa7438f0c511476f17c8d01cc",
+    "quality_job_id": "4315255.pbs-7",
+    "quality_pbs_state": "F",
+    "quality_exit_status": 0,
+    "quality_audit_status": "complete",
+    "quality_manifest_sha256": "dc9c86f29dacb9bebbf33e192b744d11c74d52e73df4e57d8d892abb9ce50c24",
+    "quality_json_sha256": "46d4c40ba95260c39b5bb14b415a3e80b1397dec3741547ea66d088cc868569f",
+    "quality_terminal_sha256": "18a28ba2985bcfc0fc46aa1800942b985608921a4396d8e513cf402d3c0e005b",
+    "analysis_manifest_sha256": "5b0e0fa8300bb2590fe09d51d65808a80defd0678572586b2787568875395d4c",
+    "spec_sha256": "d0af114c90ed3a0dac5454e88117dff929c592a4a2d5d71f4a0f2db640c30993",
+    "observed_counts": {
+      "profile": "integration",
+      "coverage": {
+        "n_prepared": 1,
+        "n_planned_draws": 1,
+        "n_checkpointed_chains": 12,
+        "n_planned_chains": 12,
+        "n_checkpointed_regional": 60,
+        "n_planned_regional": 60
+      },
+      "native_chains_verified": 12,
+      "task_metric_rows": 252,
+      "structurally_unavailable_fit_units": 2,
+      "structurally_unavailable_event_rows": 4,
+      "regional_checkpoints_verified": 60,
+      "supported_regional_cells": 59,
+      "structurally_unavailable_regional_cells": 1,
+      "annotation_free_ablation_region_fits": 4,
+      "native_consensuses_verified": 3
+    },
+    "qualification_flags": {
+      "all12_chain_imports_successful": true,
+      "trace_errors": 0,
+      "raw_rows_per_chain": 150,
+      "retained_draws_per_chain": 20,
+      "ordinary_trace_coherence": true,
+      "four_successful_chains_per_input": true,
+      "source_analysis_quality_artifact_seals_verified": true,
+      "all_three_core_diagnostics_pass": false,
+      "core_diagnostics_pass_by_input": [
+        {
+          "input_id": "input_00001",
+          "core_diagnostics_pass": false,
+          "native_core_assessment_status": "unassessable_and_thresholds_failed"
+        },
+        {
+          "input_id": "input_00002",
+          "core_diagnostics_pass": false,
+          "native_core_assessment_status": "unassessable_and_thresholds_failed"
+        },
+        {
+          "input_id": "input_00003",
+          "core_diagnostics_pass": false,
+          "native_core_assessment_status": "unassessable_and_thresholds_failed"
+        }
+      ],
+      "short_chain_rhat_ess_pass_required": false,
+      "convergence_certified": false,
+      "accuracy_claim": false,
+      "truth_scored_by_quality_audit": false
+    },
+    "local_flag_seal_checks_passed": 20,
+    "negative_guards_passed": {
+      "changed_CSV_artifact_refused_before_import_flags": true,
+      "existing_positive_proof_refused_and_unchanged": true
+    },
+    "known_native_job_count": 18,
+    "all_known_native_jobs_fresh_terminal_success": true,
+    "current_owner_absent": true,
+    "synthetic_input_scope": {
+      "input_kind": "generated simulation quantitative phenotype on frozen empirical EUR template representative subset",
+      "observed_summary_and_LD_N": 200,
+      "observed_retained_variants": 48,
+      "observed_regions": 2,
+      "published_GWAS_selected": false,
+      "twentythreeandme": "not_applicable",
+      "other_restricted_GWAS_cohorts": "not_applicable",
+      "genomewide_or_published_study_completeness_claim": false
+    }
+  },
+  "retained_evidence": {
+    "results/full-campaign-validation/regional-execution-0e4a7ead774b/integration-execution-gate.json": "5d5bf004c6081cd826f7e3998ee143ff7af7ff71d134c37200b7960e34860613",
+    "results/full-campaign-validation/regional-execution-0e4a7ead774b/integration-artifact-custody-proof.json": "03a6f5ab289f48f56c50be09426d6133a42345364ba22cf3f68a2426817c6395",
+    "results/full-campaign-validation/regional-execution-0e4a7ead774b/integration-failure-taxonomy.json": "df1eb5878209975a4a1af62a44b5ad5b332013ba668c9b8e0c5222e49ba87580",
+    "results/native-execution-0e4a7ead774b/native-integration-quality-acceptance-proof-v1.json": "d4ed1ce3b3e94c3d254125e56886843e53ef089c4de6f573a4dd0b90d30ac38c",
+    "results/native-execution-0e4a7ead774b/native-integration-quality-local-seal-validation-v1.json": "07b98977768c45ec41a2a06a1e0b316594c5120afb5d2e4c903468aa9a01a7d7",
+    "results/probe-preflight-root-review-20261011-v1/proof.json": "0a53232d0f0f9626eead0fe21131700e556f4c457519469c6b0bd57c300d3f0a",
+    "results/probe-preflight-root-review-20261011-v1/actual-gate-acceptance.json": "7f2ed2ce57bd85264e4dc9d59f6c4a5fa70a6f0b920220d62bf0af5dc8075191"
+  },
+  "interpretation": "Installation, execution, sealed collection and declared-absence taxonomy only; no convergence, calibration, method accuracy or full-campaign rankings",
+  "full_campaign_complete": false,
+  "historical_raw_results_recovered": false
+}

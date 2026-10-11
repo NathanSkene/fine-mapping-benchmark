@@ -40,6 +40,18 @@ generating experiment and records why the historical two-genotype-cluster
 percentile envelopes are descriptive rather than validated confidence bounds.
 It does not alter inference or establish full-campaign rankings.
 
+The [fresh frozen-source integration record](fresh-integration-20261011/README.md)
+reports 1,164 successful locus attempts, 240 declared absences and no unexpected
+failures. All six repaired case identities now succeed. The native execution
+and import audit also completed, while all short-chain convergence flags remain
+false. Its six-job CI record and execution evidence do not establish full
+campaign accuracy or rankings.
+
+The [resource-reporting validation](resource-reporting-20261011/README.md)
+records 135 passing checks for dimensions, support, custody and conditional
+cost mathematics. It preserves unknown costs and does not establish full
+campaign feasibility.
+
 Full per-task predictions, public-input/assessor releases, raw logs and RDS
 objects are retained in the local checkout's ignored `results/` directories.
 Run the documented scripts with a fresh output directory to generate an

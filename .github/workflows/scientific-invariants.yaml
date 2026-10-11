@@ -21,7 +21,7 @@ jobs:
       - uses: r-lib/actions/setup-r@v2
         with:
           r-version: 'release'
-      - name: Install scientific and publication test dependencies
+      - name: Install scientific and reporting test dependencies
         run: |
           Rscript --vanilla - <<'RSCRIPT'
           options(timeout = max(300, getOption("timeout")))
@@ -29,7 +29,7 @@ jobs:
           # --vanilla skips R profiles, so select that repository explicitly.
           repo <- Sys.getenv("RSPM", unset = "")
           if (!nzchar(repo)) repo <- "https://cloud.r-project.org"
-          required <- c("testthat", "jsonlite", "posterior")
+          required <- c("testthat", "jsonlite", "posterior", "digest")
           available <- function() vapply(required, requireNamespace, TRUE, quietly = TRUE)
           for (attempt in seq_len(3L)) {
             if (all(available())) break
@@ -53,6 +53,8 @@ jobs:
           Rscript --vanilla paper/test_regional_publication.R
           Rscript --vanilla paper/test_stage_attribution.R
           Rscript --vanilla paper/test_stage_publication.R
+      - name: Test resource dimensions, support and custody
+        run: Rscript --vanilla scripts/reporting/test_resource_cost_report.R
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
