@@ -66,3 +66,6 @@
 ^.+\.tar\.gz$
 ^\.Rcheck$
 ^.+\.Rcheck$
+
+# --- Agent instructions (repo-level, not part of the package) ---
+^AGENTS\.md$
