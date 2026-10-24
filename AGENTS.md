@@ -4,7 +4,10 @@ Read this file before working in this repository. Also see README.md.
 
 ## Engineering standards
 
-These apply to every agent (Codex, Claude, others) and every person, and they come before new feature work. Open clean-up work is in milestone *M0 — Engineering foundations* ((issues are disabled in this fork, so the clean-up items are listed below)).
+These apply to every agent (Codex, Claude, others) and every person, and they come before new feature work. Issues are disabled in this fork, so the current clean-up items are listed here:
+- Split PR #1 (+32.9k lines, open since 11 Oct) into small PRs off `main` and merge them after review.
+- Add a large-file check (pre-commit and CI). Keep VCFs, genetic maps and results out of git.
+- Decide whether to turn on issues and use them for tracking (Nathan's call).
 
 **Small changes, merged often**
 - One issue, one short-lived branch off the default branch in its own worktree, one PR. Aim for about 400 changed code lines or fewer, excluding generated files and lockfiles. One purpose per PR. Merge within a day or two.
